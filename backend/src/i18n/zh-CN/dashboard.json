@@ -1,0 +1,5 @@
+{
+  "dashboard_not_found": "仪表盘 #{{id}} 不存在",
+  "delete_children_first": "请先删除子节点",
+  "parent_not_found": "父节点 #{{id}} 不存在"
+}

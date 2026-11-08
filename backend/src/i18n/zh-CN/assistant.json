@@ -1,0 +1,9 @@
+{
+  "image_type_unsupported": "文件类型不支持，仅支持 jpg/jpeg/png",
+  "file_too_large": "文件大小超过限制（最大 10 M）",
+  "file_id_not_found": "文件 {{id}} 不存在",
+  "assistant_not_found": "助手 #{{id}} 不存在",
+  "flag_unsupported": "不支持的文件标识: {{flag}}",
+  "app_not_found_or_offline": "应用 {{appId}} 不存在或已下线",
+  "aes_key_missing": "AES key 未配置"
+}

@@ -1,0 +1,12 @@
+{
+  "word_required": "术语名称不能为空",
+  "word_duplicates": "术语名称与同义词不能重复",
+  "word_exists": "术语「{{word}}」已存在",
+  "term_not_found": "术语 #{{id}} 不存在",
+  "col_word": "术语名称",
+  "col_other_words": "同义词",
+  "col_description": "术语描述",
+  "col_datasource": "有效数据源",
+  "col_all_data_sources": "全部数据源",
+  "col_advanced_application": "高级应用"
+}

@@ -1,0 +1,17 @@
+{
+  "not_found": "用户不存在",
+  "must_belong_to_ws": "用户必须至少属于一个工作空间",
+  "ids_required": "ids 不能为空",
+  "wrong_original_password": "原密码错误",
+  "password_same_as_initial": "新密码不能为初始密码",
+  "ws_not_found": "工作空间 #{{oid}} 不存在",
+  "not_in_ws": "未加入工作空间 #{{oid}}",
+  "no_worksheet": "Excel 文件中未找到工作表",
+  "no_error_record": "无错误记录",
+  "user_id_not_found": "用户 #{{id}} 不存在",
+  "invalid_user_id": "无效的用户 id",
+  "user_key_not_found": "用户 #{{key}} 不存在",
+  "excel_required": "请上传 Excel 文件",
+  "user_id_missing": "缺少用户 id",
+  "some_ws_not_found_or_archived": "部分工作空间不存在或已归档"
+}

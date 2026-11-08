@@ -1,0 +1,7 @@
+{
+  "group_name_required": "Permission group name must not be empty",
+  "group_not_found": "Permission group #{{id}} not found",
+  "item_invalid_structure": "Permission item #{{n}} has an invalid expression structure",
+  "item_missing_items": "Permission item #{{n}} is missing items",
+  "item_unknown_operator": "Permission item #{{n}} contains an unknown condition operator"
+}

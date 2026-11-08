@@ -1,0 +1,136 @@
+// Spec for the runtime embedding-config resolver: priority chain (saved
+// SystemVariable > env > code default) and strict saved-value parsing.
+import {
+  EMBEDDING_PARAMETER_KEYS,
+  parseEmbeddingParameter,
+  resolveEmbeddingConfig,
+  type EmbeddingConfig,
+} from './embedding-config';
+
+const ENV_KEYS = [
+  'EMBEDDING_ENABLED',
+  'EMBEDDING_TERMINOLOGY_SIMILARITY',
+  'EMBEDDING_TERMINOLOGY_TOP_COUNT',
+  'EMBEDDING_DATA_TRAINING_SIMILARITY',
+  'EMBEDDING_DATA_TRAINING_TOP_COUNT',
+  'TABLE_EMBEDDING_ENABLED',
+  'TABLE_EMBEDDING_COUNT',
+  'TABLE_EMBEDDING_ALPHA',
+  'TABLE_EMBEDDING_KEYWORD_ENABLED',
+  'DS_EMBEDDING_COUNT',
+  'EMBEDDING_THRESHOLD',
+  'EMBEDDING_TOP_K',
+];
+
+function makePrisma(rows: { name: string; value: unknown }[] = []) {
+  return {
+    systemVariable: {
+      findMany: jest.fn().mockResolvedValue(rows),
+    },
+  };
+}
+
+describe('parseEmbeddingParameter', () => {
+  it('accepts real booleans and "true"/"false" strings only', () => {
+    expect(parseEmbeddingParameter('enabled', true)).toBe(true);
+    expect(parseEmbeddingParameter('enabled', 'false')).toBe(false);
+    expect(() => parseEmbeddingParameter('enabled', 1)).toThrow();
+    expect(() => parseEmbeddingParameter('enabled', 'yes')).toThrow();
+    expect(() => parseEmbeddingParameter('enabled', null)).toThrow();
+  });
+
+  it('counts must be positive integer strings/numbers', () => {
+    expect(parseEmbeddingParameter('tableCount', 10)).toBe(10);
+    expect(parseEmbeddingParameter('tableCount', '3')).toBe(3);
+    expect(() => parseEmbeddingParameter('tableCount', 0)).toThrow();
+    expect(() => parseEmbeddingParameter('tableCount', -2)).toThrow();
+    expect(() => parseEmbeddingParameter('tableCount', '2.5')).toThrow();
+    expect(() => parseEmbeddingParameter('tableCount', true)).toThrow();
+  });
+
+  it('similarities/alpha must be finite numbers within [0,1]', () => {
+    expect(parseEmbeddingParameter('tableAlpha', 0.4)).toBe(0.4);
+    expect(parseEmbeddingParameter('tableAlpha', '0.7')).toBe(0.7);
+    expect(parseEmbeddingParameter('tableAlpha', 0)).toBe(0);
+    expect(parseEmbeddingParameter('tableAlpha', 1)).toBe(1);
+    expect(() => parseEmbeddingParameter('tableAlpha', 1.2)).toThrow();
+    expect(() => parseEmbeddingParameter('tableAlpha', -0.1)).toThrow();
+    expect(() => parseEmbeddingParameter('tableAlpha', 'abc')).toThrow();
+    expect(() => parseEmbeddingParameter('tableAlpha', true)).toThrow();
+  });
+});
+
+describe('resolveEmbeddingConfig', () => {
+  const ORIGINAL_ENV: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    for (const k of ENV_KEYS) {
+      ORIGINAL_ENV[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  beforeEach(() => {
+    // tests mutate env — reset to the beforeAll baseline between cases
+    for (const k of ENV_KEYS) delete process.env[k];
+  });
+  afterAll(() => {
+    for (const [k, v] of Object.entries(ORIGINAL_ENV)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('returns code defaults when nothing is saved or set in env', async () => {
+    const cfg = await resolveEmbeddingConfig(makePrisma() as never);
+    expect(cfg).toEqual({
+      enabled: true,
+      terminologySimilarity: 0.4,
+      terminologyTopCount: 5,
+      dataTrainingSimilarity: 0.4,
+      dataTrainingTopCount: 5,
+      tableEnabled: true,
+      tableCount: 10,
+      tableAlpha: 0.4,
+      keywordEnabled: true,
+      datasourceCount: 10,
+    } satisfies EmbeddingConfig);
+  });
+
+  it('saved parameter rows override env defaults', async () => {
+    process.env.TABLE_EMBEDDING_ALPHA = '0.8';
+    const cfg = await resolveEmbeddingConfig(
+      makePrisma([{ name: 'embedding.table_alpha', value: 0.2 }]) as never,
+    );
+    expect(cfg.tableAlpha).toBe(0.2);
+  });
+
+  it('env startup values override code defaults (upstream-named keys)', async () => {
+    process.env.TABLE_EMBEDDING_COUNT = '15';
+    process.env.EMBEDDING_TERMINOLOGY_SIMILARITY = '0.6';
+    const cfg = await resolveEmbeddingConfig(makePrisma() as never);
+    expect(cfg.tableCount).toBe(15);
+    expect(cfg.terminologySimilarity).toBe(0.6);
+  });
+
+  it('legacy MCB keys feed the terminology pair when upstream keys absent', async () => {
+    process.env.EMBEDDING_THRESHOLD = '0.55';
+    process.env.EMBEDDING_TOP_K = '7';
+    const cfg = await resolveEmbeddingConfig(makePrisma() as never);
+    expect(cfg.terminologySimilarity).toBe(0.55);
+    expect(cfg.terminologyTopCount).toBe(7);
+    expect(cfg.dataTrainingSimilarity).toBe(0.55);
+  });
+
+  it('an invalid saved row throws instead of silently degrading', async () => {
+    const rows = [{ name: 'embedding.table_alpha', value: 'banana' }];
+    await expect(
+      resolveEmbeddingConfig(makePrisma(rows) as never),
+    ).rejects.toThrow('embedding.table_alpha');
+  });
+
+  it('exposes exactly the ten persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(10);
+    expect(
+      EMBEDDING_PARAMETER_KEYS.every((k) => k.startsWith('embedding.')),
+    ).toBe(true);
+  });
+});

@@ -1,0 +1,4 @@
+{
+  "id_must_be_int": "Variable id must be an integer",
+  "name_exists": "Variable name already exists"
+}

@@ -1,0 +1,5 @@
+{
+  "image_type_unsupported": "仅支持 png/jpg/jpeg/svg/webp/gif 图片",
+  "image_too_large": "图片大小不能超过 5MB",
+  "data_must_be_array": "data 必须是数组"
+}

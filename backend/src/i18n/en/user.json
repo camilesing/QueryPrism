@@ -1,0 +1,17 @@
+{
+  "not_found": "User not found",
+  "must_belong_to_ws": "A user must belong to at least one workspace",
+  "ids_required": "ids must not be empty",
+  "wrong_original_password": "Original password is incorrect",
+  "password_same_as_initial": "The new password must differ from the initial password",
+  "ws_not_found": "Workspace #{{oid}} not found",
+  "not_in_ws": "Not a member of workspace #{{oid}}",
+  "no_worksheet": "No worksheet found in the Excel file",
+  "no_error_record": "No error record",
+  "user_id_not_found": "User #{{id}} not found",
+  "invalid_user_id": "Invalid user id",
+  "user_key_not_found": "User #{{key}} not found",
+  "excel_required": "Please upload an Excel file",
+  "user_id_missing": "Missing user id",
+  "some_ws_not_found_or_archived": "Some workspaces do not exist or have been archived"
+}

@@ -1,0 +1,7 @@
+{
+  "question_required": "问题不能为空",
+  "sample_not_found": "SQL 样例 #{{id}} 不存在",
+  "col_question": "问题表述",
+  "col_sample_sql": "示例SQL",
+  "ds_ref_invalid": "训练数据引用的数据源不存在或不属于当前工作空间"
+}

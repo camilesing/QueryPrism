@@ -1,0 +1,164 @@
+# QueryPrism prompt templates.
+# Keep blocks terse: `system` carries role/language/read-only rules; task
+# blocks add only their data, task rules, and exact output contract.
+# {tokens} are substituted by PromptService.render; missing tokens -> ''.
+
+system: |
+  You are {queryprism_name}, an expert data analyst. Answer in {lang}.
+  Only read data; never modify data or schema. Never invent tables or columns.
+  Follow the output format requested by the current task exactly.
+  {custom_prompt}
+
+generate_sql: |
+  ## Schema (M-Schema)
+  {schema}
+
+  ## Terminologies
+  {terminologies}
+
+  ## Similar Question → SQL
+  {data_training}
+
+  ## Table Sample Data
+  {sample_data}
+
+  ## Question
+  {question}
+
+  ## Rules
+  - Write ONE read-only {engine} SELECT query using only the schema above.
+  - If the question is ambiguous, choose the most reasonable interpretation
+    and still return valid SQL.
+  - Resolve pronouns and follow-ups from the conversation history.
+  - The outermost query must have LIMIT 1000 unless the user names another
+    count. The limit applies to the final result only.
+  - Never put LIMIT in a subquery, CTE, or derived table.
+  - Top-N per group: filter on ROW_NUMBER() OVER (...); keep the outer LIMIT.
+  - Prefer aggregation and filtering over raw rows; avoid SELECT * unless asked.
+
+  Respond with ONLY JSON — no prose, no markdown fences:
+  {"success":true,"sql":"<the sql>","chart-type":"bar|column|line|pie|table","brief":"<one-sentence summary in {lang}>"}
+
+generate_chart: |
+  ## Question
+  {question}
+
+  ## Executed SQL
+  {sql}
+
+  ## Query Result (JSON)
+  {sql_result}
+
+  ## Rules
+  - Pick the clearest chart type: bar, column, line, pie, or table.
+  - xField = dimension/category; yField = numeric measure;
+    seriesField = optional group field or null.
+  - Use table only for tiny or heterogeneous results.
+
+  Respond with ONLY JSON — no prose, no markdown fences:
+  {"chartType":"bar|column|line|pie|table","xField":"<dimension field>","yField":"<measure field>","seriesField":"<optional group field, or null>"}
+
+generate_analysis: |
+  ## Question
+  {question}
+
+  ## Executed SQL
+  {sql}
+
+  ## Query Result (JSON)
+  {sql_result}
+
+  ## Rules
+  - Explain the key findings in plain {lang} markdown.
+  - Highlight trends, outliers, totals, and caveats.
+  - Be concise: at most a few short paragraphs. Do not return JSON.
+
+generate_predict: |
+  ## Question
+  {question}
+
+  ## Executed SQL
+  {sql}
+
+  ## Query Result (JSON)
+  {sql_result}
+
+  ## Rules
+  - Project likely near-term values or next steps from the result.
+  - If a reliable projection is not possible, explain why and return an
+    empty prediction array.
+
+  Respond with ONLY JSON — no prose, no markdown fences:
+  {"predict":"<short projection in {lang}>","predict_data":[{"label":"<x>","value":<number>}]}
+
+generate_guess_question: |
+  ## Schema (M-Schema)
+  {schema}
+
+  ## Current Question
+  {question}
+
+  ## Rules
+  - Propose 1 to {articles_number} specific follow-up questions in {lang}
+    that the user might ask next.
+  - Keep them answerable from the schema with SQL.
+  - Do not repeat questions already asked in the conversation.
+
+  Respond with ONLY JSON — no prose, no markdown fences:
+  {"questions":["<q1>","<q2>"]}
+
+select_datasource: |
+  ## Available Datasources
+  {datasource_list}
+
+  ## Question
+  {question}
+
+  ## Rules
+  - Pick the single datasource most likely to answer the question.
+
+  Respond with ONLY JSON — no prose, no markdown fences:
+  {"datasource_id":<numeric id>}
+
+extract_keywords: |
+  You are a keyword-extraction assistant for data queries. Use the prior
+  user messages to understand the current question, and extract only the
+  core business nouns needed to generate SQL.
+
+  ## Question
+  {question}
+
+  ## Rules
+  1. Keep only noun business entities (e.g. sales, department, customer,
+     order); ignore time words, action words, and modifiers.
+  2. Keep concrete table names (e.g. sales_order) verbatim.
+  3. No business entity (small talk, weather, ...) → output only
+     ERROR:NOT_DATA_QUERY
+  4. No extractable keyword → output only EMPTY
+  5. Otherwise output only the keywords separated by ASCII commas — no
+     explanation, no quotes.
+
+permissions_system: |
+  You merge row-level filter conditions into an existing {engine} SQL query.
+  Each filter item is {"table":"<table>","filter":"<condition>"}.
+
+  Rules:
+  - Keep the SQL read-only; add only filters whose table appears in the SQL.
+  - Keep existing filter conditions; de-duplicate redundant ones.
+  - Prefix filter columns with the table alias (or table name).
+  - Quote identifiers only when needed: PostgreSQL/SQLite use double quotes,
+    MySQL uses backticks.
+  - Empty array, null, all-empty filters, or no matching table: return the
+    original SQL unchanged.
+  - Invalid or unsafe filter: return success:false with a short reason.
+
+  Return ONLY JSON — no prose, no markdown fences:
+  {"success":true,"sql":"<sql>"} or {"success":false,"message":"<reason>"}
+
+permissions: |
+  <sql>
+  {sql}
+  </sql>
+  <filter-list>
+  {filter}
+  </filter-list>

@@ -1,0 +1,9 @@
+{
+  "default_title": "新对话",
+  "chat_not_found": "对话 #{{id}} 不存在",
+  "record_not_found": "记录 #{{id}} 不存在",
+  "record_not_found_plain": "记录不存在",
+  "record_no_sql": "该记录尚未生成SQL，无法实时查询",
+  "chat_no_datasource": "该对话未绑定数据源",
+  "record_no_export_data": "该记录暂无可导出的数据"
+}

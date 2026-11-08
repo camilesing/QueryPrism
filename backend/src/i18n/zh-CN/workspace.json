@@ -1,0 +1,13 @@
+{
+  "not_found": "工作空间 #{{id}} 不存在",
+  "name_required": "工作空间名称不能为空",
+  "default_not_deletable": "默认工作空间不可删除",
+  "ws_archived": "工作空间已归档",
+  "not_archived": "工作空间未归档",
+  "archive_before_delete": "请先归档工作空间，再彻底删除",
+  "not_found_or_archived": "工作空间 #{{oid}} 不存在或已归档",
+  "admin_not_removable": "不能移除工作空间管理员",
+  "only_current_ws": "只能管理当前工作空间",
+  "role_invalid": "成员角色仅支持 0 或 1",
+  "name_exists": "工作空间名称已存在"
+}

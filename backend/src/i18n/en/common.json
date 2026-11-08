@@ -1,0 +1,13 @@
+{
+  "internal_error": "Internal server error",
+  "ws_unresolved": "Cannot determine the current workspace",
+  "user_unresolved": "Cannot determine the current user",
+  "file_required": "No file uploaded",
+  "file_not_found": "File not found",
+  "id_must_be_int": "id must be an integer",
+  "invalid_json_string": "data must be a valid JSON string",
+  "ds_named_not_found": "Datasource \"{{name}}\" not found",
+  "excel_required": "Please upload an Excel file",
+  "col_effective_ds": "Datasource",
+  "col_advanced_application": "Advanced application"
+}

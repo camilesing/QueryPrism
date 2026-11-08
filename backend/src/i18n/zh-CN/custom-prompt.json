@@ -1,0 +1,6 @@
+{
+  "name_required": "提示词名称不能为空",
+  "prompt_not_found": "提示词 #{{id}} 不存在",
+  "col_name": "提示词名称",
+  "col_content": "提示词内容"
+}

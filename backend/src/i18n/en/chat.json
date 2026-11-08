@@ -1,0 +1,9 @@
+{
+  "default_title": "New chat",
+  "chat_not_found": "Chat #{{id}} not found",
+  "record_not_found": "Record #{{id}} not found",
+  "record_not_found_plain": "Record not found",
+  "record_no_sql": "The record has no SQL yet; live query is unavailable",
+  "chat_no_datasource": "The chat is not bound to a datasource",
+  "record_no_export_data": "The record has no data to export"
+}

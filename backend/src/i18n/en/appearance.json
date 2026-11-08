@@ -1,0 +1,5 @@
+{
+  "image_type_unsupported": "Only png/jpg/jpeg/svg/webp/gif images are supported",
+  "image_too_large": "Image must not exceed 5MB",
+  "data_must_be_array": "data must be an array"
+}

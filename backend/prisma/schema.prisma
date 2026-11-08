@@ -1,0 +1,543 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 数据源 (workspace-scoped: oid = owning workspace; children inherit scope)
+model Datasource {
+  id                Int      @id @default(autoincrement())
+  oid               Int      @default(1) // 工作空间 id (无 FK, mirror Terminology.oid)
+  name              String
+  description       String?
+  type              String // mysql, postgresql, sqlite
+  // AES-encrypted JSON connection config: { host, port, user, pwd, db, schema, ... }
+  configuration     String?
+  status            String   @default("active") // active | error
+  // User-edited table relationships (FK graph) feeding M-Schema foreign keys.
+  tableRelation     Json?
+  // Cached embedding (text/vector) for datasource selection — populated in Phase 3.
+  embedding         Json?
+  // Recommended chart / problem config.
+  recommendedConfig Json?
+  // "selected/total" table-count snapshot (e.g. "3/10") updated at
+  // create/syncTable/chooseTables.
+  num               String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tables              Table[]
+  chats               Chat[]
+  recommendedProblems DsRecommendedProblem[]
+
+  @@index([oid])
+}
+
+// 表结构
+model Table {
+  id            Int        @id @default(autoincrement())
+  datasourceId  Int
+  datasource    Datasource @relation(fields: [datasourceId], references: [id], onDelete: Cascade)
+  tableName     String
+  tableComment  String?
+  customComment String?
+  checked       Boolean    @default(true)
+  // Cached embedding for table selection — populated in Phase 3.
+  embedding     Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  fields Field[]
+
+  // 2026-09 review P3-1: Prisma/PostgreSQL do NOT auto-index FK columns — every
+  // "tables of a datasource" lookup (datasource sync, row-permission scoping)
+  // table-scanned without this.
+  @@index([datasourceId])
+}
+
+// 字段结构
+model Field {
+  id            Int      @id @default(autoincrement())
+  tableId       Int
+  table         Table    @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  fieldName     String
+  fieldType     String?
+  fieldComment  String?
+  customComment String?
+  isPrimaryKey  Boolean  @default(false)
+  fieldIndex    Int? // column ordinal position
+  checked       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // 2026-09 review P3-1: FK index for the hot "fields of a table" path
+  // (schema sync, preview, row-permission field lookup).
+  @@index([tableId])
+}
+
+// 数据源推荐问题 (引导用户的示例问题)
+model DsRecommendedProblem {
+  id           Int        @id @default(autoincrement())
+  datasourceId Int
+  datasource   Datasource @relation(fields: [datasourceId], references: [id], onDelete: Cascade)
+  question     String
+  createdAt    DateTime   @default(now())
+}
+
+// 对话会话 (Phase 5: workspace-scoped, datasource optional for select_datasource flow)
+model Chat {
+  id           Int        @id @default(autoincrement())
+  oid          Int // 工作空间 id (无 FK, mirror Terminology.oid)
+  datasourceId Int? // null = select_datasource picks one on first question
+  // 2026-09 review P1-2: SetNull, NOT Cascade — datasourceId is a nullable
+  // "pick one later" field, so deleting a datasource must keep the chat
+  // (conversation survives, field resets to null). Cascade annihilated every
+  // chat of a removed datasource. (Table/DsRecommendedProblem stay Cascade —
+  // those relations are required, the rows are meaningless without the DS.)
+  datasource   Datasource? @relation(fields: [datasourceId], references: [id], onDelete: SetNull)
+  engineType   String? // MySQL | PostgreSQL | SQLite (cached at select_datasource / first question)
+  createBy     Int? // 创建者 uid; null = legacy rows visible workspace-wide
+  title        String     @default("新对话")
+  brief        String? // LLM 生成的本轮简述 (drives title hint)
+  origin       Int        @default(0) // 0 = page, 1 = mcp
+  recommendedQuestion Json? // LLM 推荐问题 (Phase 5b)
+  chatType     String? // 对话分类
+  dsType       String? // 数据源类型 (llm/db)
+  recommendedGenerate Boolean? // 是否自动生成推荐问题
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  records ChatRecord[]
+
+  @@index([oid])
+  @@index([oid, updatedAt])
+  @@index([oid, createBy])
+}
+
+// 对话记录 (一条用户问题 → SQL → 数据 → 图表 的完整流水线产物; replaces Message)
+model ChatRecord {
+  id                 Int      @id @default(autoincrement())
+  chatId             Int
+  chat               Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  oid                Int // 工作空间 id (scoping + audit; mirror Terminology.oid, 无 FK)
+  createBy           Int? // 创建者 uid; null = legacy
+  question           String // 用户原始问题
+  sqlAnswer          String? // LLM 对 SQL 的自然语言说明 (streamed content)
+  sql                String? // 最终执行的 SQL
+  sqlExecResult      Json? // 执行结果 QueryResult { columns, rows }
+  data               Json? // 处理后数据 (reserved for transforms; legacy maps old result here)
+  chartAnswer        String? // LLM 对图表的自然语言说明 (streamed content)
+  chart              Json? // 图表配置 (ChartGenResult.config)
+  chartType          String? // table | bar | column | line | pie | ...
+  brief              String? // 本轮简述
+  extractedKeywords  String? // 3fd6fa86 (072_chat_record): LLM 从问题提取的关键词（逗号分隔）
+  expandedKeywords   String? // 3fd6fa86: 术语同义词扩展后的关键词（供分析等环节复用）
+  analysis           String? // 分析文本 (Phase 5b)
+  predict            String? // 预测文本 (Phase 5b)
+  predictData        Json? // 预测数据 (Phase 5b)
+  recommendedQuestion Json? // 推荐问题 (Phase 5b)
+  analysisRecordId   Int? // 关联分析 record (Phase 5b)
+  predictRecordId    Int? // 关联预测 record (Phase 5b)
+  regenerateRecordId Int? // 由哪条 record 重新生成而来
+  finish             Boolean  @default(false) // 流水线是否结束 (正常结束 + error 均置 true)
+  error              String? // 错误信息 (流水线中途失败)
+  analysisThinking   String? // 分析思考过程 (区别于 analysis 正文)
+  predictContent     String? // 预测正文 (区别于 predict 摘要)
+  runTime            Int      @default(0) // 执行耗时 (秒)
+  firstChat          Boolean  @default(false) // 是否首轮对话
+  duration           Int? // 总耗时 (秒)
+  totalTokens        Int? // 总 token 数
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  logs ChatLog[]
+
+  @@index([chatId])
+  @@index([oid])
+  @@index([chatId, createdAt])
+  @@index([chatId, createBy])
+}
+
+// 对话日志 (每次 LLM 调用的 messages/reasoning/tokens/耗时; for ExecutionDetails viewer)
+model ChatLog {
+  id               Int       @id @default(autoincrement())
+  chatRecordId     Int
+  chatRecord       ChatRecord @relation(fields: [chatRecordId], references: [id], onDelete: Cascade)
+  messages         Json? // 发给 LLM 的 messages 文本快照
+  reasoningContent String? // 推理内容聚合 (DeepSeek/Qwen reasoning)
+  tokenUsage       Json? // { promptTokens, completionTokens, totalTokens }
+  operate          String? // 操作类型 — OperationEnum NAME (GENERATE_SQL/GENERATE_CHART/ANALYSIS/PREDICT_DATA/CHOOSE_DATASOURCE/GENERATE_RECOMMENDED_QUESTIONS/GENERATE_SQL_WITH_PERMISSIONS), 前端 t('chat.log.'+operate_key) 查 i18n
+  localOperation   Boolean   @default(false) // true=本地非-LLM 步骤 (FILTER_TERMS/CHOOSE_TABLE/EXECUTE_SQL — QueryPrism 未实装，恒 false)
+  error            Boolean   @default(false) // true=本步骤失败 (SQL-gen/safety/exec 失败路径置 true)
+  startedAt        DateTime  @default(now())
+  endedAt          DateTime?
+
+  @@index([chatRecordId])
+}
+
+// ============================== Phase 1: Auth + 系统地基 ==============================
+
+// 用户
+model User {
+  id              Int      @id @default(autoincrement())
+  account         String   @unique
+  password        String // bcrypt hash
+  email           String?
+  name            String? // 显示名 (Phase 10 §85; null → 前端 fallback account)
+  oid             Int // 默认工作空间 id
+  status          Int      @default(1) // 1=active | 0=disabled (Phase 10 §85, was String)
+  origin          Int      @default(0) // 0=local | 1=CAS..9=larksuite (Phase 10 §85, was String)
+  language        String   @default("en")
+  systemVariables Json? // 用户级系统变量覆盖 (Json)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  userWorkspaces UserWs[]
+  systemLogs     SystemLog[]
+}
+
+// 工作空间
+model Workspace {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?
+  // Soft-delete marker. Archived workspaces are hidden from non-admins and
+  // from the normal workspace list; system admins can restore them or delete
+  // permanently from the archive page.
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  users    UserWs[]
+  aiModels AiModelWorkspaceMapping[]
+
+  @@index([archivedAt])
+}
+
+// 用户-工作空间映射
+model UserWs {
+  id        Int       @id @default(autoincrement())
+  uid       Int
+  user      User      @relation(fields: [uid], references: [id], onDelete: Cascade)
+  oid       Int
+  workspace Workspace @relation(fields: [oid], references: [id], onDelete: Cascade)
+  weight    Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  @@unique([uid, oid])
+}
+
+// API Key (per-user programmatic access). `uid` scopes keys to their owner
+// (GET list filters where uid == currentUser.id); `status` is Boolean;
+// `secretKey` stays AES-256-GCM-encrypted at rest (§99) but is DECRYPTED to
+// plaintext on GET read (the frontend reveals it on toggle, copies raw —
+// Apikey.vue:178 `scope.row.showPwd ? scope.row.secret_key : pwd`). The
+// mapper converts `createdAt` to epoch-ms `create_time`.
+model ApiKey {
+  id        Int      @id @default(autoincrement())
+  accessKey String   @unique
+  secretKey String // AES-256-GCM at rest (§99); decrypted to plaintext on read
+  status    Boolean  @default(true)
+  uid       Int      @default(1) // owner user id; GET list filters by uid
+  createdAt DateTime @default(now()) // mapped to create_time (epoch ms) on read
+}
+
+// 系统操作日志
+model SystemLog {
+  id             Int                  @id @default(autoincrement())
+  module         String // 操作模块 (枚举 OperationModule)
+  type           String // 操作类型 (枚举 OperationType)
+  status         String               @default("success") // success | failed (§104)
+  operatorId     Int?
+  operator       String?
+  user           User?                @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+  detail         String? // operation_detail_info (备注描述)
+  resources      SystemLogsResource[]
+  // Phase 10c cycle 3 (§104): audit-read contract fields. All nullable so
+  // existing rows survive (no data-loss); the write side (SystemLogInterceptor
+  // + AuditService.record) populates them going forward.
+  oid            Int? // workspace id — oid_list filter + oid/oid_name response
+  ipAddress      String? // ip_address
+  userAgent      String? // user_agent
+  executionTime  Int? // execution_time (ms)
+  errorMessage   String? // error_message (shown in a drawer on failed rows)
+  requestMethod  String? // request_method
+  requestPath    String? // request_path
+  remark         String? // remark
+  createdAt      DateTime             @default(now())
+}
+
+// 日志资源 (操作影响的资源快照)
+model SystemLogsResource {
+  id        Int       @id @default(autoincrement())
+  logId     Int
+  log       SystemLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+  name      String?
+  originId  String?
+  originStr String?
+}
+
+// 系统变量 — holds three coexisting contracts:
+//   - sys_variable admin page (/sys_variable/* routes): type='system' (3
+//     built-in: Name/Account/Email, ids 1-3 non-deletable) + type='custom'
+//     (user-created); var_type='text'|'number'|'datetime'; value is ALWAYS an
+//     array (text=string[], number=[min,max], datetime=[start,end]).
+//   - parameter module (/system/parameter/* routes):
+//     type='parameter'; group is the pkey prefix (login.*, chat.*, platform.*);
+//     var_type='str'; value is a scalar string. Each row maps to the frontend's
+//     {pkey=name, pval=String(value)} shape.
+//   - appearance module (/system/appearance/ui): type='appearance'.
+// `createTime`/`createBy` are null for seeded system vars;
+// `enabled` dropped (nothing reads it).
+model SystemVariable {
+  id         Int       @id @default(autoincrement())
+  name       String    @unique
+  varType    String    // text|number|datetime (sys_variable); str|int|bool|json (legacy chat)
+  type       String    // system|custom (sys_variable admin); chat (legacy parameter)
+  value      Json      // array (sys_variable); scalar (legacy chat)
+  createTime DateTime? // create_time on read; null for seeded system vars
+  createBy   Int?      // creator uid; null for seeded system vars
+}
+
+// AI 模型
+model AiModel {
+  id           Int      @id @default(autoincrement())
+  supplier     String // openai | tongyi | azure | vllm | ollama | deepseek | ...
+  name         String   @unique
+  modelType    String // llm | embedding | rerank
+  baseModel    String?
+  defaultModel Boolean  @default(false)
+  apiKey       String? // AES 加密
+  apiDomain    String?
+  protocol     String   @default("openai") // openai | azure | ...
+  config       Json?
+  status       String   @default("active") // active | disabled
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspaces AiModelWorkspaceMapping[]
+}
+
+// AI 模型-工作空间映射
+model AiModelWorkspaceMapping {
+  id        Int       @id @default(autoincrement())
+  modelId   Int
+  model     AiModel   @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  oid       Int
+  workspace Workspace @relation(fields: [oid], references: [id], onDelete: Cascade)
+  weight    Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  @@unique([modelId, oid])
+}
+
+// ============================== Phase 3: RAG 知识库 ==============================
+
+// 术语表 (术语/同义词, 喂给 generate_sql prompt 的术语解释 + ILIKE/向量召回)
+// embedding Json 存向量数组 (source of truth, 可重建 vec0 索引); 实际 ANN 检索走 VectorService 的 vec0 虚拟表。
+model Terminology {
+  id                 Int      @id @default(autoincrement())
+  oid                Int // 工作空间 id
+  pid                Int? // 父术语 id (同义词分组)
+  word               String
+  description        String?
+  embedding          Json? // 向量数组 (number[]); 与 VectorService vec0 表保持同步
+  specificDs         Boolean  @default(false) // 是否限定特定数据源
+  datasourceIds      Json? // specificDs=true 时作用的数据源 id 数组
+  enabled            Boolean  @default(true)
+  advancedApplication String? // 高级应用说明
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([oid])
+  @@index([word])
+  // 2026-09 review P2-4: natural-key uniqueness — re-importing the same Excel
+  // row (or re-saving the same word) used to create duplicate rows; imports
+  // now upsert by (oid, word). Children (pid-set synonyms) are intentionally
+  // outside the key: the parent word is the dedupe identity.
+  @@unique([oid, word])
+}
+
+// SQL 样例训练数据 (NL→SQL few-shot, 喂给 generate_sql prompt + ILIKE/向量召回)
+model DataTraining {
+  id                  Int      @id @default(autoincrement())
+  oid                 Int // 工作空间 id
+  datasource          Int? // 关联数据源 id (null=全局样例)
+  question            String
+  description         String?
+  embedding           Json? // 向量数组 (number[]); 与 VectorService vec0 表保持同步
+  enabled             Boolean  @default(true)
+  advancedApplication String? // 关联高级应用 (Assistant.id) 的字符串化 id; String? + coerce on read (同 terminology, no migration data)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([oid])
+  @@index([datasource])
+  // 2026-09 review P3-1: composite matching the retrieval access pattern
+  // (workspace-scoped, optionally datasource-filtered training samples).
+  @@index([oid, datasource])
+}
+
+// ============================== Phase 6: Dashboard 构建器 ==============================
+
+// 仪表盘资源 (folder | panel). oid-scoped workspace tree; pid links parent folder
+// (no FK — service validates existence + name uniqueness; cascade-delete handled in
+// service to refuse non-empty folders). Canvas (style/component/view/mobile) stored
+// inline as Json; contentId/version reserved for future content-versioning table.
+model CoreDashboard {
+  id               Int      @id @default(autoincrement())
+  pid              Int? // 父文件夹 id (null=根); 无 FK, service 校验
+  oid              Int // 工作空间 id (scoping; mirror Terminology.oid, 无 FK)
+  name             String
+  level            Int      @default(0) // 树深度
+  nodeType         String   @default("panel") // folder | panel
+  type             String? // 仪表盘子类型 (预留)
+  canvasStyleData  Json? // 画布样式 (背景/网格等)
+  componentData    Json? // 组件实例数组 (sq-text/sq-view/...)
+  canvasViewInfo   Json? // 各组件位置/尺寸/样式元数据
+  mobileLayout     Json? // 移动端布局覆盖
+  status           String   @default("active") // active | disabled
+  version          Int      @default(1) // canvas 版本, saveCanvas 时自增
+  contentId        Int? // 预留 (未来内容版本表)
+  createBy         Int? // 创建者 uid (Phase 10d: list_resource/ownership filter)
+  updateBy         Int? // 最后更新者 uid (Phase 10d)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([oid])
+  @@index([oid, pid])
+  @@index([oid, createBy])
+}
+
+// ============================== Phase 8: 内嵌 Assistant ==============================
+
+// 工作区级助手 (type 0=basic 展示型 / 1=advanced 高级应用 / 4=embedded 全屏;
+// Phase 8 旧注释 0/2/4 + "1/3 动态 API 跳过" 已修正——10d cycle 2).
+// appId 是公开标识 (embedded 页面按 appId 拉取), appSecret AES 加密落库 (明文仅 create/rotate
+// 时返; type 0/1 不返明文). oid 无 FK, mirror CoreDashboard.oid 约定. domain 是动态 CORS 白名单源
+// (逗号/分号分隔的多 URL 字符串, 前端 split; §108). description 助手描述 (10d cycle 2 新增列).
+// picture 是 Phase 8 vestigial 列 (前端 logo 存 configuration.logo, 不读 picture 列; §108).
+model Assistant {
+  id                Int      @id @default(autoincrement())
+  oid               Int // 工作空间 id (scoping; mirror CoreDashboard.oid, 无 FK)
+  name              String
+  type              Int // 0=basic | 1=advanced | 4=embedded
+  description       String? // 助手描述 (10d cycle 2 新增; 前端 list/create/update 读写)
+  domain            String? // embedded 页面所在域 (动态 CORS 白名单源; 逗号/分号分隔多 URL)
+  configuration     Json? // 助手配置 (datasource 绑定 / dashboard 引用 / chart refs 等)
+  appId             String   @unique // 公开标识 (crypto.randomUUID)
+  appSecret         String // AES 加密的 embedded 凭证 (明文仅 create 时返一次)
+  enableCustomModel Boolean  @default(false)
+  customModel       Json? // 自定义模型覆盖 (advanced_application)
+  picture           String? // logo (URL 或 base64 data URL; 无文件上传)
+  ui                Json? // UI 配置 (theme/title 等, PATCH /ui)
+  status            String   @default("active") // active | disabled
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([oid])
+}
+
+// ============================== Phase 10d cycle 4: 自定义提示词 ==============================
+
+// 自定义提示词 (NL→SQL/分析/预测, per-type CRUD + Excel import/export).
+// Implemented from frontend contract (api/prompt.ts + views/system/prompt/index.vue).
+// type: GENERATE_SQL | ANALYSIS | PREDICT_DATA (path segment + column filter, 单表三分类型).
+// specificDs: true=限定 datasourceIds 数组, false=全部数据源. advancedApplication: stringified
+// Assistant.id (String? + coerce on read, same as Terminology/DataTraining §105/§106 pattern).
+// prompt 是 plaintext (无 AES).
+// 无 embedding (chat pipeline 用 find_custom_prompts 直接查询, 非 vec0 index — unlike
+// terminology/data-training). createTime 读取时序列化为 snake create_time.
+model CustomPrompt {
+  id                  Int      @id @default(autoincrement())
+  oid                 Int // 工作空间 id (scoping; mirror Terminology.oid, 无 FK)
+  type                String // GENERATE_SQL | ANALYSIS | PREDICT_DATA
+  name                String? // 提示词名称
+  prompt              String? // 提示词内容 (plaintext, no AES)
+  specificDs          Boolean  @default(false) // 是否限定特定数据源
+  datasourceIds       Json? // specificDs=true 时作用的数据源 id 数组 (number[])
+  advancedApplication String? // 关联高级应用 (Assistant.id) 字符串化 id; coerce on read (§105/§106)
+  createTime          DateTime? @default(now()) // create_time; snake on read
+  updatedAt           DateTime @updatedAt
+
+  @@index([oid])
+  @@index([type])
+  // 2026-09 review P2-4: natural-key uniqueness — re-importing the same Excel
+  // row used to create duplicates; imports now upsert by (oid, type, name).
+  // name is nullable: SQL unique treats NULLs as distinct, so legacy null-name
+  // rows stay unrestricted (they carry no dedupe identity).
+  @@unique([oid, type, name])
+}
+
+// Phase 10d cycle 5 — DsRules (rule group) + DsPermission (rule item).
+// Implemented purely from frontend contract
+// (api/permissions.ts + views/system/permission/index.vue, §100).
+//
+// DsRules = rule group: name + userList (Json number[] — User.id 集合, frontend
+// `users` 字段). permissions 关系通过 DsPermission.rulesId FK 反查 (不存冗余
+// permissionList 列 — frontend save 始终发 permission_list:[] 是 in-memory 别名,
+// 后端忽略; 读时通过关系反查 permissions 数组). oid 工作空间 scoping.
+//
+// DsPermission = rule item: type ('row'|'column') + dsId/dsName/tableId/tableName
+// (Datasource/Table 是 global 无 oid, QueryPrism convention; 权限组 oid scoping
+// 间接 scope 这些全局资源). expressionTree + permissions 存 String? (Text, JSON
+// string as-is — frontend save 发 JSON.stringify 后的 string; 读时 snake-mapper
+// JSON.parse 回 tree object + permission_list array). rulesId FK onDelete Cascade
+// (删权限组自动级联删 items — 但 service 显式 deleteMany 以便审计与统计).
+model DsRules {
+  id         Int      @id @default(autoincrement())
+  oid        Int // 工作空间 id (scoping; mirror CustomPrompt.oid, 无 FK)
+  name       String // 权限组名称
+  userList   Json? // Json number[] — User.id 集合 (frontend `users` 字段); §88 JsonNull
+  createTime DateTime? @default(now())
+  updatedAt  DateTime @updatedAt
+
+  permissions DsPermission[] // 反查权限组下所有 rule items (rulesId FK)
+
+  @@index([oid])
+}
+
+model DsPermission {
+  id             Int      @id @default(autoincrement())
+  rulesId        Int // 所属权限组 id (FK to DsRules.id)
+  rules          DsRules  @relation(fields: [rulesId], references: [id], onDelete: Cascade)
+  name           String? // rule 名称
+  type           String // 'row' | 'column' (DB 无 check constraint, app-level)
+  dsId           Int? // 关联 Datasource.id (global, 无 oid)
+  dsName         String? // 冗余 Datasource.name (frontend save 直接发, 不反查)
+  tableId        Int? // 关联 CoreTable.id (global, 无 oid)
+  tableName      String? // 冗余 CoreTable.name (frontend save 直接发, 不反查)
+  expressionTree String? // Text — JSON string (row: {logic,items} tree; column: "{}"); 读时 JSON.parse → tree
+  permissions    String? // Text — JSON string (column: [{field_id,field_name,field_comment,enable}]; row: "[]"); 读时 JSON.parse → permission_list
+  createTime     DateTime? @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([rulesId])
+}
+
+// ============================== MCP 集成 ==============================
+
+// 工作空间级 MCP 服务凭证。一个工作空间可创建多个具名集成（例如按 Agent
+// 分配：Claude / Cursor / 自研 Agent），每个集成有独立令牌，可单独停用、
+// 轮换、删除。oid 无 FK（mirror Assistant/Datasource 约定）。
+// accessKey 是公开查找键（令牌前缀），secretKey 是 AES-256-GCM 加密的
+// 秘密段；完整令牌 = `qp_<accessKey>.<secret>`，仅创建/轮换/按需 reveal
+// 时返回明文。createdBy 用作 MCP 调用审计身份。
+model McpIntegration {
+  id          Int       @id @default(autoincrement())
+  oid         Int // 工作空间 id (scoping; 无 FK)
+  name        String
+  description String?
+  accessKey   String    @unique // 公开查找键；令牌前缀
+  secretKey   String // AES-256-GCM at rest
+  createdBy   Int       @default(1) // 创建人 uid；MCP 调用的审计身份
+  status      String    @default("active") // active | disabled
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([oid])
+}

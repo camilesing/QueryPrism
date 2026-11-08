@@ -1,0 +1,8 @@
+{
+  "col_operation_type": "操作类型",
+  "col_operation_detail": "操作详情",
+  "col_operation_user": "操作用户",
+  "col_workspace": "工作空间",
+  "col_status": "状态",
+  "col_operation_time": "操作时间"
+}

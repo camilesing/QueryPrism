@@ -1,0 +1,5 @@
+{
+  "dashboard_not_found": "Dashboard #{{id}} not found",
+  "delete_children_first": "Delete the child nodes first",
+  "parent_not_found": "Parent node #{{id}} not found"
+}

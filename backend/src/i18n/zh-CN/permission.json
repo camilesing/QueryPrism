@@ -1,0 +1,7 @@
+{
+  "group_name_required": "权限组名称不能为空",
+  "group_not_found": "权限组 #{{id}} 不存在",
+  "item_invalid_structure": "权限项 #{{n}} 的表达式结构不合法",
+  "item_missing_items": "权限项 #{{n}} 的表达式缺少 items",
+  "item_unknown_operator": "权限项 #{{n}} 含未知条件运算符"
+}

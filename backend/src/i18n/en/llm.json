@@ -1,0 +1,6 @@
+{
+  "aes_key_missing": "AES_KEY is not configured: cannot decrypt the model apiKey. Set AES_KEY in backend/.env (must match the one used for encryption).",
+  "model_no_apikey": "No usable AI model configured (missing apiKey)",
+  "connection_ok": "Connection OK",
+  "model_empty_response": "The model returned an empty response"
+}

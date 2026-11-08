@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript build info
+*.tsbuildinfo
+tsconfig.build.tsbuildinfo
+
+# Lock files
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+
+# OMC state / sessions
+.omc/state/
+.omc/sessions/
+.omc/project-memory.json
+
+# ZCode agent state / sessions
+.zcode/
+
+# Coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# SQLite transient files (WAL mode sidecars; dev.db itself is tracked)
+*.db-shm
+*.db-wal
+
+# Assistant logo/float_icon uploads (§A — local file storage, runtime-created)
+backend/uploads/
+# UI 验收截图（本地产物）
+.hmi-shots/

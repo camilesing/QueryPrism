@@ -1,0 +1,6 @@
+{
+  "table_not_found": "Table {{name}} not found",
+  "integration_not_found": "MCP integration #{{id}} not found",
+  "token_invalid": "Invalid MCP token",
+  "ws_unavailable": "The MCP integration's workspace is unavailable"
+}

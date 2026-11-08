@@ -1,0 +1,6 @@
+{
+  "aes_key_missing": "AES_KEY 未配置：无法解密模型 apiKey。请在 backend/.env 设置 AES_KEY（须与加密时一致）。",
+  "model_no_apikey": "未配置可用的 AI 模型（缺少 apiKey）",
+  "connection_ok": "连通正常",
+  "model_empty_response": "模型返回空响应"
+}

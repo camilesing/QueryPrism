@@ -1,0 +1,22 @@
+{
+  "name": "QueryPrism",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/QueryPrism",
+  "forwardPorts": [3000, 5173, 5432],
+  "postCreateCommand": "bash -lc 'corepack enable && cd backend && pnpm install && pnpm prisma:generate && cd ../frontend && npm install'",
+  "postStartCommand": "bash -lc 'cd backend && pnpm prisma:deploy'",
+  "remoteEnv": {
+    "DATABASE_URL": "postgresql://queryprism:queryprism@db:5432/queryprism"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "Vue.volar",
+        "Prisma.prisma"
+      ]
+    }
+  }
+}

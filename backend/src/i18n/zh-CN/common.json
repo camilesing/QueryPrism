@@ -1,0 +1,13 @@
+{
+  "internal_error": "服务器内部错误",
+  "ws_unresolved": "无法确定当前工作空间",
+  "user_unresolved": "无法确定当前用户",
+  "file_required": "未上传文件",
+  "file_not_found": "文件不存在",
+  "id_must_be_int": "id 必须是整数",
+  "invalid_json_string": "data 必须是合法的 JSON 字符串",
+  "ds_named_not_found": "数据源「{{name}}」不存在",
+  "excel_required": "请上传 Excel 文件",
+  "col_effective_ds": "生效数据源",
+  "col_advanced_application": "高级应用"
+}

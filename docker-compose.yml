@@ -1,0 +1,40 @@
+# Local development stack.
+#
+#   docker compose up -d db     # PostgreSQL only (host-based development)
+#   Reopen in Container         # full devcontainer (app + db)
+#
+# The app service is just an idle Node container used as the devcontainer;
+# it is harmless if it starts alongside the database.
+name: queryprism
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: queryprism
+      POSTGRES_PASSWORD: queryprism
+      POSTGRES_DB: queryprism
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U queryprism -d queryprism"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    image: mcr.microsoft.com/devcontainers/typescript-node:26-bookworm
+    command: sleep infinity
+    volumes:
+      - .:/workspaces/QueryPrism:cached
+    environment:
+      DATABASE_URL: postgresql://queryprism:queryprism@db:5432/queryprism
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

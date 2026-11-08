@@ -1,0 +1,6 @@
+{
+  "table_not_found": "表 {{name}} 不存在",
+  "integration_not_found": "MCP 集成 #{{id}} 不存在",
+  "token_invalid": "MCP token 无效",
+  "ws_unavailable": "MCP 所属工作空间不可用"
+}

@@ -1,0 +1,4 @@
+{
+  "id_must_be_int": "变量 id 必须是整数",
+  "name_exists": "变量名已存在"
+}

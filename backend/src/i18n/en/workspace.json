@@ -1,0 +1,13 @@
+{
+  "not_found": "Workspace #{{id}} not found",
+  "name_required": "Workspace name must not be empty",
+  "default_not_deletable": "The default workspace cannot be deleted",
+  "ws_archived": "Workspace has been archived",
+  "not_archived": "Workspace is not archived",
+  "archive_before_delete": "Archive the workspace before deleting it permanently",
+  "not_found_or_archived": "Workspace #{{oid}} does not exist or has been archived",
+  "admin_not_removable": "The workspace administrator cannot be removed",
+  "only_current_ws": "Only the current workspace can be administered",
+  "role_invalid": "Member role must be 0 or 1",
+  "name_exists": "Workspace name already exists"
+}

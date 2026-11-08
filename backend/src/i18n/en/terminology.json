@@ -1,0 +1,12 @@
+{
+  "word_required": "Term name must not be empty",
+  "word_duplicates": "A term name duplicates one of its synonyms",
+  "word_exists": "Term \"{{word}}\" already exists",
+  "term_not_found": "Term #{{id}} not found",
+  "col_word": "Term",
+  "col_other_words": "Synonyms",
+  "col_description": "Description",
+  "col_datasource": "Datasource",
+  "col_all_data_sources": "All datasources",
+  "col_advanced_application": "Advanced application"
+}

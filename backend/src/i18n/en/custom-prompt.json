@@ -1,0 +1,6 @@
+{
+  "name_required": "Prompt name must not be empty",
+  "prompt_not_found": "Prompt #{{id}} not found",
+  "col_name": "Prompt name",
+  "col_content": "Prompt content"
+}

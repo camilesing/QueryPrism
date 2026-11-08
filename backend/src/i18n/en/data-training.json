@@ -1,0 +1,7 @@
+{
+  "question_required": "Question must not be empty",
+  "sample_not_found": "SQL sample #{{id}} not found",
+  "col_question": "Question",
+  "col_sample_sql": "Sample SQL",
+  "ds_ref_invalid": "The datasource referenced by training data does not exist or does not belong to the current workspace"
+}

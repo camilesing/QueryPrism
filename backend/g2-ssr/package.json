@@ -1,0 +1,22 @@
+{
+  "name": "queryprism-g2-ssr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chart→PNG microservice for QueryPrism MCP (AntV G2 5.x server-side render).",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@antv/g2-ssr": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

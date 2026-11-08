@@ -1,0 +1,9 @@
+{
+  "image_type_unsupported": "Unsupported file type; only jpg/jpeg/png are allowed",
+  "file_too_large": "File exceeds the size limit (max 10 MB)",
+  "file_id_not_found": "File {{id}} not found",
+  "assistant_not_found": "Assistant #{{id}} not found",
+  "flag_unsupported": "Unsupported file flag: {{flag}}",
+  "app_not_found_or_offline": "App {{appId}} not found or offline",
+  "aes_key_missing": "AES key is not configured"
+}

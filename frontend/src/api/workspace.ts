@@ -1,0 +1,32 @@
+import { request } from '@/utils/request'
+
+export const workspaceUserList = (params: any, pageNum: number, pageSize: number) =>
+  request.get(`/system/workspace/uws/pager/${pageNum}/${pageSize}`, { params })
+
+export const workspaceOptionUserList = (params: any, pageNum: number, pageSize: number) =>
+  request.get(`/system/workspace/uws/option/pager/${pageNum}/${pageSize}`, { params })
+
+export const workspaceUwsCreate = (data: any) => request.post('/system/workspace/uws', data)
+export const workspaceUwsUpdate = (data: any) => request.put('/system/workspace/uws', data)
+export const workspaceCreate = (data: any) => request.post('/system/workspace', data)
+export const workspaceUpdate = (data: any) => request.put('/system/workspace', data)
+export const workspaceUwsDelete = (data: any) => request.delete('/system/workspace/uws', { data })
+// Soft delete: the workspace moves to the admin-only archive, keeping all data.
+export const workspaceDelete = (id: any) => request.delete(`/system/workspace/${id}`)
+export const workspaceArchivedList = () => request.get('/system/workspace/archived')
+export const workspaceRestore = (id: any) => request.put(`/system/workspace/${id}/restore`)
+// Hard delete: only valid for an archived workspace.
+export const workspacePermanentDelete = (id: any) =>
+  request.delete(`/system/workspace/${id}/permanent`)
+export const workspaceList = () => request.get('/system/workspace')
+export const workspaceDetail = (id: any) => request.get(`/system/workspace/${id}`)
+export const uwsOption = (params: any) => request.get('system/workspace/uws/option', { params })
+
+export const workspaceModelMapping = (aiModelId: any) =>
+  request.get(`/system/aimodel/${aiModelId}/ws_mapping`)
+export const workspaceModelMappingUpdate = (aiModelId: any, data: any) =>
+  request.put(`/system/aimodel/${aiModelId}/ws_mapping`, data)
+export const workspaceModelMappingAdd = (aiModelId: any, data: any) =>
+  request.post(`/system/aimodel/${aiModelId}/ws_mapping`, data)
+export const workspaceModelMappingDelete = (aiModelId: any, data: any) =>
+  request.delete(`/system/aimodel/${aiModelId}/ws_mapping`, { data })

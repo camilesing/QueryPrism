@@ -1,0 +1,25 @@
+# pnpm 11: explicit allow-list for dependency postinstall scripts.
+allowBuilds:
+  '@nestjs/core': true
+  '@parcel/watcher': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  better-sqlite3: true
+  prisma: true
+  protobufjs: true
+  sharp: true
+  unrs-resolver: true
+# pnpm 9.5–10 key: nothing pins the pnpm major version (no packageManager
+# field, lockfile still v9), so keep BOTH keys in sync — on a pnpm ≤10
+# machine allowBuilds is silently ignored and better-sqlite3/sharp builds
+# would be skipped without this list.
+onlyBuiltDependencies:
+  - '@nestjs/core'
+  - '@parcel/watcher'
+  - '@prisma/client'
+  - '@prisma/engines'
+  - better-sqlite3
+  - prisma
+  - protobufjs
+  - sharp
+  - unrs-resolver
