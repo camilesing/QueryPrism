@@ -150,6 +150,8 @@ const headers = ref<any>({ 'X-QUERYPRISM-TOKEN': `Bearer ${token}` })
 const initForm = (item: any, editTable: boolean = false) => {
   isEditTable.value = false
   keywords.value = ''
+  checkList.value = []
+  tableList.value = []
   dsFormRef.value!.clearValidate()
   if (item) {
     dialogTitle.value = editTable ? t('ds.form.title.choose_tables') : t('ds.form.title.edit')
@@ -190,45 +192,7 @@ const initForm = (item: any, editTable: boolean = false) => {
       isEditTable.value = true
       isCreate.value = false
       // request tables and check tables
-
-      tableListLoadingV1.value = true
-      datasourceApi
-        .tableList(item.id)
-        .then((res: any) => {
-          checkList.value = res.map((ele: any) => {
-            return ele.table_name
-          })
-          if (item.type === 'excel') {
-            tableList.value = form.value.sheets
-            nextTick(() => {
-              handleCheckedTablesChange([...checkList.value])
-            })
-          } else {
-            tableListLoading.value = true
-            const requestObj = buildConf()
-            datasourceApi
-              .getTablesByConf(requestObj)
-              .then((table) => {
-                tableList.value = table
-                checkList.value = checkList.value.filter((ele: string) => {
-                  return table
-                    .map((ele: any) => {
-                      return ele.tableName
-                    })
-                    .includes(ele)
-                })
-                nextTick(() => {
-                  handleCheckedTablesChange([...checkList.value])
-                })
-              })
-              .finally(() => {
-                tableListLoading.value = false
-              })
-          }
-        })
-        .finally(() => {
-          tableListLoadingV1.value = false
-        })
+      void loadEditTableData(item.id, item.type)
     }
   } else {
     dialogTitle.value = t('ds.form.title.add')
@@ -261,8 +225,50 @@ const initForm = (item: any, editTable: boolean = false) => {
   dialogVisible.value = true
 }
 
+/** Load the persisted table selection plus the live table list of an existing
+ *  datasource. Used by both the standalone "choose tables" drawer and the
+ *  table step of the datasource edit flow. The live list is read through the
+ *  current (possibly unsaved) connection config so edits are reflected. */
+const loadEditTableData = (id: any, type: string) => {
+  tableListLoadingV1.value = true
+  tableListLoading.value = type !== 'excel'
+  return datasourceApi
+    .tableList(id)
+    .then((res: any) => {
+      checkList.value = res.map((ele: any) => ele.table_name)
+      if (type === 'excel') {
+        tableList.value = form.value.sheets || []
+        filterCheckedTables()
+        nextTick(() => {
+          handleCheckedTablesChange([...checkList.value])
+        })
+        return
+      }
+      return datasourceApi.getTablesByConf(buildConf()).then((table: any[]) => {
+        tableList.value = table
+        filterCheckedTables()
+        nextTick(() => {
+          handleCheckedTablesChange([...checkList.value])
+        })
+      })
+    })
+    .finally(() => {
+      tableListLoadingV1.value = false
+      tableListLoading.value = false
+    })
+}
+
+/** Drop persisted table names that no longer exist in the source. */
+const filterCheckedTables = () => {
+  const tableNameArr = tableList.value.map((ele: any) => ele.tableName)
+  checkList.value = checkList.value.filter((ele: string) => tableNameArr.includes(ele))
+}
+
 const save = async (formEl: FormInstance | undefined) => {
   if (!formEl) return
+  // Never save while the table list is still loading: an incomplete list
+  // would be treated as "no tables selected" and delete every synced table.
+  if (tableListLoading.value || tableListLoadingV1.value) return
   await formEl.validate(async (valid) => {
     if (valid) {
       const list = tableList.value
@@ -289,26 +295,35 @@ const save = async (formEl: FormInstance | undefined) => {
       saveLoading.value = true
 
       const requestObj = buildConf()
+      const done = () => {
+        close()
+        emit('refresh')
+      }
       if (form.value.id) {
-        if (!isEditTable.value) {
-          // only update datasource config info
+        if (isEditTable.value) {
+          // standalone choose-tables drawer: only save table and field
+          datasourceApi
+            .chooseTables(form.value.id, list)
+            .then(done)
+            .finally(() => {
+              saveLoading.value = false
+            })
+        } else if (props.activeStep === 2) {
+          // edit flow, table step: persist the connection config first (the
+          // backend checks the saved config before reconciling tables), then
+          // save the selection.
           datasourceApi
             .update(requestObj)
-            .then(() => {
-              close()
-              emit('refresh')
-            })
+            .then(() => datasourceApi.chooseTables(form.value.id, list))
+            .then(done)
             .finally(() => {
               saveLoading.value = false
             })
         } else {
-          // save table and field
+          // edit flow, config step: only update datasource config info
           datasourceApi
-            .chooseTables(form.value.id, list)
-            .then(() => {
-              close()
-              emit('refresh')
-            })
+            .update(requestObj)
+            .then(done)
             .finally(() => {
               saveLoading.value = false
             })
@@ -317,10 +332,7 @@ const save = async (formEl: FormInstance | undefined) => {
         requestObj.tables = list
         datasourceApi
           .add(requestObj)
-          .then(() => {
-            close()
-            emit('refresh')
-          })
+          .then(done)
           .finally(() => {
             saveLoading.value = false
           })
@@ -400,8 +412,11 @@ const next = debounce(async (formEl: FormInstance | undefined) => {
   await formEl.validate((valid) => {
     if (valid) {
       if (form.value.type === 'excel') {
-        // next, show tables
-        if (excelUploadSuccess.value) {
+        // next, show tables (an existing datasource already has its sheets)
+        if (excelUploadSuccess.value || !isCreate.value) {
+          if (!isCreate.value) {
+            void loadEditTableData(form.value.id, form.value.type)
+          }
           emit('changeActiveStep', props.activeStep + 1)
         }
       } else {
@@ -414,10 +429,14 @@ const next = debounce(async (formEl: FormInstance | undefined) => {
           .then((res: boolean) => {
             if (res) {
               emit('changeActiveStep', props.activeStep + 1)
-              // request tables
-              datasourceApi.getTablesByConf(requestObj).then((res: any) => {
-                tableList.value = res
-              })
+              if (isCreate.value) {
+                // request tables
+                datasourceApi.getTablesByConf(requestObj).then((res: any) => {
+                  tableList.value = res
+                })
+              } else {
+                void loadEditTableData(form.value.id, form.value.type)
+              }
             } else {
               ElMessage({
                 message: t('ds.form.connect.failed'),
@@ -878,10 +897,18 @@ defineExpose({
       <el-button v-show="form.type !== 'excel' && !isDataTable" secondary @click="check">
         {{ t('ds.check') }}
       </el-button>
-      <el-button v-show="activeStep !== 0 && isCreate" secondary @click="preview">
+      <el-button
+        v-show="(activeStep !== 0 && isCreate) || (activeStep === 2 && !isCreate && !isDataTable)"
+        secondary
+        @click="preview"
+      >
         {{ t('ds.previous') }}
       </el-button>
-      <el-button v-show="activeStep === 1 && isCreate" type="primary" @click="next(dsFormRef)">
+      <el-button
+        v-show="activeStep === 1 && (isCreate || !isDataTable)"
+        type="primary"
+        @click="next(dsFormRef)"
+      >
         {{ t('common.next') }}
       </el-button>
       <el-button v-show="activeStep === 2 || !isCreate" type="primary" @click="save(dsFormRef)">
