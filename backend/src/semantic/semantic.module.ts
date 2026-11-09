@@ -6,6 +6,7 @@ import { MetricController } from './metric.controller';
 import { StandardController } from './standard.controller';
 import { MetricService } from './metric.service';
 import { DataStandardService } from './standard.service';
+import { MetricImportService } from './metric-import.service';
 import { AuthModule } from '../auth/auth.module';
 import { DatasourceModule } from '../datasource/datasource.module';
 
@@ -22,12 +23,14 @@ import { DatasourceModule } from '../datasource/datasource.module';
     SemanticImportService,
     MetricService,
     DataStandardService,
+    MetricImportService,
   ],
   exports: [
     SemanticService,
     SemanticImportService,
     MetricService,
     DataStandardService,
+    MetricImportService,
   ],
 })
 export class SemanticModule {}

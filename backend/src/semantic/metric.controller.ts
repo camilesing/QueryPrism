@@ -10,6 +10,7 @@
 // Excel import/export + the ApiKey-guarded /meta ingestion land in the
 // ingestion commit (metric-import.service).
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -17,20 +18,30 @@ import {
   HttpCode,
   Param,
   ParseIntPipe,
+  Post,
   Put,
   Query,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SystemLog } from '../audit/system-log.decorator';
 import { OperationModule, OperationType } from '../audit/operation.enum';
 import { MetricReviewDto, MetricUpsertDto } from '../common/dtos';
 import { MetricService } from './metric.service';
+import { MetricImportService } from './metric-import.service';
 
 @Controller('system/metric')
 @UseGuards(JwtAuthGuard)
 export class MetricController {
-  constructor(private readonly metricService: MetricService) {}
+  constructor(
+    private readonly metricService: MetricService,
+    private readonly importService: MetricImportService,
+  ) {}
 
   /** Paginated metric list of one kind (visible layers only). */
   @Get('page/:kind/:current_page/:page_size')
@@ -132,5 +143,39 @@ export class MetricController {
       id,
       enabled === 'true' || enabled === '1',
     );
+  }
+
+  /** Export the actor-visible metric + standard rows to xlsx (six sheets). */
+  @Get('export')
+  @SystemLog({
+    module: OperationModule.METRIC,
+    type: OperationType.EXPORT,
+    detail: '导出指标与数据标准',
+  })
+  async export(@Res() res: Response): Promise<void> {
+    const buf = await this.importService.exportAll();
+    res.set({
+      'Content-Type': MetricImportService.XLSX_TYPE,
+      'Content-Disposition': 'attachment; filename="metrics.xlsx"',
+    });
+    res.send(buf);
+  }
+
+  /** Excel import (ws admin) — per-row upsert at WORKSPACE across all six
+   *  sheets; failures are reported in the response, one bad row never
+   *  aborts the batch. */
+  @Post('uploadExcel')
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor('file'))
+  @SystemLog({
+    module: OperationModule.METRIC,
+    type: OperationType.IMPORT,
+    detail: '导入指标与数据标准',
+  })
+  uploadExcel(@UploadedFile() file?: Express.Multer.File) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('file is required');
+    }
+    return this.importService.importExcel(file.buffer);
   }
 }

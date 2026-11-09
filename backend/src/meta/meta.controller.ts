@@ -22,11 +22,19 @@ import {
   SemanticImportService,
   type SemanticImportRow,
 } from '../semantic/semantic-import.service';
+import {
+  MetricImportService,
+  type MetricImportRow,
+  type StandardImportRow,
+} from '../semantic/metric-import.service';
 
 @Controller('meta')
 @UseGuards(ApiKeyGuard)
 export class MetaController {
-  constructor(private readonly importService: SemanticImportService) {}
+  constructor(
+    private readonly importService: SemanticImportService,
+    private readonly metricImportService: MetricImportService,
+  ) {}
 
   /** Batch semantic import: array of rows, per-row upsert at WORKSPACE.
    *  Returns {applied, failed:[{row, reason}]} — one bad row never aborts. */
@@ -45,5 +53,41 @@ export class MetaController {
       throw new BadRequestException('batch limit is 5000 rows');
     }
     return this.importService.importJson(rows);
+  }
+
+  /** Batch metric import (MetaDataImprove M4): per-row upsert at WORKSPACE. */
+  @Post('metric/import')
+  @HttpCode(200)
+  @SystemLog({
+    module: OperationModule.METRIC,
+    type: OperationType.IMPORT,
+    detail: 'API 导入指标',
+  })
+  importMetrics(@Body() rows: MetricImportRow[]) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new BadRequestException('body must be a non-empty row array');
+    }
+    if (rows.length > 5000) {
+      throw new BadRequestException('batch limit is 5000 rows');
+    }
+    return this.metricImportService.importJsonMetrics(rows);
+  }
+
+  /** Batch data-standard import (MetaDataImprove M4): units + naming. */
+  @Post('standard/import')
+  @HttpCode(200)
+  @SystemLog({
+    module: OperationModule.METRIC,
+    type: OperationType.IMPORT,
+    detail: 'API 导入数据标准',
+  })
+  importStandards(@Body() rows: StandardImportRow[]) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new BadRequestException('body must be a non-empty row array');
+    }
+    if (rows.length > 5000) {
+      throw new BadRequestException('batch limit is 5000 rows');
+    }
+    return this.metricImportService.importJsonStandards(rows);
   }
 }
