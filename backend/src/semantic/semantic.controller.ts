@@ -6,6 +6,7 @@
 // therefore deliberately NOT WsAdminGuard — members must reach their own
 // PERSONAL layer and the proposal/review queue.
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -13,20 +14,30 @@ import {
   HttpCode,
   Param,
   ParseIntPipe,
+  Post,
   Put,
   Query,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SystemLog } from '../audit/system-log.decorator';
 import { OperationModule, OperationType } from '../audit/operation.enum';
 import { SemanticReviewDto, SemanticUpsertDto } from '../common/dtos';
 import { SemanticService } from './semantic.service';
+import { SemanticImportService } from './semantic-import.service';
 
 @Controller('system/semantic')
 @UseGuards(JwtAuthGuard)
 export class SemanticController {
-  constructor(private readonly semanticService: SemanticService) {}
+  constructor(
+    private readonly semanticService: SemanticService,
+    private readonly importService: SemanticImportService,
+  ) {}
 
   /** Paginated entity list (visible layers only). */
   @Get('page/:entity_type/:current_page/:page_size')
@@ -137,5 +148,38 @@ export class SemanticController {
       id,
       enabled === 'true' || enabled === '1',
     );
+  }
+
+  /** Export the actor-visible rows to xlsx (two sheets, scope column). */
+  @Get('export')
+  @SystemLog({
+    module: OperationModule.SEMANTIC,
+    type: OperationType.EXPORT,
+    detail: '导出语义',
+  })
+  async export(@Res() res: Response): Promise<void> {
+    const buf = await this.importService.exportAll();
+    res.set({
+      'Content-Type': SemanticImportService.XLSX_TYPE,
+      'Content-Disposition': 'attachment; filename="semantics.xlsx"',
+    });
+    res.send(buf);
+  }
+
+  /** Excel import (ws admin) — per-row upsert at WORKSPACE; failures are
+   *  reported in the response, one bad row never aborts the batch. */
+  @Post('uploadExcel')
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor('file'))
+  @SystemLog({
+    module: OperationModule.SEMANTIC,
+    type: OperationType.IMPORT,
+    detail: '导入语义',
+  })
+  uploadExcel(@UploadedFile() file?: Express.Multer.File) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('file is required');
+    }
+    return this.importService.importExcel(file.buffer);
   }
 }

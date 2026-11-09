@@ -20,6 +20,7 @@ const EMBEDDING_NUMBER_KEYS = [
   'clarify.table_threshold',
   'clarify.max_select',
   'clarify.max_rounds',
+  'semantic.max_tables',
 ]
 
 const state = reactive({
@@ -45,6 +46,8 @@ const state = reactive({
     'clarify.table_threshold': 3,
     'clarify.max_select': 3,
     'clarify.max_rounds': 1,
+    'semantic.enabled': true,
+    'semantic.max_tables': 1,
     'login.initial_pwd_disabled': false,
     'login.initial_pwd_hidden': false,
   }),
@@ -64,7 +67,8 @@ const loadData = () => {
             item.pkey?.startsWith('chat') ||
             item.pkey?.startsWith('login') ||
             item.pkey?.startsWith('embedding') ||
-            item.pkey?.startsWith('clarify')
+            item.pkey?.startsWith('clarify') ||
+            item.pkey?.startsWith('semantic')
           ) {
             if (item.pkey === 'chat.queryprism_name') {
               if (item.pval && item.pval.trim().length > 0) {
@@ -512,6 +516,53 @@ onMounted(() => {
             <div class="value">
               <el-input-number
                 v-model.number="state.parameterForm['clarify.max_rounds']"
+                :min="1"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          {{ t('parameter.semantic_enabled') }}
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr">
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.semantic_enabled') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.semantic_enabled_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-switch v-model="state.parameterForm['semantic.enabled']" />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.semantic_max_tables') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.semantic_max_tables_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['semantic.max_tables']"
                 :min="1"
                 step="1"
                 controls-position="right"

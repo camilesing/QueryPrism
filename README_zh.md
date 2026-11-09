@@ -203,6 +203,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 - **数据存储**: 查询结果和图表配置以JSON格式存储
 - **向量检索**: PostgreSQL pgvector，支持术语/样例/表召回的混合检索
 - **反问收敛（澄清）**: 问题在多张候选表（默认阈值 `clarify.table_threshold`=3）间有歧义且未点名任何表时，管线先反问用户选表/补充说明/跳过，再生成 SQL（`POST /chat/record/:rid/clarify` 恢复同一记录；MCP `ask_question` 返回 `needs_clarification` 支持两段式交互）
+- **业务语义（M2）**: 表/字段业务含义三层 scope（个人 > 工作空间 > 全局，跨层修改走审批队列，每次保存留版本）——语义覆盖的问题仅把前 `semantic.max_tables`（默认 1）张表放入 SQL 提示词，LLM 可通过 `need_clarify` 请求更多表；录入渠道：管理页（`/set/semantic`）、Excel 导入导出、API Key 认证的 `POST /meta/semantic/import`
 
 ## 开发注意事项
 

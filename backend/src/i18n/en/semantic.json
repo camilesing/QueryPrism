@@ -8,5 +8,7 @@
   "edit_forbidden": "You may not edit this scope layer directly — propose a change instead",
   "request_not_pending": "The change request is not pending review",
   "request_pending_exists": "A pending change request already exists for this entry",
-  "review_forbidden": "You may not review changes targeting this scope layer"
+  "review_forbidden": "You may not review changes targeting this scope layer",
+  "import_forbidden": "Only workspace admins may import semantics",
+  "import_bad_file": "The uploaded file is not a valid xlsx workbook"
 }

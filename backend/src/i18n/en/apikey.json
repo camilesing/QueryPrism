@@ -1,3 +1,5 @@
 {
-  "not_found": "API Key #{{id}} not found"
+  "not_found": "API Key #{{id}} not found",
+  "missing_headers": "X-QUERYPRISM-APIKEY and X-QUERYPRISM-APISECRET headers are required",
+  "invalid": "Invalid API key or secret"
 }

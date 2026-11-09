@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SemanticController } from './semantic.controller';
 import { SemanticService } from './semantic.service';
+import { SemanticImportService } from './semantic-import.service';
 import { AuthModule } from '../auth/auth.module';
 
 // AuthModule provides the JwtService behind the controller's JwtAuthGuard.
@@ -8,7 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 @Module({
   imports: [AuthModule],
   controllers: [SemanticController],
-  providers: [SemanticService],
-  exports: [SemanticService],
+  providers: [SemanticService, SemanticImportService],
+  exports: [SemanticService, SemanticImportService],
 })
 export class SemanticModule {}

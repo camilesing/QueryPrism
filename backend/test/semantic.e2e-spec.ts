@@ -191,9 +191,9 @@ describe('Semantic admin (e2e)', () => {
         meaning: '我个人的订单表理解',
       });
     expect(res.status).toBe(200);
-    expect(
-      (res.body as ApiEnvelope<{ applied: boolean }>).data.applied,
-    ).toBe(true);
+    expect((res.body as ApiEnvelope<{ applied: boolean }>).data.applied).toBe(
+      true,
+    );
 
     const memberPage = await request(app.getHttpServer())
       .get('/api/v1/system/semantic/page/table/1/50')

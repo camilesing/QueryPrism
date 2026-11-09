@@ -23,6 +23,7 @@ import { DataTrainingModule } from './data-training/data-training.module';
 import { LlmModule } from './llm/llm.module';
 import { McpModule } from './mcp/mcp.module';
 import { SemanticModule } from './semantic/semantic.module';
+import { MetaModule } from './meta/meta.module';
 import { AssistantModule } from './assistant/assistant.module';
 import { EmbeddedModule } from './embedded/embedded.module';
 import { CustomPromptModule } from './custom-prompt/custom-prompt.module';
@@ -84,6 +85,8 @@ import configuration from './common/config/configuration';
     McpModule,
     // MetaDataImprove M2: table/field semantics (3-layer scope + approval)
     SemanticModule,
+    // MetaDataImprove M2: authenticated external metadata ingestion API
+    MetaModule,
     // Phase 8 — embedded Assistant (type 0/2/4; CRUD + public appId lookup +
     // dynamic CORS source). 1/3 dynamic API skipped (xpack-ish).
     AssistantModule,

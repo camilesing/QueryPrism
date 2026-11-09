@@ -17,6 +17,7 @@ import EmbeddedCommon from '@/views/embedded/common.vue'
 import Member from '@/views/system/member/index.vue'
 import Professional from '@/views/system/professional/index.vue'
 import Training from '@/views/system/training/index.vue'
+import Semantic from '@/views/system/semantic/index.vue'
 import Prompt from '@/views/system/prompt/index.vue'
 import Audit from '@/views/system/audit/index.vue'
 import Appearance from '@/views/system/appearance/index.vue'
@@ -130,6 +131,12 @@ export const routes = [
         name: 'prompt',
         component: Prompt,
         meta: { title: 'prompt.customize_prompt_words' },
+      },
+      {
+        path: '/set/semantic',
+        name: 'semantic',
+        component: Semantic,
+        meta: { title: 'semantic.menu_title' },
       },
     ],
   },
