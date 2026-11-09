@@ -9,11 +9,19 @@
 //   3. Table whitelist: every referenced real table must be one of the
 //      datasource's checked tables (case-insensitive; CTE names are excluded).
 //
+// Parsing uses the datasource's own SQL dialect: node-sql-parser's default
+// grammar is not PostgreSQL and rejects valid generated SQL such as
+// `ORDER BY x DESC NULLS LAST` or `::` casts, which would otherwise fail the
+// whole chat turn before execution. Statements the dialect parser does not
+// model (EXPLAIN / DESCRIBE) fall back to the default grammar.
+//
 // Known limitation: node-sql-parser is weaker than sqlglot on PG/CTE edge cases
 // (see .zcode/notes/implementation-decisions.md risks) — the whitelist + the
 // connector's read-only prefix cover the gap in practice.
 import { Injectable } from '@nestjs/common';
 import { Parser } from 'node-sql-parser';
+import type { TableColumnAst } from 'node-sql-parser';
+import { normalizeDatasourceType } from '../datasource/datasource-type';
 
 /** Leading keywords that may begin a read-only statement. */
 const READONLY_PREFIXES = new Set([
@@ -54,19 +62,27 @@ type CteAst = { name?: { value?: string }; with?: CteAst[] } & Record<
   unknown
 >;
 
+/** node-sql-parser dialect per normalized datasource type. Excel sheets are
+ *  imported into the app PostgreSQL DB, so their generated SQL is PG too. */
+const PARSER_DIALECTS: Record<string, string> = {
+  mysql: 'MySQL',
+  postgresql: 'Postgresql',
+  sqlite: 'Sqlite',
+  excel: 'Postgresql',
+};
+
 @Injectable()
 export class SqlSafetyService {
   private readonly parser = new Parser();
 
   /** Extract every referenced (non-CTE) table name from the SQL. Throws when
    *  the SQL can't be parsed — callers wrap in validate() for a soft result. */
-  extractTableNames(sql: string): string[] {
+  extractTableNames(sql: string, datasourceType?: string | null): string[] {
     const clean = this.stripFences(sql).trim();
-    const ast = this.parser.astify(clean);
+    const { ast, tableList } = this.parseSql(clean, datasourceType);
     const cteNames = this.collectCteNames(ast);
-    const list = this.parser.tableList(clean);
     const tables = new Set<string>();
-    for (const entry of list) {
+    for (const entry of tableList) {
       const table = entry.split('::')[2];
       if (table && !cteNames.has(table)) tables.add(table);
     }
@@ -75,7 +91,11 @@ export class SqlSafetyService {
 
   /** Read-only + statement-type + table-whitelist guard. Never throws — a
    *  parse failure or any DML/DDL anywhere yields { ok: false }. */
-  validate(sql: string, allowedTables: string[]): SqlSafetyResult {
+  validate(
+    sql: string,
+    allowedTables: string[],
+    datasourceType?: string | null,
+  ): SqlSafetyResult {
     const clean = this.stripFences(sql).trim();
     const prefixMatch = clean.match(/^\s*(\w+)/);
     const prefix = (prefixMatch?.[1] ?? '').toUpperCase();
@@ -87,11 +107,9 @@ export class SqlSafetyService {
       };
     }
 
-    let ast: unknown;
-    let list: string[];
+    let parsed: TableColumnAst;
     try {
-      ast = this.parser.astify(clean);
-      list = this.parser.tableList(clean);
+      parsed = this.parseSql(clean, datasourceType);
     } catch (e) {
       return {
         ok: false,
@@ -100,10 +118,10 @@ export class SqlSafetyService {
       };
     }
 
-    const cteNames = this.collectCteNames(ast);
+    const cteNames = this.collectCteNames(parsed.ast);
     const allowed = new Set(allowedTables.map((t) => t.toLowerCase()));
     const tables: string[] = [];
-    for (const entry of list) {
+    for (const entry of parsed.tableList) {
       const parts = entry.split('::');
       const type = parts[0];
       const table = parts[2];
@@ -129,6 +147,28 @@ export class SqlSafetyService {
       .replace(/^\s*```[a-zA-Z]*\s*\n?/m, '')
       .replace(/\n?```\s*$/m, '')
       .trim();
+  }
+
+  /** Parse under the datasource's dialect, falling back to the default
+   *  grammar when the dialect parser doesn't model the statement (e.g.
+   *  EXPLAIN / DESCRIBE). One parse yields both the AST and table list. */
+  private parseSql(
+    sql: string,
+    datasourceType?: string | null,
+  ): TableColumnAst {
+    const dialect = PARSER_DIALECTS[normalizeDatasourceType(datasourceType)];
+    if (!dialect) return this.parser.parse(sql);
+    try {
+      return this.parser.parse(sql, { database: dialect });
+    } catch (dialectError) {
+      try {
+        return this.parser.parse(sql);
+      } catch {
+        // Report the dialect parser's error — it is the relevant one for the
+        // datasource the SQL was generated for.
+        throw dialectError;
+      }
+    }
   }
 
   /** Collect CTE names (WITH x AS (...)) so they can be excluded from the

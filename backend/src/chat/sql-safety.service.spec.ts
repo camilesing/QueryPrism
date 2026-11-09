@@ -128,4 +128,42 @@ describe('SqlSafetyService', () => {
       expect(r.tables).toEqual(['users']);
     });
   });
+
+  describe('dialect-aware parsing', () => {
+    const allowed = ['users', 'orders'];
+
+    it('accepts PostgreSQL NULLS LAST for a pg datasource', () => {
+      const r = svc.validate(
+        'SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC NULLS LAST) AS rn ' +
+          'FROM users LIMIT 10',
+        allowed,
+        'pg',
+      );
+      expect(r.ok).toBe(true);
+      expect(r.tables).toEqual(['users']);
+    });
+
+    it('extracts tables from PostgreSQL cast syntax', () => {
+      expect(
+        svc.extractTableNames(
+          'SELECT count(*) FROM orders WHERE created_at::date = now()::date',
+          'postgresql',
+        ),
+      ).toEqual(['orders']);
+    });
+
+    it('treats Excel datasources as PostgreSQL', () => {
+      const r = svc.validate(
+        'SELECT * FROM users ORDER BY id DESC NULLS LAST',
+        allowed,
+        'excel',
+      );
+      expect(r.ok).toBe(true);
+    });
+
+    it('falls back to the default grammar for EXPLAIN', () => {
+      const r = svc.validate('EXPLAIN SELECT * FROM users', allowed, 'pg');
+      expect(r.ok).toBe(true);
+    });
+  });
 });

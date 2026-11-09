@@ -835,7 +835,7 @@ export class ChatService {
     const allowedTables = ds.tables
       .filter((t) => t.checked)
       .map((t) => t.tableName);
-    const safety = this.sqlSafety.validate(sql, allowedTables);
+    const safety = this.sqlSafety.validate(sql, allowedTables, ds.type);
     if (!safety.ok) {
       await this.triggerLogError(sqlLogId, sqlOperate);
       yield* this.fail(record.id, safety.reason ?? msgs.sqlSafetyFailed);
@@ -857,7 +857,7 @@ export class ChatService {
       chatOrigin !== 1 &&
       this.rowPermissionService.isNormalUser(currentUser)
     ) {
-      const sqlTables = this.sqlSafety.extractTableNames(sql);
+      const sqlTables = this.sqlSafety.extractTableNames(sql, ds.type);
       const filters = await this.rowPermissionService.getRowFilters(
         currentUser,
         ds,
@@ -906,6 +906,7 @@ export class ChatService {
           const reSafety = this.sqlSafety.validate(
             filterResult.sql,
             allowedTables,
+            ds.type,
           );
           if (!reSafety.ok) {
             await this.triggerLogError(
