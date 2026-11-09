@@ -1,9 +1,11 @@
 // Table-relation controller. Aligned to the frontend's
 // `frontend/src/api/datasource.ts` (relationGet/relationSave). The persisted
 // shape is the raw X6 `graph.toJSON().cells` array (NOT structured FK edges);
-// stored verbatim as the Datasource.tableRelation Json column. The
-// get_table_schema step later interprets `shape=='edge'` cells' source.cell
-// (table id) / source.port (field id) / target.* to emit FK lines.
+// stored verbatim as the Datasource.tableRelation Json column so the editor
+// can re-render positions on load. The read side normalizes it:
+// `normalizeTableRelation` (m-schema.builder.ts, M3.1) resolves `shape=='edge'`
+// cells' source.cell (Table row id) / source.port (Field row id) into
+// {fromTable,fromField,toTable,toField} FK edges for the SQL prompt.
 import {
   Body,
   Controller,

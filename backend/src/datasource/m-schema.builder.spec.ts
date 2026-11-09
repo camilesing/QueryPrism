@@ -1,4 +1,8 @@
-import { buildMSchema, normalizeTableRelation } from './m-schema.builder';
+import {
+  buildMSchema,
+  normalizeTableRelation,
+  relationIdNamesOf,
+} from './m-schema.builder';
 
 describe('normalizeTableRelation', () => {
   it('passes through a plain array of edges', () => {
@@ -30,6 +34,125 @@ describe('normalizeTableRelation', () => {
       'garbage',
       null,
     ]);
+    expect(edges).toHaveLength(1);
+  });
+});
+
+// ─── X6 cells normalization (MetaDataImprove M3.1) ─────────────────────────
+// The shape TableRelationship.vue actually saves: graph.toJSON().cells with
+// er-rect nodes (id = Table row id, label = table name, ports keyed by Field
+// row ids) and shape=='edge' cells referencing them by cell/port id.
+
+const x6Cells = [
+  {
+    id: 11, // Table row id — numeric in the serialized JSON
+    shape: 'er-rect',
+    label: 'orders',
+    attrs: { label: { text: 'orders' } },
+    ports: {
+      items: [
+        {
+          id: 111,
+          group: 'list',
+          attrs: { portNameLabel: { text: 'user_id' } },
+        },
+        {
+          id: 112,
+          group: 'list',
+          attrs: { portNameLabel: { text: 'amount' } },
+        },
+      ],
+    },
+  },
+  {
+    id: 12,
+    shape: 'er-rect',
+    label: 'users',
+    attrs: { label: { text: 'users' } },
+    ports: {
+      items: [
+        { id: 121, group: 'list', attrs: { portNameLabel: { text: 'id' } } },
+      ],
+    },
+  },
+  {
+    id: 'edge-1',
+    shape: 'edge',
+    source: { cell: 11, port: 111 },
+    target: { cell: 12, port: 121 },
+  },
+];
+
+describe('normalizeTableRelation — raw X6 cells (M3.1)', () => {
+  it('resolves edge cells through node labels and port labels', () => {
+    const edges = normalizeTableRelation(x6Cells);
+    expect(edges).toEqual([
+      {
+        fromTable: 'orders',
+        fromField: 'user_id',
+        toTable: 'users',
+        toField: 'id',
+      },
+    ]);
+  });
+
+  it('prefers synced Table/Field row names over stale canvas labels', () => {
+    const names = relationIdNamesOf([
+      {
+        id: 11,
+        tableName: 't_order', // renamed after the graph was saved
+        fields: [
+          { id: 111, fieldName: 'buyer_id' },
+          { id: 112, fieldName: 'amount' },
+        ],
+      },
+      { id: 12, tableName: 't_user', fields: [{ id: 121, fieldName: 'uid' }] },
+    ]);
+    const edges = normalizeTableRelation(x6Cells, names);
+    expect(edges).toEqual([
+      {
+        fromTable: 't_order',
+        fromField: 'buyer_id',
+        toTable: 't_user',
+        toField: 'uid',
+      },
+    ]);
+  });
+
+  it('drops edges whose endpoint node/port cannot be resolved', () => {
+    const cells = [
+      ...x6Cells,
+      // references a node that was never on the canvas
+      {
+        id: 'edge-2',
+        shape: 'edge',
+        source: { cell: 11, port: 111 },
+        target: { cell: 99, port: 999 },
+      },
+      // self-edge (the editor blocks these; defensive)
+      {
+        id: 'edge-3',
+        shape: 'edge',
+        source: { cell: 11, port: 111 },
+        target: { cell: 11, port: 112 },
+      },
+    ];
+    const edges = normalizeTableRelation(cells);
+    expect(edges).toHaveLength(1);
+  });
+
+  it('collapses duplicate edges and ignores node cells without ports', () => {
+    const cells = [
+      ...x6Cells,
+      {
+        id: 'edge-dup',
+        shape: 'edge',
+        source: { cell: 11, port: 111 },
+        target: { cell: 12, port: 121 },
+      },
+      { id: 13, shape: 'er-rect', label: 'lonely' },
+    ];
+    const edges = normalizeTableRelation(cells);
     expect(edges).toHaveLength(1);
   });
 });
@@ -146,21 +269,55 @@ describe('buildMSchema', () => {
     expect(out).not.toContain('# Table: users');
   });
 
-  it('renders the foreign-keys section only when edges exist', () => {
-    const withFk = buildMSchema({
-      datasourceName: 'shop',
-      tables: [baseTable],
-      tableRelation: [
+  it('renders FK lines only between stuffed tables with checked fields (M3.2)', () => {
+    const ordersTable = {
+      tableName: 'orders',
+      tableComment: null,
+      customComment: null,
+      checked: true,
+      fields: [
         {
-          fromTable: 'orders',
-          fromField: 'user_id',
-          toTable: 'users',
-          toField: 'id',
+          fieldName: 'user_id',
+          fieldType: 'INTEGER',
+          fieldComment: null,
+          customComment: null,
+          isPrimaryKey: false,
+          fieldIndex: 0,
+          checked: true,
         },
       ],
+    };
+    const edges = [
+      {
+        fromTable: 'orders',
+        fromField: 'user_id',
+        toTable: 'users',
+        toField: 'id',
+      },
+      // endpoint table not stuffed — dropped (hallucinated-join bait)
+      {
+        fromTable: 'orders',
+        fromField: 'user_id',
+        toTable: 'absent',
+        toField: 'id',
+      },
+      // endpoint field hidden via checked:false (users.secret) — dropped
+      {
+        fromTable: 'users',
+        fromField: 'secret',
+        toTable: 'orders',
+        toField: 'user_id',
+      },
+    ];
+    const withFk = buildMSchema({
+      datasourceName: 'shop',
+      tables: [baseTable, ordersTable],
+      tableRelation: edges,
     });
     expect(withFk).toContain('【Foreign keys】');
-    expect(withFk).toContain('orders(user_id) -> users(id)');
+    expect(withFk.match(/orders\(user_id\) -> users\(id\)/g)).toHaveLength(1);
+    expect(withFk).not.toContain('absent');
+    expect(withFk).not.toContain('secret');
 
     const noFk = buildMSchema({
       datasourceName: 'shop',

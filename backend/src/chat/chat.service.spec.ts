@@ -816,6 +816,178 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     );
   });
 
+  // MetaDataImprove M3: the relation editor's X6 cells resolve into FK edges
+  // (M3.1) and a ≤2-hop bridge table joins the stuffed schema (M3.2) so the
+  // LLM can write users←orders→products joins without hallucinating.
+  it('stuffs the ≤2-hop bridge table connecting two recalled tables', async () => {
+    const m = makeService();
+    happyMocks(m);
+    const now = new Date();
+    // users(7) / products(8) / orders(9); orders is the only connector.
+    m.datasourceService.findOne.mockResolvedValue({
+      id: 1,
+      name: 'main',
+      type: 'sqlite',
+      // Raw graph.toJSON().cells as TableRelationship.vue saves them.
+      tableRelation: [
+        {
+          id: 9,
+          shape: 'er-rect',
+          attrs: { label: { text: 'orders' } },
+          ports: {
+            items: [
+              { id: 91, attrs: { portNameLabel: { text: 'user_id' } } },
+              { id: 92, attrs: { portNameLabel: { text: 'product_id' } } },
+            ],
+          },
+        },
+        {
+          id: 7,
+          shape: 'er-rect',
+          attrs: { label: { text: 'users' } },
+          ports: {
+            items: [{ id: 71, attrs: { portNameLabel: { text: 'id' } } }],
+          },
+        },
+        {
+          id: 8,
+          shape: 'er-rect',
+          attrs: { label: { text: 'products' } },
+          ports: {
+            items: [{ id: 81, attrs: { portNameLabel: { text: 'id' } } }],
+          },
+        },
+        {
+          id: 'e1',
+          shape: 'edge',
+          source: { cell: 9, port: 91 },
+          target: { cell: 7, port: 71 },
+        },
+        {
+          id: 'e2',
+          shape: 'edge',
+          source: { cell: 9, port: 92 },
+          target: { cell: 8, port: 81 },
+        },
+      ],
+      tables: [
+        {
+          id: 7,
+          tableName: 'users',
+          checked: true,
+          fields: [{ id: 71, fieldName: 'id', checked: true }],
+        },
+        {
+          id: 8,
+          tableName: 'products',
+          checked: true,
+          fields: [{ id: 81, fieldName: 'id', checked: true }],
+        },
+        {
+          id: 9,
+          tableName: 'orders',
+          checked: true,
+          fields: [
+            { id: 91, fieldName: 'user_id', checked: true },
+            { id: 92, fieldName: 'product_id', checked: true },
+          ],
+        },
+      ],
+      createdAt: now,
+    });
+    // Recall surfaced only the two end tables.
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 7, tableName: 'users', checked: true },
+      { id: 8, tableName: 'products', checked: true },
+    ]);
+
+    await run(1, () => collect(m.service.runPipeline(1, '查询用户和商品')));
+
+    // Bridge id 9 appended after the recalled pair.
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
+      expect.objectContaining({ tableIds: [7, 8, 9] }),
+    );
+  });
+
+  it('clarify options include the bridge connecting two pool candidates', async () => {
+    const m = makeService();
+    happyMocks(m);
+    const now = new Date();
+    m.datasourceService.findOne.mockResolvedValue({
+      id: 1,
+      name: 'main',
+      type: 'sqlite',
+      tableRelation: [
+        {
+          fromTable: 'orders',
+          fromField: 'user_id',
+          toTable: 'users',
+          toField: 'id',
+        },
+        {
+          fromTable: 'orders',
+          fromField: 'product_id',
+          toTable: 'products',
+          toField: 'id',
+        },
+      ],
+      tables: [
+        {
+          id: 1,
+          tableName: 'users',
+          customComment: null,
+          tableComment: null,
+          checked: true,
+          fields: [],
+        },
+        {
+          id: 2,
+          tableName: 'products',
+          customComment: null,
+          tableComment: null,
+          checked: true,
+          fields: [],
+        },
+        {
+          id: 3,
+          tableName: 'orders',
+          customComment: null,
+          tableComment: null,
+          checked: true,
+          fields: [],
+        },
+        {
+          id: 4,
+          tableName: 'payments',
+          customComment: null,
+          tableComment: null,
+          checked: true,
+          fields: [],
+        },
+      ],
+      createdAt: now,
+    });
+    // 3 candidates, none explicitly mentioned → the M1 gate fires.
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+      { id: 2, tableName: 'products', checked: true },
+      { id: 4, tableName: 'payments', checked: true },
+    ]);
+
+    const events = await run(1, () =>
+      collect(m.service.runPipeline(1, '统计一下数量')),
+    );
+
+    const clarify = events.find((e) => e.type === 'clarify');
+    expect(clarify).toBeDefined();
+    // orders joins the pickable options beyond the recall pool
+    const names = clarify!.data.candidates.map(
+      (c: { table_name: string }) => c.table_name,
+    );
+    expect(names).toContain('orders');
+    expect(m.aiQuestionService.buildSqlContext).not.toHaveBeenCalled();
+  });
+
   it('regenerate creates a new record linked back to the source', async () => {
     const m = makeService();
     happyMocks(m);

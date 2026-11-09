@@ -76,6 +76,11 @@ import {
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
 import { needsClarify } from '../datasource/table-recall';
+import {
+  normalizeTableRelation,
+  relationIdNamesOf,
+} from '../datasource/m-schema.builder';
+import { joinBridgeTables } from '../datasource/join-path';
 import { buildQueryPrismChartObject } from '../chart/chart-object.builder';
 
 /** A just-created chat with the relations the start contract returns
@@ -928,6 +933,16 @@ export class ChatService {
     // need_clarify candidate mapping below.
     const dsTables = await this.datasourceService.findOne(datasourceId);
     const nameById = new Map(dsTables.tables.map((t) => [t.id, t.tableName]));
+    /** The FK edge graph (M3.1: the relation editor's X6 cells resolved
+     *  through synced row ids) — drives join-bridge expansion below. */
+    const relationEdges = normalizeTableRelation(
+      dsTables.tableRelation,
+      relationIdNamesOf(dsTables.tables),
+    );
+    const checkedTableNames = new Set(
+      dsTables.tables.filter((t) => t.checked).map((t) => t.tableName),
+    );
+    const tableByName = new Map(dsTables.tables.map((t) => [t.tableName, t]));
     /** The clarify-pool candidates in recall rank order (every checked table
      *  when recall degraded to "stuff everything"). */
     const clarifyPool = (
@@ -942,14 +957,36 @@ export class ChatService {
       comment: t.customComment || t.tableComment || '',
     }));
 
+    // --- join-topology hints (MetaDataImprove M3) ------------------------
+    // Bridge tables connecting two pool candidates within ≤2 hops join the
+    // OPTIONS the user can pick from — they can select the full join chain
+    // in one clarify answer. The gate itself keeps counting the ORIGINAL
+    // pool: a bridge is a hint, not additional ambiguity.
+    const clarifyOptions = [
+      ...clarifyPool,
+      ...joinBridgeTables(
+        relationEdges,
+        clarifyPool.map((c) => c.tableName),
+        checkedTableNames,
+      )
+        .filter((n) => !clarifyPool.some((c) => c.tableName === n))
+        .map((n) => tableByName.get(n))
+        .filter((t): t is (typeof dsTables.tables)[number] => !!t)
+        .map((t) => ({
+          id: t.id,
+          tableName: t.tableName,
+          comment: t.customComment || t.tableComment || '',
+        })),
+    ];
+
     // --- rule 2: semantic narrowing (MetaDataImprove M2) ------------------
     // When candidate tables carry effective semantics ("valid semantics"),
     // stuff only the top semantic.max_tables of the covered ones (default 1);
     // the LLM may still request more via the need_clarify contract. Runs
     // BEFORE the M1 gate: valid semantics answer the ambiguity the gate would
     // ask about. Skipped when the user hand-picked tables (forcedTableIds) —
-    // their explicit choice wins. Known limitation: join paths to uncovered
-    // tables are not offered yet — M3 adds join-topology hints.
+    // their explicit choice wins. Join paths to uncovered tables are covered
+    // by the M3 bridge expansion below (join-path.ts).
     let semanticAnnotations: SemanticAnnotations | undefined;
     let semanticNarrowed = false;
     if (
@@ -992,12 +1029,31 @@ export class ChatService {
         yield* this.pauseForClarify(
           record.id,
           content,
-          clarifyPool,
+          clarifyOptions,
           cfg.clarifyMaxSelect,
         );
         return;
       }
     }
+
+    // --- join-bridge expansion (MetaDataImprove M3) ----------------------
+    // A narrowed schema (recall top-K / rule 2 / a clarify pick) may hold two
+    // tables whose only join runs through a THIRD table recall never
+    // surfaced. BFS ≤2 hops stuffs those connectors (checked tables only) so
+    // the LLM writes the real join instead of guessing one; buildMSchema
+    // then emits their FK lines because both endpoints are in the schema.
+    if (tableIds) {
+      const stuffed = tableIds;
+      const bridgeIds = joinBridgeTables(
+        relationEdges,
+        stuffed.map((id) => nameById.get(id)),
+        checkedTableNames,
+      )
+        .map((n) => tableByName.get(n)?.id)
+        .filter((id): id is number => id != null && !stuffed.includes(id));
+      if (bridgeIds.length > 0) tableIds = [...stuffed, ...bridgeIds];
+    }
+
     const history = await this.getHistory(chatId, this.historyRounds());
 
     // --- generate SQL --------------------------------------------------
@@ -1067,7 +1123,7 @@ export class ChatService {
       yield* this.pauseForClarify(
         record.id,
         content,
-        clarifyPool,
+        clarifyOptions,
         cfg.clarifyMaxSelect,
         sqlResult.reason,
       );

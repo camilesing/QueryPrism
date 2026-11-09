@@ -16,9 +16,14 @@ import { DbConnectorFactory } from './db-connector/db-connector.factory';
 import { ExcelStoreService } from './excel-store.service';
 import type {
   ConnectionConfig,
+  DbConnector,
   FieldMeta,
 } from './db-connector/db-connector.interface';
-import { buildMSchema, type MSchemaSemantics } from './m-schema.builder';
+import {
+  buildMSchema,
+  relationIdNamesOf,
+  type MSchemaSemantics,
+} from './m-schema.builder';
 import { calcKeywordScore, rankTables } from './table-recall';
 import {
   resolveEmbeddingConfig,
@@ -358,11 +363,25 @@ export class DatasourceService {
     );
   }
 
+  /** Run `fn` against the datasource's live connection inside ONE connector
+   *  session (workspace-scoped, Excel sheets restricted to this datasource).
+   *  The dimension-enum collector batches its DISTINCT probes through here
+   *  (MetaDataImprove M3.3) so a run opens the pool once, not per field. */
+  async withConnection<T>(
+    id: number,
+    fn: (connector: DbConnector) => Promise<T>,
+  ): Promise<T> {
+    const datasource = await this.loadForConnector(id);
+    return this.connectorFactory.withConnector(datasource, fn);
+  }
+
   /** Build the M-Schema string (tables + FK graph) for the SQL prompt.
    *  When `tableIds` is provided, narrow to that subset first (the embedding
    *  pre-filter feeds this); `buildMSchema` still drops unchecked tables/fields
    *  on top. Undefined `tableIds` = all tables (current Phase 2 behavior).
-   *  `semantics` (MetaDataImprove M2) injects curated meanings over comments. */
+   *  `semantics` (MetaDataImprove M2) injects curated meanings over comments.
+   *  Row-id maps resolve the X6 cell ids the relation editor stores in
+   *  tableRelation (M3.1). */
   async getMSchema(
     id: number,
     tableIds?: number[],
@@ -390,6 +409,7 @@ export class DatasourceService {
         })),
       })),
       tableRelation: ds.tableRelation,
+      relationIdNames: relationIdNamesOf(ds.tables),
       semantics,
     });
   }
