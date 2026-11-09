@@ -46,6 +46,7 @@ import { Public } from '../common/decorators/public.decorator';
 import { SystemLog } from '../audit/system-log.decorator';
 import { OperationModule, OperationType } from '../audit/operation.enum';
 import {
+  ClarifyAnswerDto,
   DeleteChatDto,
   QuestionDto,
   RegenerateChatDto,
@@ -233,6 +234,29 @@ export class ChatController {
     await this.stream(
       res,
       this.chatService.runPredictByRid(+rid, dto.model_id),
+    );
+  }
+
+  // Clarify answer (MetaDataImprove M1 rule 1): resumes a clarify-paused
+  // record — same rid, same SSE contract as /chat/question (id → sql-result →
+  // … → finish). Pre-stream 4xx (not pending / empty answer) is plain text.
+  @Post('record/:rid/clarify')
+  async clarify(
+    @Param('rid') rid: string,
+    @Body() dto: ClarifyAnswerDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    await this.stream(
+      res,
+      this.chatService.resumeClarified(
+        +rid,
+        {
+          tableIds: dto.table_ids,
+          text: dto.text,
+          skip: dto.skip,
+        },
+        dto.model_id,
+      ),
     );
   }
 

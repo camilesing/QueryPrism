@@ -204,6 +204,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 - **LLM-powered SQL generation**: NL2SQL pipeline built on LangChain with SSE streaming (not rule-based)
 - **Automatic chart selection**: the LLM picks the chart type (`generate_chart`); the frontend renders it with AntV G2
 - **Table recall**: keyword-fused hybrid ranking (LLM keyword extraction → synonym expansion → α·vector + (1-α)·keyword); explicitly mentioned tables are always retained, with fallback to all checked tables
+- **Ask-to-narrow (clarify)**: when a question is ambiguous across `clarify.table_threshold`+ candidate tables (default 3) and names none of them, the pipeline pauses and asks the user to pick tables / add a supplement / skip before generating SQL (`POST /chat/record/:rid/clarify` resumes the same record; MCP `ask_question` returns `needs_clarification` for a two-phase flow)
 - **Vector search**: PostgreSQL pgvector with cosine distance and HNSW indexes; degrades to keyword-only search if the extension is unavailable
 - **Chat history**: the 20 most recent conversations are retained
 - **Data storage**: query results and chart configs are stored as JSON

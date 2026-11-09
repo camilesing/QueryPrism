@@ -28,6 +28,9 @@ export interface ChatMessages {
   quickCmdMissingId: (cmd: string) => string;
   chatNotFound: (chatId: number) => string;
   recordNotFound: (rid: number) => string;
+  recordNotClarifying: (rid: number) => string;
+  clarifyAnswerRequired: string;
+  clarifyTablesInvalid: string;
 }
 
 const ZH_CN: ChatMessages = {
@@ -54,6 +57,9 @@ const ZH_CN: ChatMessages = {
   quickCmdMissingId: (cmd) => `请指定记录ID，如 /${cmd} 100`,
   chatNotFound: (chatId) => `对话 #${chatId} 不存在`,
   recordNotFound: (rid) => `记录 #${rid} 不存在`,
+  recordNotClarifying: (rid) => `记录 #${rid} 不在待澄清状态`,
+  clarifyAnswerRequired: '请选择候选表、填写补充说明，或选择跳过',
+  clarifyTablesInvalid: '所选表不在澄清候选列表中',
 };
 
 const EN: ChatMessages = {
@@ -80,6 +86,10 @@ const EN: ChatMessages = {
   quickCmdMissingId: (cmd) => `Specify a record id, e.g. /${cmd} 100`,
   chatNotFound: (chatId) => `Chat #${chatId} not found`,
   recordNotFound: (rid) => `Record #${rid} not found`,
+  recordNotClarifying: (rid) =>
+    `Record #${rid} is not waiting for a clarification answer`,
+  clarifyAnswerRequired: 'Pick candidate tables, add a supplement, or skip',
+  clarifyTablesInvalid: 'Selected tables are not in the clarify candidates',
 };
 
 /** Resolve the message set for a language tag: 'zh-CN' → Chinese, anything

@@ -1,10 +1,13 @@
-// System-wide effective embedding strategy, resolved once per task boundary.
+// System-wide effective embedding + clarify-gate strategy, resolved once per
+// task boundary.
 //
-// 10 retrieval-strategy parameters resolve with the priority
+// 14 retrieval-strategy parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
-//   'embedding.<snake_key>') > startup env > code default.
+//   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
-//   chat.sample_data_enabled uses.
+//   chat.sample_data_enabled uses. The 10 embedding.* keys drive vector/k
+//   keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
+//   clarify gate (ask-the-user before stuffing an ambiguous schema).
 //
 // Parsing is STRICT on saved values:
 // booleans only accept real booleans or "true"/"false" (never 0/1), counts
@@ -32,6 +35,15 @@ export interface EmbeddingConfig {
   /** Keyword extraction / terminology expansion / fusion (independent). */
   keywordEnabled: boolean;
   datasourceCount: number;
+  /** Clarify gate (MetaDataImprove M1): ask the user to narrow candidate
+   *  tables before stuffing the schema when the question is ambiguous. */
+  clarifyEnabled: boolean;
+  /** Ask only when at least this many candidate tables would be stuffed. */
+  clarifyTableThreshold: number;
+  /** Max tables the user may pick in one clarify answer. */
+  clarifyMaxSelect: number;
+  /** Max clarify rounds per record (1 = never re-ask after an answer). */
+  clarifyMaxRounds: number;
 }
 
 /** camelCase field → persisted parameter key. */
@@ -46,13 +58,17 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   tableAlpha: 'embedding.table_alpha',
   keywordEnabled: 'embedding.keyword_enabled',
   datasourceCount: 'embedding.datasource_count',
+  clarifyEnabled: 'clarify.enabled',
+  clarifyTableThreshold: 'clarify.table_threshold',
+  clarifyMaxSelect: 'clarify.max_select',
+  clarifyMaxRounds: 'clarify.max_rounds',
 };
 
 export const EMBEDDING_PARAMETER_KEYS = Object.values(PARAMETER_KEYS);
 
 /** Reverse lookup: persisted parameter key → config field (null when the key
- *  is not one of the ten embedding parameters). Used by the parameter save
- *  path to strict-validate embedding.* rows. */
+ *  is not one of the registered strategy parameters). Used by the parameter
+ *  save path to strict-validate embedding and clarify rows. */
 export function embeddingFieldOfKey(key: string): keyof EmbeddingConfig | null {
   for (const field of Object.keys(
     PARAMETER_KEYS,
@@ -66,12 +82,16 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'enabled',
   'tableEnabled',
   'keywordEnabled',
+  'clarifyEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'terminologyTopCount',
   'dataTrainingTopCount',
   'tableCount',
   'datasourceCount',
+  'clarifyTableThreshold',
+  'clarifyMaxSelect',
+  'clarifyMaxRounds',
 ]);
 
 /** Object-safe display of an invalid value for error messages. */
@@ -188,6 +208,21 @@ function envDefaults(): EmbeddingConfig {
     datasourceCount: Math.max(
       1,
       Math.floor(envNumber('DS_EMBEDDING_COUNT', undefined, 10)),
+    ),
+    clarifyEnabled: envBool('CLARIFY_ENABLED', true),
+    clarifyTableThreshold: Math.max(
+      1,
+      Math.floor(envNumber('CLARIFY_TABLE_THRESHOLD', undefined, 3)),
+    ),
+    clarifyMaxSelect: Math.max(
+      1,
+      Math.floor(envNumber('CLARIFY_MAX_SELECT', undefined, 3)),
+    ),
+    // >=1 rounds; a value of 1 (default) means the pipeline never re-asks
+    // after the user's first answer (skip / pick / supplement all count).
+    clarifyMaxRounds: Math.max(
+      1,
+      Math.floor(envNumber('CLARIFY_MAX_ROUNDS', undefined, 1)),
     ),
   };
 }

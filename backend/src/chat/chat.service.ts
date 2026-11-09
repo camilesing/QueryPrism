@@ -71,6 +71,7 @@ import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
+import { needsClarify } from '../datasource/table-recall';
 import { buildQueryPrismChartObject } from '../chart/chart-object.builder';
 
 /** A just-created chat with the relations the start contract returns
@@ -80,6 +81,47 @@ export type StartedChat = Chat & {
   records: ChatRecord[];
   datasource: Datasource | null;
 };
+
+/** Candidates from a stored clarify payload — defensive parse so a
+ *  hand-corrupted row degrades to "no candidates" (the resume path then
+ *  rejects table picks) instead of throwing mid-stream. */
+function clarifyCandidates(
+  clarify: Prisma.JsonValue | null,
+): Array<{ table_id: number; table_name: string }> {
+  if (
+    clarify == null ||
+    typeof clarify !== 'object' ||
+    Array.isArray(clarify)
+  ) {
+    return [];
+  }
+  const raw = (clarify as { candidates?: unknown }).candidates;
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ table_id: number; table_name: string }> = [];
+  for (const c of raw) {
+    if (c == null || typeof c !== 'object' || Array.isArray(c)) continue;
+    const { table_id, table_name } = c as {
+      table_id?: unknown;
+      table_name?: unknown;
+    };
+    if (typeof table_id === 'number' && typeof table_name === 'string') {
+      out.push({ table_id, table_name });
+    }
+  }
+  return out;
+}
+
+function clarifyCandidateIds(clarify: Prisma.JsonValue | null): number[] {
+  return clarifyCandidates(clarify).map((c) => c.table_id);
+}
+
+function clarifyCandidateNames(
+  clarify: Prisma.JsonValue | null,
+): Map<number, string> {
+  return new Map(
+    clarifyCandidates(clarify).map((c) => [c.table_id, c.table_name]),
+  );
+}
 
 @Injectable()
 export class ChatService {
@@ -357,6 +399,130 @@ export class ChatService {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.error(`regenerate failed for chat #${chatId}: ${msg}`);
+      yield { type: 'error', data: { content: msg } };
+      await this.finishRecord(record.id, msg);
+      yield { type: 'finish', data: {} };
+    }
+  }
+
+  /** Resume a clarify-paused record with the user's answer (MetaDataImprove
+   *  M1 rule 1). The SAME ChatRecord continues (no new record): picked tables
+   *  force the schema subset; supplement text enriches the question (recall
+   *  re-runs with it); skip re-runs with the pre-clarify behavior. The answer
+   *  is persisted BEFORE streaming so an abandoned stream still records it. */
+  async *resumeClarified(
+    recordId: number,
+    answer: { tableIds?: number[]; text?: string; skip?: boolean },
+    modelId?: number,
+  ): AsyncGenerator<ChatSseEvent> {
+    const oid = this.currentOid();
+    const record = await this.prisma.chatRecord.findFirst({
+      where: {
+        id: recordId,
+        oid,
+        OR: [{ createBy: this.currentUid() }, { createBy: null }],
+      },
+    });
+    // Pre-stream 404s use the profile language (no question text yet).
+    if (!record) {
+      throw new NotFoundException(
+        chatMessages(this.profileLang()).recordNotFound(recordId),
+      );
+    }
+    if (record.clarifyStatus !== 'pending') {
+      throw new BadRequestException(
+        chatMessages(this.profileLang()).recordNotClarifying(recordId),
+      );
+    }
+
+    // Resolve the answer against the candidates stored in the pending payload
+    // (an id outside the offered pool is rejected — it could narrow the schema
+    // to a table the gate never offered).
+    const candidateIds = clarifyCandidateIds(record.clarify);
+    const wanted = (answer.tableIds ?? []).filter((id) =>
+      candidateIds.includes(id),
+    );
+    const text = (answer.text ?? '').trim();
+    if (!answer.skip && wanted.length === 0 && !text) {
+      throw new BadRequestException(
+        chatMessages(this.profileLang()).clarifyAnswerRequired,
+      );
+    }
+    if ((answer.tableIds ?? []).length > 0 && wanted.length === 0) {
+      throw new BadRequestException(
+        chatMessages(this.profileLang()).clarifyTablesInvalid,
+      );
+    }
+
+    const namesById = clarifyCandidateNames(record.clarify);
+    const persisted = {
+      table_ids: wanted.length > 0 ? wanted : undefined,
+      table_names:
+        wanted.length > 0
+          ? wanted.map((id) => namesById.get(id) ?? id)
+          : undefined,
+      text: text || undefined,
+      skip: answer.skip || undefined,
+    };
+    const status = answer.skip ? 'skipped' : 'answered';
+    // The clarify round is settled even if this stream dies — never re-ask.
+    await this.prisma.chatRecord.update({
+      where: { id: record.id },
+      data: {
+        clarifyAnswer: persisted,
+        clarifyStatus: status,
+      },
+    });
+
+    // The resume follows the source question's language.
+    const lang = this.detectLang(record.question);
+    const msgs = chatMessages(lang);
+    const chat = await this.prisma.chat.findFirst({
+      where: this.ownedChatWhere(record.chatId, oid),
+    });
+    if (!chat) {
+      throw new NotFoundException(
+        chatMessages(this.profileLang()).chatNotFound(record.chatId),
+      );
+    }
+    // Supplement text joins the question for THIS run (the stored question
+    // stays immutable; later turns see the answer via getHistory).
+    const content = text ? `${record.question}\n${text}` : record.question;
+
+    yield { type: 'id', data: { id: record.id } };
+    try {
+      if (chat.datasourceId == null) {
+        yield* this.fail(record.id, msgs.datasourceRequired);
+        return;
+      }
+      const ds = await this.datasourceService.findOne(chat.datasourceId);
+      const engine = engineFromDatasourceType(ds.type);
+      if (!engine) {
+        yield* this.fail(record.id, msgs.unsupportedEngine);
+        return;
+      }
+      yield* this.runCore(
+        // clarifyStatus reflects the just-persisted answer so the gate's
+        // round budget stays spent (never re-ask after an answer).
+        { ...record, clarifyStatus: status },
+        record.chatId,
+        content,
+        chat.datasourceId,
+        engine,
+        chat.title,
+        chat.origin ?? 0,
+        lang,
+        modelId,
+        {
+          forcedTableIds: wanted.length > 0 ? wanted : undefined,
+          skipClarify: answer.skip || undefined,
+        },
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.error(
+        `clarify resume failed for record #${recordId}: ${msg}`,
+      );
       yield { type: 'error', data: { content: msg } };
       await this.finishRecord(record.id, msg);
       yield { type: 'finish', data: {} };
@@ -688,12 +854,12 @@ export class ChatService {
     yield { type: 'finish', data: {} };
   }
 
-  /** The shared core steps 4–11 (recall → generate_sql → safety → execute →
-   *  generate_chart → persist → finish). Both runPipeline (after datasource
-   *  resolution) and regenerate delegate here. Assumes datasourceId + engine
-   *  are already resolved by the caller. */
+  /** The shared core steps 4–11 (recall → clarify-gate → generate_sql →
+   *  safety → execute → generate_chart → persist → finish). Both runPipeline
+   *  (after datasource resolution), regenerate and resumeClarified delegate
+   *  here. Assumes datasourceId + engine are already resolved by the caller. */
   private async *runCore(
-    record: { id: number },
+    record: { id: number; clarifyStatus?: string | null },
     chatId: number,
     content: string,
     datasourceId: number,
@@ -704,16 +870,24 @@ export class ChatService {
      *  prompt's {lang} and all SSE frames in this run. */
     lang: string,
     modelId?: number,
+    /** Resume context (resumeClarified): forcedTableIds = the user picked the
+     *  schema subset (skips keyword extraction + recall + the clarify gate);
+     *  skipClarify = the user chose "just generate" (recall runs, gate stays
+     *  closed for this record). */
+    opts?: { forcedTableIds?: number[]; skipClarify?: boolean },
   ): AsyncGenerator<ChatSseEvent> {
     const msgs = chatMessages(lang);
     // Task-start retrieval snapshot (9e6070e8 ADR 0001): one read per task,
     // rules stay stable for the run's duration.
     const cfg = await resolveEmbeddingConfig(this.prisma);
+    // A forced table subset means the user already chose the tables — keyword
+    // extraction (an LLM call) and recall would both be wasted.
+    const forcedTableIds = opts?.forcedTableIds;
     // 3fd6fa86→bc3403b8: LLM keyword extraction + terminology expansion feed
     // the fusion table ranking; failures degrade to the raw question (we do
     // NOT reject non-data queries like upstream — no behavior change).
     let expandedKeywords: string | null = null;
-    if (cfg.keywordEnabled) {
+    if (cfg.keywordEnabled && !forcedTableIds) {
       const extracted = await this.extractKeywords(
         record.id,
         chatId,
@@ -738,10 +912,71 @@ export class ChatService {
     }
     // Keyword-fused table pre-filter (degrades to all-checked when
     // embedding/vector unavailable — recallTables returns []).
-    const tableIds = await this.recallNarrowedSchema(datasourceId, content, {
-      keywords: expandedKeywords,
-      config: cfg,
-    });
+    const tableIds = forcedTableIds
+      ? forcedTableIds
+      : await this.recallNarrowedSchema(datasourceId, content, {
+          keywords: expandedKeywords,
+          config: cfg,
+        });
+
+    // --- clarify gate (MetaDataImprove M1 rule 1) ------------------------
+    // With no semantic layer yet ("no valid semantics" is always true in M1),
+    // ≥ threshold candidate tables about to be stuffed into the schema and no
+    // explicit table mention → pause and ask the user instead of guessing —
+    // one wrong table breaks the join. Known limitation: multi-turn follow-ups
+    // can also trip the gate; mitigate via clarify.enabled / skip.
+    if (!forcedTableIds && !opts?.skipClarify) {
+      const dsTables = await this.datasourceService.findOne(datasourceId);
+      const byId = new Map(dsTables.tables.map((t) => [t.id, t]));
+      // Recall rank order preserved when present; otherwise every checked
+      // table is the pool (what getMSchema would stuff).
+      const pool = (
+        tableIds
+          ? tableIds
+              .map((id) => byId.get(id))
+              .filter((t): t is (typeof dsTables.tables)[number] => !!t)
+          : dsTables.tables.filter((t) => t.checked)
+      ).map((t) => ({
+        id: t.id,
+        tableName: t.tableName,
+        comment: t.customComment || t.tableComment || '',
+      }));
+      const asked = record.clarifyStatus ? 1 : 0;
+      if (
+        needsClarify(pool, content, {
+          enabled: cfg.clarifyEnabled,
+          tableThreshold: cfg.clarifyTableThreshold,
+          rounds: asked,
+          maxRounds: cfg.clarifyMaxRounds,
+        })
+      ) {
+        const payload = {
+          question: content,
+          candidates: pool.map((c) => ({
+            table_id: c.id,
+            table_name: c.tableName,
+            comment: c.comment,
+          })),
+          max_select: cfg.clarifyMaxSelect,
+        };
+        await this.prisma.chatRecord.update({
+          where: { id: record.id },
+          data: {
+            clarify: payload,
+            clarifyStatus: 'pending',
+          },
+        });
+        yield {
+          type: 'clarify',
+          data: { record_id: record.id, ...payload },
+        };
+        // `finish` closes the stream cleanly (the frontend stops its loading
+        // state); the record itself stays finish:false + clarifyStatus
+        // 'pending' until the user answers via /chat/record/:rid/clarify.
+        yield { type: 'finish', data: {} };
+        return;
+      }
+    }
     const history = await this.getHistory(chatId, this.historyRounds());
 
     // --- generate SQL --------------------------------------------------
@@ -1953,11 +2188,38 @@ export class ChatService {
     const ordered = [...records].reverse();
     const out: ChatHistoryRound[] = [];
     for (const r of ordered) {
-      out.push({ role: 'user', content: r.question });
+      out.push({ role: 'user', content: this.userRoundContent(r) });
       const answer = r.sqlAnswer ?? r.brief ?? r.sql ?? '';
       if (answer) out.push({ role: 'assistant', content: answer });
     }
     return out;
+  }
+
+  /** The user turn = the original question + the clarify round's answer
+   *  (picked table names / supplement text), so later turns inherit the
+   *  clarification instead of re-asking. The label is prompt-side content —
+   *  zh-CN only is acceptable (the LLM reads both, the user never sees it). */
+  private userRoundContent(r: {
+    question: string;
+    clarifyAnswer: Prisma.JsonValue | null;
+  }): string {
+    const a = r.clarifyAnswer;
+    if (a == null || typeof a !== 'object' || Array.isArray(a)) {
+      return r.question;
+    }
+    const extras: string[] = [];
+    const tableNames = (a as { table_names?: unknown }).table_names;
+    if (
+      Array.isArray(tableNames) &&
+      tableNames.some((n) => typeof n === 'string')
+    ) {
+      extras.push(
+        `涉及表：${tableNames.filter((n): n is string => typeof n === 'string').join('、')}`,
+      );
+    }
+    const text = (a as { text?: unknown }).text;
+    if (typeof text === 'string' && text.trim()) extras.push(text.trim());
+    return extras.length ? `${r.question}（${extras.join('；')}）` : r.question;
   }
 
   /** INSERT a ChatLog row at the start of an LLM step — the row

@@ -58,6 +58,9 @@ function makeRecord(over: Partial<ChatRecord> = {}): ChatRecord {
     regenerateRecordId: null,
     finish: true,
     error: null,
+    clarify: null,
+    clarifyAnswer: null,
+    clarifyStatus: null,
     analysisThinking: '思考过程',
     predictContent: '预测正文',
     runTime: 3,
@@ -170,6 +173,29 @@ describe('toChatRecordSnake', () => {
   it('nulls datasource when no chat is provided', () => {
     const out = toChatRecordSnake(makeRecord());
     expect(out.datasource).toBeNull();
+  });
+
+  it('passes the clarify round through verbatim (snake keys preserved)', () => {
+    // MetaDataImprove M1: clarify/clarify_answer are Json blobs whose inner
+    // keys are already snake_case on the wire — they must pass by reference
+    // (like recommended_question), never key-mangled.
+    const clarify = {
+      question: '统计一下整体情况',
+      candidates: [{ table_id: 1, table_name: 'orders', comment: '订单表' }],
+      max_select: 3,
+    };
+    const clarifyAnswer = { table_ids: [1], table_names: ['orders'] };
+    const out = toChatRecordSnake(
+      makeRecord({
+        clarify,
+        clarifyAnswer,
+        clarifyStatus: 'pending',
+        finish: false,
+      }),
+    );
+    expect(out.clarify).toBe(clarify);
+    expect(out.clarify_answer).toBe(clarifyAnswer);
+    expect(out.clarify_status).toBe('pending');
   });
 });
 

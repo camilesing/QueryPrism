@@ -50,6 +50,21 @@ export interface ChatSseEventMap {
   // cached chat.recommendedQuestion; the live LLM stream landed in Phase 10.
   recommended_question_result: { content?: string; reasoning_content?: string };
   recommended_question: { content: string };
+  // Clarify round (MetaDataImprove M1 rule 1): emitted when the recall step
+  // found >= threshold candidate tables and the question names none of them.
+  // The stream then terminates with `finish` (the record stays finish:false
+  // + clarifyStatus:'pending' in the DB); the user answers via
+  // POST /chat/record/:rid/clarify which re-streams the same record.
+  clarify: {
+    record_id: number;
+    question: string;
+    candidates: Array<{
+      table_id: number;
+      table_name: string;
+      comment: string;
+    }>;
+    max_select: number;
+  };
   info: { msg: string };
   brief: { brief: string };
   error: { content: string };

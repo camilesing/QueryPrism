@@ -511,3 +511,221 @@ describe('MCP /api/v1/mcp (e2e)', () => {
     expect(res.status).toBe(401);
   });
 });
+
+// ---------------------------------------------------------------------------
+// MetaDataImprove M1 — ask_question two-phase clarify: an ambiguous question
+// over >= threshold candidate tables returns needs_clarification; the caller
+// re-calls with clarify_record_id + picks to resume the SAME record.
+// ---------------------------------------------------------------------------
+describe('MCP ask_question clarify (e2e)', () => {
+  let app: INestApplication<App>;
+  let jwt: string;
+  let integration: IntegrationSnake;
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    })
+      .overrideProvider(GeneratorService)
+      .useValue({
+        extractKeywords: () =>
+          asyncFrom<LlmGenEvent>([{ type: 'content', delta: 'EMPTY' }]),
+        generateSql: () =>
+          asyncFrom<LlmGenEvent>([
+            {
+              type: 'result',
+              data: {
+                success: true,
+                sql: 'SELECT 1',
+                tables: [],
+                chartType: 'table',
+                brief: 'clarify brief',
+              },
+            },
+          ]),
+        generateChart: () =>
+          asyncFrom<LlmGenEvent>([
+            {
+              type: 'result',
+              data: { chartType: 'table', config: { type: 'table' } },
+            },
+          ]),
+        generateAnalysis: () =>
+          asyncFrom<LlmGenEvent>([{ type: 'result', data: { analysis: 'a' } }]),
+        generatePredict: () =>
+          asyncFrom<LlmGenEvent>([
+            { type: 'result', data: { predict: 'p', predictData: [] } },
+          ]),
+        generateGuessQuestion: () =>
+          asyncFrom<LlmGenEvent>([{ type: 'result', data: { questions: [] } }]),
+      })
+      .overrideProvider(AiQuestionService)
+      .useValue({
+        buildForSelectDatasource: () => ({ engine: 'SQLite' }),
+        buildSqlContext: () => ({ engine: 'SQLite' }),
+        buildForResult: () => ({ engine: 'SQLite' }),
+      })
+      .overrideProvider(DatasourceService)
+      .useValue({
+        findAll: () =>
+          Promise.resolve([
+            { id: 1, name: 'fake-ds', description: null, type: 'sqlite' },
+          ]),
+        // 4 checked tables, none named by the ambiguous question.
+        findOne: () =>
+          Promise.resolve({
+            id: 1,
+            name: 'fake-ds',
+            type: 'sqlite',
+            tables: [
+              {
+                id: 1,
+                tableName: 'sales_order',
+                tableComment: '销售订单',
+                customComment: null,
+                checked: true,
+                fields: [],
+              },
+              {
+                id: 2,
+                tableName: 'crm_customer',
+                tableComment: '客户信息',
+                customComment: null,
+                checked: true,
+                fields: [],
+              },
+              {
+                id: 3,
+                tableName: 'inv_stock',
+                tableComment: '库存记录',
+                customComment: null,
+                checked: true,
+                fields: [],
+              },
+              {
+                id: 4,
+                tableName: 'fin_payment',
+                tableComment: '支付流水',
+                customComment: null,
+                checked: true,
+                fields: [],
+              },
+            ],
+          }),
+        execSql: () => Promise.resolve({ columns: ['id'], rows: [[1]] }),
+        recallTables: () => Promise.resolve([]),
+      })
+      .overrideProvider(SqlSafetyService)
+      .useValue({
+        validate: () => ({ ok: true, tables: [] }),
+        extractTableNames: () => [],
+      })
+      .overrideProvider(G2SsrClient)
+      .useValue({ render: jest.fn().mockResolvedValue({ image: 'b64img' }) })
+      .compile();
+
+    app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api/v1');
+    await app.init();
+    jwt = await login(app);
+    await sweepIntegrations(app, jwt);
+    integration = await createIntegration(app, jwt, 'e2e-clarify-agent');
+  });
+
+  afterAll(async () => {
+    await sweepIntegrations(app, jwt);
+    await app.close();
+  });
+
+  it('returns needs_clarification, then resumes the record with picked tables', async () => {
+    // Phase 1: ambiguous question → structured clarify result, no SQL.
+    const first = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: { question: '统计一下整体情况', datasource_id: 1 },
+      },
+      1,
+      integration.token,
+    );
+    expect(first.status).toBe(200);
+    const firstResult = first.envelope.result as CallResult;
+    expect(firstResult.isError).toBeFalsy();
+    const asked = JSON.parse(firstResult.content[0].text ?? '') as {
+      needs_clarification: boolean;
+      record_id: number;
+      question: string;
+      candidates: Array<{ table_id: number; table_name: string }>;
+      max_select: number;
+    };
+    expect(asked.needs_clarification).toBe(true);
+    expect(asked.candidates).toHaveLength(4);
+    expect(asked.max_select).toBe(3);
+
+    // Phase 2: answer with two table picks → the same record produces SQL.
+    const picks = asked.candidates.slice(0, 2).map((c) => c.table_id);
+    const second = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: {
+          clarify_record_id: asked.record_id,
+          clarify_table_ids: picks,
+        },
+      },
+      2,
+      integration.token,
+    );
+    expect(second.status).toBe(200);
+    const secondResult = second.envelope.result as CallResult;
+    expect(secondResult.isError).toBeFalsy();
+    const answered = JSON.parse(secondResult.content[0].text ?? '') as {
+      record_id: number;
+      sql: string;
+      brief: string;
+      needs_clarification?: boolean;
+    };
+    expect(answered.record_id).toBe(asked.record_id);
+    expect(answered.sql).toBe('SELECT 1');
+    expect(answered.needs_clarification).toBeUndefined();
+  });
+
+  it('rejects a clarify answer for a record that never paused (error result)', async () => {
+    // Ask with an explicit table mention → no clarify pause → the record
+    // finishes; resuming it must fail as a tool error, not a crash.
+    const direct = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: { question: '查一下sales_order的金额', datasource_id: 1 },
+      },
+      3,
+      integration.token,
+    );
+    const directResult = direct.envelope.result as CallResult;
+    const parsed = JSON.parse(directResult.content[0].text ?? '') as {
+      record_id: number;
+    };
+    expect(parsed.record_id).toBeGreaterThan(0);
+
+    const resume = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: {
+          clarify_record_id: parsed.record_id,
+          clarify_skip: true,
+        },
+      },
+      4,
+      integration.token,
+    );
+    expect(resume.status).toBe(200);
+    const resumeResult = resume.envelope.result as CallResult;
+    expect(resumeResult.isError).toBe(true);
+  });
+});

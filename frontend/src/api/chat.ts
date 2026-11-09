@@ -47,6 +47,12 @@ export class ChatRecord {
   regenerate_record_id?: number
   duration?: number
   total_tokens?: number
+  /** Clarify round (MetaDataImprove M1): clarify = {question, candidates:
+   *  [{table_id, table_name, comment}], max_select}; clarify_answer = {table_ids?,
+   *  table_names?, text?, skip?}; clarify_status = pending | answered | skipped. */
+  clarify?: any
+  clarify_answer?: any
+  clarify_status?: string
 
   constructor()
   constructor(
@@ -256,7 +262,7 @@ const toChatRecord = (data?: any): ChatRecord | undefined => {
   if (!data) {
     return undefined
   }
-  return new ChatRecord(
+  const record = new ChatRecord(
     data.id,
     data.chat_id,
     data.create_time,
@@ -284,6 +290,10 @@ const toChatRecord = (data?: any): ChatRecord | undefined => {
     data.duration,
     data.total_tokens
   )
+  record.clarify = data.clarify
+  record.clarify_answer = data.clarify_answer
+  record.clarify_status = data.clarify_status
+  return record
 }
 const toChatRecordList = (list: any = []): ChatRecord[] => {
   const records: Array<ChatRecord> = []
@@ -476,6 +486,15 @@ export const chatApi = {
   },
   analysis: (record_id: number | undefined, controller?: AbortController) => {
     return request.fetchStream(`/chat/record/${record_id}/analysis`, {}, controller)
+  },
+  /** Answer a clarify-paused record (MetaDataImprove M1) — resumes the same
+   *  record over SSE, so it uses the same streaming consumption path. */
+  answerClarify: (
+    record_id: number | undefined,
+    data: { table_ids?: number[]; text?: string; skip?: boolean },
+    controller?: AbortController
+  ) => {
+    return request.fetchStream(`/chat/record/${record_id}/clarify`, data, controller)
   },
   predict: (record_id: number | undefined, controller?: AbortController) => {
     return request.fetchStream(`/chat/record/${record_id}/predict`, {}, controller)

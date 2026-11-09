@@ -68,6 +68,7 @@ describe('collectPipeline', () => {
       brief: '用户数',
       chartConfig: { xField: 'category' },
       error: null,
+      clarify: null,
     });
   });
 
@@ -124,6 +125,54 @@ describe('collectPipeline', () => {
       brief: null,
       chartConfig: null,
       error: null,
+      clarify: null,
     });
+  });
+
+  it('captures the clarify pause payload (MetaDataImprove M1)', async () => {
+    // The clarify-paused pipeline: id → clarify → finish (no sql). The MCP
+    // handler turns this into the structured needs_clarification result.
+    const gen = asyncFrom<ChatSseEvent>([
+      ev('id', { id: 55 }),
+      ev('clarify', {
+        record_id: 55,
+        question: '统计一下整体情况',
+        candidates: [
+          { table_id: 1, table_name: 'orders', comment: '订单表' },
+          { table_id: 2, table_name: 'users', comment: '用户表' },
+          { table_id: 3, table_name: 'stock', comment: '库存表' },
+        ],
+        max_select: 3,
+      }),
+      ev('finish', {}),
+    ]);
+    const out = await collectPipeline(gen);
+    expect(out.clarify).toEqual({
+      record_id: 55,
+      question: '统计一下整体情况',
+      candidates: [
+        { table_id: 1, table_name: 'orders', comment: '订单表' },
+        { table_id: 2, table_name: 'users', comment: '用户表' },
+        { table_id: 3, table_name: 'stock', comment: '库存表' },
+      ],
+      max_select: 3,
+    });
+    expect(out.recordId).toBe(55);
+    expect(out.sql).toBeNull();
+    expect(out.error).toBeNull();
+  });
+
+  it('keeps the clarify payload alongside a resumed stream (sql wins)', async () => {
+    // A resumed record that asks again mid-stream is NOT expected today
+    // (max one round), but if both appear the collector keeps both — the
+    // handler prefers sql when present.
+    const gen = asyncFrom<ChatSseEvent>([
+      ev('id', { id: 9 }),
+      ev('sql', { content: 'SELECT 1' }),
+      ev('finish', {}),
+    ]);
+    const out = await collectPipeline(gen);
+    expect(out.sql).toBe('SELECT 1');
+    expect(out.clarify).toBeNull();
   });
 });

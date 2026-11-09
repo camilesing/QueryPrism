@@ -8,6 +8,7 @@ const { t } = useI18n()
 
 // 9e6070e8：检索策略参数（embedding.*）。默认值与后端代码默认一致；页面加载后
 // 由后端返回的有效值（已保存 > 启动配置 > 代码默认）覆盖。
+// MetaDataImprove M1：clarify.* 反问收敛参数走同一注册表与校验链路。
 const EMBEDDING_NUMBER_KEYS = [
   'embedding.terminology_similarity',
   'embedding.terminology_top_count',
@@ -16,6 +17,9 @@ const EMBEDDING_NUMBER_KEYS = [
   'embedding.table_count',
   'embedding.table_alpha',
   'embedding.datasource_count',
+  'clarify.table_threshold',
+  'clarify.max_select',
+  'clarify.max_rounds',
 ]
 
 const state = reactive({
@@ -37,6 +41,10 @@ const state = reactive({
     'embedding.table_alpha': 0.4,
     'embedding.keyword_enabled': true,
     'embedding.datasource_count': 10,
+    'clarify.enabled': true,
+    'clarify.table_threshold': 3,
+    'clarify.max_select': 3,
+    'clarify.max_rounds': 1,
     'login.initial_pwd_disabled': false,
     'login.initial_pwd_hidden': false,
   }),
@@ -55,7 +63,8 @@ const loadData = () => {
           if (
             item.pkey?.startsWith('chat') ||
             item.pkey?.startsWith('login') ||
-            item.pkey?.startsWith('embedding')
+            item.pkey?.startsWith('embedding') ||
+            item.pkey?.startsWith('clarify')
           ) {
             if (item.pkey === 'chat.queryprism_name') {
               if (item.pval && item.pval.trim().length > 0) {
@@ -412,6 +421,97 @@ onMounted(() => {
             <div class="value">
               <el-input-number
                 v-model.number="state.parameterForm['embedding.datasource_count']"
+                :min="1"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          {{ t('parameter.clarify_settings') }}
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr">
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.clarify_enabled') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.clarify_enabled_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-switch v-model="state.parameterForm['clarify.enabled']" />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.clarify_table_threshold') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.clarify_table_threshold_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['clarify.table_threshold']"
+                :min="1"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.clarify_max_select') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.clarify_max_select_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['clarify.max_select']"
+                :min="1"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.clarify_max_rounds') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.clarify_max_rounds_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['clarify.max_rounds']"
                 :min="1"
                 step="1"
                 controls-position="right"

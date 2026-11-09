@@ -116,7 +116,16 @@
     "embedding_table_alpha_hint": "Fusion score = α×vector similarity + (1-α)×keyword match",
     "embedding_keyword_enabled": "Keyword Extraction & Synonym Expansion",
     "embedding_keyword_enabled_hint": "Extract business keywords with the LLM and expand via terminology before table matching",
-    "embedding_datasource_count": "Datasource Pre-filter Count"
+    "embedding_datasource_count": "Datasource Pre-filter Count",
+    "clarify_enabled": "Ask-to-narrow (clarify)",
+    "clarify_enabled_hint": "When a question is ambiguous across many tables, pause and ask the user to pick tables before generating SQL",
+    "clarify_table_threshold": "Clarify table threshold",
+    "clarify_table_threshold_hint": "Ask only when at least this many candidate tables are in play",
+    "clarify_max_select": "Clarify max table picks",
+    "clarify_max_select_hint": "Max tables the user may pick in one clarify answer",
+    "clarify_max_rounds": "Clarify max rounds",
+    "clarify_max_rounds_hint": "Clarify rounds per question; 1 never re-asks after the first answer",
+    "clarify_settings": "Ask-to-narrow (clarify) settings"
   },
   "prompt": {
     "default_password": "Default password:{msg}",
@@ -892,7 +901,15 @@
     "find_sql_sample_title": "Matched {0} SQL examples",
     "find_custom_prompt_title": "Matched {0} custom prompts",
     "query_count_title": "Found {0} data entries",
-    "generate_picture_success": "Image generated"
+    "generate_picture_success": "Image generated",
+    "clarify_title": "Which tables should this question target?",
+    "clarify_hint": "The question could match several tables. Pick up to {0} tables or add a supplement to narrow it down.",
+    "clarify_supplement_placeholder": "Optional: describe what you want to query",
+    "clarify_submit": "Continue",
+    "clarify_skip": "Skip, just generate",
+    "clarify_answered_tables": "tables: {0}",
+    "clarify_answered_text": "supplement: {0}",
+    "clarify_answered_skip": "skipped narrowing"
   },
   "about": {
     "title": "About",

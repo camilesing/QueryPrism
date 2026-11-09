@@ -20,6 +20,10 @@ const ENV_KEYS = [
   'DS_EMBEDDING_COUNT',
   'EMBEDDING_THRESHOLD',
   'EMBEDDING_TOP_K',
+  'CLARIFY_ENABLED',
+  'CLARIFY_TABLE_THRESHOLD',
+  'CLARIFY_MAX_SELECT',
+  'CLARIFY_MAX_ROUNDS',
 ];
 
 function makePrisma(rows: { name: string; value: unknown }[] = []) {
@@ -92,6 +96,10 @@ describe('resolveEmbeddingConfig', () => {
       tableAlpha: 0.4,
       keywordEnabled: true,
       datasourceCount: 10,
+      clarifyEnabled: true,
+      clarifyTableThreshold: 3,
+      clarifyMaxSelect: 3,
+      clarifyMaxRounds: 1,
     } satisfies EmbeddingConfig);
   });
 
@@ -127,10 +135,35 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('embedding.table_alpha');
   });
 
-  it('exposes exactly the ten persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(10);
+  it('clarify.* rows override env with strict parsing (boolean + positive ints)', async () => {
+    process.env.CLARIFY_TABLE_THRESHOLD = '5';
+    const cfg = await resolveEmbeddingConfig(
+      makePrisma([
+        { name: 'clarify.enabled', value: 'false' },
+        { name: 'clarify.table_threshold', value: '4' },
+        { name: 'clarify.max_select', value: 2 },
+      ]) as never,
+    );
+    expect(cfg.clarifyEnabled).toBe(false);
+    // saved row (4) beats env (5)
+    expect(cfg.clarifyTableThreshold).toBe(4);
+    expect(cfg.clarifyMaxSelect).toBe(2);
+    // unsaved → env/default stands
+    expect(cfg.clarifyMaxRounds).toBe(1);
+    await expect(
+      resolveEmbeddingConfig(
+        makePrisma([{ name: 'clarify.max_rounds', value: 'zero' }]) as never,
+      ),
+    ).rejects.toThrow('clarify.max_rounds');
+  });
+
+  it('exposes exactly the fourteen persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(14);
     expect(
-      EMBEDDING_PARAMETER_KEYS.every((k) => k.startsWith('embedding.')),
-    ).toBe(true);
+      EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
+    ).toHaveLength(10);
+    expect(
+      EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('clarify.')),
+    ).toHaveLength(4);
   });
 });

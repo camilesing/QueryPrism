@@ -3,6 +3,7 @@ import BaseAnswer from './BaseAnswer.vue'
 import { Chat, chatApi, ChatInfo, type ChatMessage, ChatRecord, questionApi } from '@/api/chat.ts'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import ChartBlock from '@/views/chat/chat-block/ChartBlock.vue'
+import ClarifyBlock from '@/views/chat/chat-block/ClarifyBlock.vue'
 import JSONBig from 'json-bigint'
 
 const props = withDefaults(
@@ -84,6 +85,144 @@ const _loading = computed({
 
 const stopFlag = ref(false)
 
+/** Shared SSE consumption for both the fresh-question stream and the clarify
+ *  resume stream — the event contract is identical (id → sql-result → … →
+ *  finish). Accumulators are per-call so a resume starts from a clean slate. */
+async function consumeChatStream(
+  response: any,
+  currentRecord: ChatRecord,
+  controller: AbortController
+) {
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+
+  let sql_answer = ''
+  let chart_answer = ''
+
+  let tempResult = ''
+
+  while (true) {
+    if (stopFlag.value) {
+      controller.abort()
+      break
+    }
+
+    const { done, value } = await reader.read()
+    if (done) {
+      _loading.value = false
+      break
+    }
+
+    let chunk = decoder.decode(value, { stream: true })
+    tempResult += chunk
+    const split = tempResult.match(/data:.*}\n\n/g)
+    if (split) {
+      chunk = split.join('')
+      tempResult = tempResult.replace(chunk, '')
+    } else {
+      continue
+    }
+    if (chunk && chunk.startsWith('data:{')) {
+      if (split) {
+        for (const str of split) {
+          let data
+          try {
+            data = JSONBig.parse(str.replace('data:{', '{'))
+          } catch (err) {
+            console.error('JSON string:', str)
+            throw err
+          }
+
+          if (data.code && data.code !== 200) {
+            ElMessage({
+              message: data.msg,
+              type: 'error',
+              showClose: true,
+            })
+            _loading.value = false
+            return
+          }
+
+          switch (data.type) {
+            case 'id':
+              currentRecord.id = data.id
+              _currentChat.value.records[index.value].id = data.id
+              break
+            case 'regenerate_record_id':
+              currentRecord.regenerate_record_id = data.regenerate_record_id
+              _currentChat.value.records[index.value].regenerate_record_id =
+                data.regenerate_record_id
+              break
+            case 'question':
+              currentRecord.question = data.question
+              _currentChat.value.records[index.value].question = data.question
+              break
+            case 'info':
+              console.info(data.msg)
+              break
+            case 'brief':
+              _currentChat.value.brief = data.brief
+              _chatList.value.forEach((c: Chat) => {
+                if (c.id === _currentChat.value.id) {
+                  c.brief = _currentChat.value.brief
+                }
+              })
+              break
+            case 'error':
+              currentRecord.error = data.content
+              emits('error', currentRecord.id)
+              break
+            case 'sql-result':
+              sql_answer += data.reasoning_content
+              _currentChat.value.records[index.value].sql_answer = sql_answer
+              break
+            case 'sql':
+              _currentChat.value.records[index.value].sql = data.content
+              break
+            case 'sql-data':
+              getChatData(_currentChat.value.records[index.value].id)
+              break
+            case 'chart-result':
+              chart_answer += data.reasoning_content
+              _currentChat.value.records[index.value].chart_answer = chart_answer
+              break
+            case 'chart':
+              _currentChat.value.records[index.value].chart = data.content
+              break
+            case 'datasource':
+              if (!_currentChat.value.datasource) {
+                _currentChat.value.datasource = data.id
+              }
+              break
+            case 'clarify':
+              // MetaDataImprove M1: the pipeline paused — store the payload so
+              // ClarifyBlock renders the candidates; the stream then closes
+              // with a terminal finish (handled below as 'stop').
+              currentRecord.clarify = {
+                question: data.question,
+                candidates: data.candidates,
+                max_select: data.max_select,
+              }
+              currentRecord.clarify_status = 'pending'
+              break
+            case 'finish':
+              // A pending-clarify record is not "done" — emit stop (clears the
+              // typing state without triggering recommend questions); the
+              // answer resumes this record through answerClarify.
+              if (currentRecord.clarify_status === 'pending') {
+                emits('stop', currentRecord.id)
+              } else {
+                emits('finish', currentRecord.id)
+              }
+              break
+          }
+          await nextTick()
+        }
+      }
+    }
+  }
+}
+
 const sendMessage = async () => {
   stopFlag.value = false
   _loading.value = true
@@ -115,122 +254,48 @@ const sendMessage = async () => {
       chat_id: _currentChatId.value,
     }
     const response = await questionApi.add(param, controller)
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-
-    let sql_answer = ''
-    let chart_answer = ''
-
-    let tempResult = ''
-
-    while (true) {
-      if (stopFlag.value) {
-        controller.abort()
-        break
-      }
-
-      const { done, value } = await reader.read()
-      if (done) {
-        _loading.value = false
-        break
-      }
-
-      let chunk = decoder.decode(value, { stream: true })
-      tempResult += chunk
-      const split = tempResult.match(/data:.*}\n\n/g)
-      if (split) {
-        chunk = split.join('')
-        tempResult = tempResult.replace(chunk, '')
-      } else {
-        continue
-      }
-      if (chunk && chunk.startsWith('data:{')) {
-        if (split) {
-          for (const str of split) {
-            let data
-            try {
-              data = JSONBig.parse(str.replace('data:{', '{'))
-            } catch (err) {
-              console.error('JSON string:', str)
-              throw err
-            }
-
-            if (data.code && data.code !== 200) {
-              ElMessage({
-                message: data.msg,
-                type: 'error',
-                showClose: true,
-              })
-              _loading.value = false
-              return
-            }
-
-            switch (data.type) {
-              case 'id':
-                currentRecord.id = data.id
-                _currentChat.value.records[index.value].id = data.id
-                break
-              case 'regenerate_record_id':
-                currentRecord.regenerate_record_id = data.regenerate_record_id
-                _currentChat.value.records[index.value].regenerate_record_id =
-                  data.regenerate_record_id
-                break
-              case 'question':
-                currentRecord.question = data.question
-                _currentChat.value.records[index.value].question = data.question
-                break
-              case 'info':
-                console.info(data.msg)
-                break
-              case 'brief':
-                _currentChat.value.brief = data.brief
-                _chatList.value.forEach((c: Chat) => {
-                  if (c.id === _currentChat.value.id) {
-                    c.brief = _currentChat.value.brief
-                  }
-                })
-                break
-              case 'error':
-                currentRecord.error = data.content
-                emits('error', currentRecord.id)
-                break
-              case 'sql-result':
-                sql_answer += data.reasoning_content
-                _currentChat.value.records[index.value].sql_answer = sql_answer
-                break
-              case 'sql':
-                _currentChat.value.records[index.value].sql = data.content
-                break
-              case 'sql-data':
-                getChatData(_currentChat.value.records[index.value].id)
-                break
-              case 'chart-result':
-                chart_answer += data.reasoning_content
-                _currentChat.value.records[index.value].chart_answer = chart_answer
-                break
-              case 'chart':
-                _currentChat.value.records[index.value].chart = data.content
-                break
-              case 'datasource':
-                if (!_currentChat.value.datasource) {
-                  _currentChat.value.datasource = data.id
-                }
-                break
-              case 'finish':
-                emits('finish', currentRecord.id)
-                break
-            }
-            await nextTick()
-          }
-        }
-      }
-    }
+    await consumeChatStream(response, currentRecord, controller)
   } catch (error) {
     if (!currentRecord.error) {
       currentRecord.error = ''
     }
     if (currentRecord.error.trim().length !== 0) {
       currentRecord.error = currentRecord.error + '\n'
+    }
+    currentRecord.error = currentRecord.error + 'Error:' + error
+    console.error('Error:', error)
+    emits('error')
+  } finally {
+    _loading.value = false
+  }
+}
+
+/** Answer a clarify-paused record (MetaDataImprove M1): resume the SAME
+ *  record over SSE. Called by the ClarifyBlock card rendered in this slot. */
+const answerClarify = async (body: { table_ids?: number[]; text?: string; skip?: boolean }) => {
+  stopFlag.value = false
+  _loading.value = true
+
+  if (index.value < 0) {
+    _loading.value = false
+    return
+  }
+  const currentRecord: ChatRecord = _currentChat.value.records[index.value]
+  if (!currentRecord.id) {
+    _loading.value = false
+    return
+  }
+  // Optimistic settle so the card collapses immediately; the resumed stream
+  // re-renders the same record's sql/chart blocks.
+  currentRecord.clarify_status = body.skip ? 'skipped' : 'answered'
+
+  try {
+    const controller: AbortController = new AbortController()
+    const response = await chatApi.answerClarify(currentRecord.id, body, controller)
+    await consumeChatStream(response, currentRecord, controller)
+  } catch (error) {
+    if (!currentRecord.error) {
+      currentRecord.error = ''
     }
     currentRecord.error = currentRecord.error + 'Error:' + error
     console.error('Error:', error)
@@ -278,11 +343,12 @@ onMounted(() => {
   }
 })
 
-defineExpose({ sendMessage, index: () => index.value, stop })
+defineExpose({ sendMessage, answerClarify, index: () => index.value, stop })
 </script>
 
 <template>
   <BaseAnswer v-if="message" :message="message" :reasoning-name="reasoningName" :loading="_loading">
+    <ClarifyBlock v-if="message.record?.clarify" :record="message.record" @answer="answerClarify" />
     <ChartBlock
       v-model:show-label="showLabel"
       v-model:thousands-separator-list="enableThousandsSeparatorList"

@@ -17,6 +17,20 @@ export interface CollectedPipeline {
   brief: string | null;
   chartConfig: Record<string, unknown> | null;
   error: string | null;
+  /** Clarify round (MetaDataImprove M1): set when the pipeline paused with a
+   *  pending question instead of producing SQL. The MCP caller answers by
+   *  re-calling ask_question with clarify_record_id + the picked tables /
+   *  supplement / skip. */
+  clarify: {
+    record_id: number;
+    question: string;
+    candidates: Array<{
+      table_id: number;
+      table_name: string;
+      comment: string;
+    }>;
+    max_select: number;
+  } | null;
 }
 
 /** Best-effort JSON.parse — returns null on failure (defensive; the chart
@@ -42,6 +56,7 @@ export async function collectPipeline(
     brief: null,
     chartConfig: null,
     error: null,
+    clarify: null,
   };
   for await (const ev of gen) {
     switch (ev.type) {
@@ -59,6 +74,9 @@ export async function collectPipeline(
         if (!out.chartConfig) {
           out.chartConfig = safeJsonParse(ev.data.content);
         }
+        break;
+      case 'clarify':
+        out.clarify = { ...ev.data };
         break;
       case 'error':
         out.error = ev.data.content;

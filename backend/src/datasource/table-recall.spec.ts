@@ -3,6 +3,7 @@ import {
   calcKeywordScore,
   longestMentions,
   mentionSpans,
+  needsClarify,
   rankTables,
   selectTables,
 } from './table-recall';
@@ -185,5 +186,52 @@ describe('rankTables (fusion)', () => {
       { alpha: 0.4, count: 2 },
     );
     expect(out.map((t) => t.tableName)).toEqual(['sales_order', 'a']);
+  });
+});
+
+describe('needsClarify (clarify gate)', () => {
+  // The pool a clarify question offers: 4 tables, none mentioned.
+  const pool = [
+    { id: 1, tableName: 'sales_order', comment: '销售订单' },
+    { id: 2, tableName: 'crm_customer', comment: '客户信息' },
+    { id: 3, tableName: 'inv_stock', comment: '库存记录' },
+    { id: 4, tableName: 'fin_payment', comment: '支付流水' },
+  ];
+  const gate = (rounds = 0, extra = {}) => ({
+    enabled: true,
+    tableThreshold: 3,
+    rounds,
+    maxRounds: 1,
+    ...extra,
+  });
+
+  it('asks when candidates reach the threshold and nothing is mentioned', () => {
+    expect(needsClarify(pool, '统计一下整体情况', gate())).toBe(true);
+  });
+
+  it('does not ask below the threshold', () => {
+    expect(needsClarify(pool.slice(0, 2), '统计一下整体情况', gate())).toBe(
+      false,
+    );
+  });
+
+  it('does not ask when the question explicitly names a table (or comment)', () => {
+    expect(needsClarify(pool, '查一下sales_order的金额', gate())).toBe(false);
+    // full-comment mention also counts as explicit
+    expect(needsClarify(pool, '看看销售订单有多少', gate())).toBe(false);
+  });
+
+  it('does not ask when the round budget is spent (max rounds)', () => {
+    expect(needsClarify(pool, '统计一下整体情况', gate(1))).toBe(false);
+  });
+
+  it('does not ask when the gate is disabled', () => {
+    expect(
+      needsClarify(pool, '统计一下整体情况', gate(0, { enabled: false })),
+    ).toBe(false);
+  });
+
+  it('empty question never triggers (degenerate input)', () => {
+    expect(needsClarify(pool, '', gate())).toBe(false);
   });
 });

@@ -52,6 +52,13 @@ export interface ChatRecordSnake {
   regenerate_record_id: number | null;
   duration: number | null;
   total_tokens: number | null;
+  /** Clarify round (MetaDataImprove M1) — pass-through Json blobs + status:
+   *  clarify = {question, candidates:[{table_id,table_name,comment}],
+   *  max_select}; clarify_answer = {table_ids?, table_names?, text?, skip?};
+   *  clarify_status = pending | answered | skipped | null. */
+  clarify: unknown;
+  clarify_answer: unknown;
+  clarify_status: string | null;
 }
 
 export interface ChatInfoSnake {
@@ -174,6 +181,9 @@ export function toChatRecordSnake(
     regenerate_record_id: record.regenerateRecordId,
     duration: record.duration,
     total_tokens: record.totalTokens,
+    clarify: record.clarify,
+    clarify_answer: record.clarifyAnswer,
+    clarify_status: record.clarifyStatus,
   };
 }
 

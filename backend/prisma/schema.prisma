@@ -144,6 +144,10 @@ model ChatRecord {
   regenerateRecordId Int? // 由哪条 record 重新生成而来
   finish             Boolean  @default(false) // 流水线是否结束 (正常结束 + error 均置 true)
   error              String? // 错误信息 (流水线中途失败)
+  // 澄清轮 (MetaDataImprove M1 规则1: 无有效语义且候选表≥阈值时反问用户收敛)
+  clarify            Json? // 待澄清载荷 {question, candidates:[{table_id,table_name,comment}], max_select}
+  clarifyAnswer      Json? // 用户应答 {table_ids?, table_names?, text?, skip?}
+  clarifyStatus      String? // pending | answered | skipped (null = 未触发澄清)
   analysisThinking   String? // 分析思考过程 (区别于 analysis 正文)
   predictContent     String? // 预测正文 (区别于 predict 摘要)
   runTime            Int      @default(0) // 执行耗时 (秒)

@@ -31,7 +31,7 @@ import { DatasourceService } from '../datasource/datasource.service';
 import { AuditService } from '../audit/audit.service';
 import { OperationModule, OperationType } from '../audit/operation.enum';
 import { G2SsrClient } from './g2-ssr-client.service';
-import { collectPipeline } from './pipeline-collector';
+import { collectPipeline, type CollectedPipeline } from './pipeline-collector';
 import { buildG2Spec } from '../chart/chart-spec.builder';
 import { chartObjectToFieldMapping } from '../chart/chart-object.builder';
 import { PrismaService } from '../database/prisma.service';
@@ -44,12 +44,22 @@ import { McpIntegrationService } from './mcp-integration.service';
 import { tr } from '../common/i18n/translate';
 
 export interface AskQuestionArgs {
-  question: string;
+  /** Required for a fresh question; omitted when resuming a clarify round. */
+  question?: string;
   chat_id?: number;
   datasource_id?: number;
   lang?: string;
   model_id?: number;
   return_img?: boolean;
+  /** Two-phase clarify (MetaDataImprove M1): the record_id from a
+   *  needs_clarification result. Presence switches the call to resume mode. */
+  clarify_record_id?: number;
+  /** Table picks from the offered candidates (ids must come from it). */
+  clarify_table_ids?: number[];
+  /** Free-text supplement joined to the original question. */
+  clarify_text?: string;
+  /** Give up narrowing and generate with the pre-clarify behavior. */
+  clarify_skip?: boolean;
 }
 
 /** Per-request auth context captured by every tool closure. */
@@ -171,14 +181,18 @@ export class McpService {
       'ask_question',
       {
         description:
-          'Ask a natural-language question against this workspace data. Returns { record_id, sql, brief, data, chart_type, chart_config }. Set return_img=true to also return a PNG image block for bar/column/line/pie charts. lang is only a fallback (used for scripts like ja/ko the detector does not recognize) — the reply language follows the question text itself.',
+          'Ask a natural-language question against this workspace data. Returns { record_id, sql, brief, data, chart_type, chart_config }. When the question is ambiguous across many tables the tool returns { needs_clarification: true, record_id, candidates, max_select } instead of SQL — re-call with clarify_record_id plus clarify_table_ids (picked from candidates), clarify_text, or clarify_skip=true to resume the SAME record. Set return_img=true to also return a PNG image block for bar/column/line/pie charts. lang is only a fallback (used for scripts like ja/ko the detector does not recognize) — the reply language follows the question text itself.',
         inputSchema: {
-          question: z.string().min(1),
+          question: z.string().min(1).optional(),
           chat_id: z.number().int().positive().optional(),
           datasource_id: z.number().int().positive().optional(),
           lang: z.string().optional(),
           model_id: z.number().int().positive().optional(),
           return_img: z.boolean().optional(),
+          clarify_record_id: z.number().int().positive().optional(),
+          clarify_table_ids: z.array(z.number().int().positive()).optional(),
+          clarify_text: z.string().optional(),
+          clarify_skip: z.boolean().optional(),
         },
       },
       (args) =>
@@ -189,6 +203,10 @@ export class McpService {
           lang: args.lang,
           model_id: args.model_id,
           return_img: args.return_img,
+          clarify_record_id: args.clarify_record_id,
+          clarify_table_ids: args.clarify_table_ids,
+          clarify_text: args.clarify_text,
+          clarify_skip: args.clarify_skip,
         }),
     );
   }
@@ -337,28 +355,6 @@ export class McpService {
     try {
       const oid = ctx.integration.oid;
       let chatId = args.chat_id;
-      if (!chatId) {
-        const chat = await this.chatService.start({
-          datasourceId: args.datasource_id,
-          origin: 1,
-        });
-        chatId = chat.id;
-      } else {
-        // The integration is workspace-bound: a caller-supplied chat_id may
-        // only drive chats in the same workspace.
-        const chat = await this.prisma.chat.findUnique({
-          where: { id: chatId },
-          select: { id: true, oid: true },
-        });
-        if (!chat) {
-          throw new BadRequestException('Chat ID is not exist');
-        }
-        if (chat.oid !== oid) {
-          throw new BadRequestException(
-            'The chat does not belong to this MCP workspace',
-          );
-        }
-      }
 
       // A caller-supplied model_id is only honored when the model is mapped to
       // the integration's workspace; otherwise the pipeline falls back to the
@@ -373,24 +369,86 @@ export class McpService {
         }
       }
 
-      // Tool-level language override (the JWT path used to do this via
-      // withAuth opts). Fallback only: the chat pipeline detects the reply
-      // language from the question text (detect-language), so this value is
-      // consulted just for scripts the detector doesn't recognize (ja/ko/…).
-      // Mutating the per-request ALS store is safe: tools run sequentially
-      // inside one HTTP request.
-      if (args.lang) {
-        const store = RequestContext.current();
-        if (store?.user) {
-          store.user = { ...store.user, language: args.lang };
+      let collected: CollectedPipeline;
+      if (args.clarify_record_id != null) {
+        // Two-phase clarify (MetaDataImprove M1): a previous call returned
+        // needs_clarification; this call resumes the SAME record with the
+        // answer (question is not re-sent — the record keeps its own).
+        const rid = args.clarify_record_id;
+        chatId = await this.chatService.findChatIdByRecord(rid);
+        collected = await collectPipeline(
+          this.chatService.resumeClarified(
+            rid,
+            {
+              tableIds: args.clarify_table_ids,
+              text: args.clarify_text,
+              skip: args.clarify_skip,
+            },
+            modelId,
+          ),
+        );
+      } else {
+        if (!args.question) {
+          throw new BadRequestException(
+            'question is required unless clarify_record_id is set',
+          );
         }
-      }
+        if (!chatId) {
+          const chat = await this.chatService.start({
+            datasourceId: args.datasource_id,
+            origin: 1,
+          });
+          chatId = chat.id;
+        } else {
+          // The integration is workspace-bound: a caller-supplied chat_id may
+          // only drive chats in the same workspace.
+          const chat = await this.prisma.chat.findUnique({
+            where: { id: chatId },
+            select: { id: true, oid: true },
+          });
+          if (!chat) {
+            throw new BadRequestException('Chat ID is not exist');
+          }
+          if (chat.oid !== oid) {
+            throw new BadRequestException(
+              'The chat does not belong to this MCP workspace',
+            );
+          }
+        }
 
-      const collected = await collectPipeline(
-        this.chatService.runPipeline(chatId, args.question, modelId),
-      );
+        // Tool-level language override (the JWT path used to do this via
+        // withAuth opts). Fallback only: the chat pipeline detects the reply
+        // language from the question text (detect-language), so this value is
+        // consulted just for scripts the detector doesn't recognize (ja/ko/…).
+        // Mutating the per-request ALS store is safe: tools run sequentially
+        // inside one HTTP request.
+        if (args.lang) {
+          const store = RequestContext.current();
+          if (store?.user) {
+            store.user = { ...store.user, language: args.lang };
+          }
+        }
+
+        collected = await collectPipeline(
+          this.chatService.runPipeline(chatId, args.question, modelId),
+        );
+      }
       if (collected.error) {
         return this.error(collected.error);
+      }
+      // The pipeline paused on the clarify gate — surface the structured
+      // question instead of SQL (the caller re-calls with the answer).
+      if (collected.clarify) {
+        return this.text(
+          JSON.stringify({
+            needs_clarification: true,
+            record_id: collected.clarify.record_id,
+            question: collected.clarify.question,
+            candidates: collected.clarify.candidates,
+            max_select: collected.clarify.max_select,
+            hint: 'Re-call ask_question with clarify_record_id and either clarify_table_ids (ids from candidates), clarify_text, or clarify_skip=true.',
+          }),
+        );
       }
       const recordData =
         collected.recordId != null

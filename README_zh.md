@@ -202,6 +202,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 - **对话历史**: 保留最近20条对话记录
 - **数据存储**: 查询结果和图表配置以JSON格式存储
 - **向量检索**: PostgreSQL pgvector，支持术语/样例/表召回的混合检索
+- **反问收敛（澄清）**: 问题在多张候选表（默认阈值 `clarify.table_threshold`=3）间有歧义且未点名任何表时，管线先反问用户选表/补充说明/跳过，再生成 SQL（`POST /chat/record/:rid/clarify` 恢复同一记录；MCP `ask_question` 返回 `needs_clarification` 支持两段式交互）
 
 ## 开发注意事项
 

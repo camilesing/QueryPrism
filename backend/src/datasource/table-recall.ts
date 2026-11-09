@@ -79,14 +79,13 @@ export interface TableRecallCandidate {
   comment: string;
 }
 
-/** Keep explicitly mentioned candidates, then fill remaining slots by the
- *  caller's rank order (port of _select_tables, applyLimit always true here).
- *  Overlapping names and comments resolve to the longest mention separately. */
-export function selectTables<T extends TableRecallCandidate>(
+/** Shared explicit-mention detection over a candidate pool: quoted-identifier
+ *  aware name spans + comment spans, resolved through longestMentions.
+ *  Returns the lowercased names/comments the question explicitly carries. */
+function detectExplicitMentions<T extends TableRecallCandidate>(
   ranked: T[],
   question: string,
-  limit: number,
-): T[] {
+): { names: Set<string>; comments: Set<string> } {
   const q = (question || '').toLowerCase();
   const quoted: Array<[[number, number], string]> = [];
   for (const m of q.matchAll(RE_QUOTED_IDENTIFIER)) {
@@ -115,15 +114,27 @@ export function selectTables<T extends TableRecallCandidate>(
       commentSpans.set(comment, mentionSpans(q, comment));
     }
   }
+  return {
+    names: longestMentions(nameSpans),
+    comments: longestMentions(commentSpans),
+  };
+}
 
-  const explicitNames = longestMentions(nameSpans);
-  const explicitComments = longestMentions(commentSpans);
+/** Keep explicitly mentioned candidates, then fill remaining slots by the
+ *  caller's rank order (port of _select_tables, applyLimit always true here).
+ *  Overlapping names and comments resolve to the longest mention separately. */
+export function selectTables<T extends TableRecallCandidate>(
+  ranked: T[],
+  question: string,
+  limit: number,
+): T[] {
+  const explicit = detectExplicitMentions(ranked, question);
   const required: T[] = [];
   const remaining: T[] = [];
   for (const table of ranked) {
     const name = (table.tableName || '').trim().toLowerCase();
     const comment = (table.comment || '').trim().toLowerCase();
-    if (explicitNames.has(name) || explicitComments.has(comment)) {
+    if (explicit.names.has(name) || explicit.comments.has(comment)) {
       required.push(table);
     } else {
       remaining.push(table);
@@ -131,6 +142,42 @@ export function selectTables<T extends TableRecallCandidate>(
   }
   const fill = remaining.slice(0, Math.max(0, limit - required.length));
   return [...required, ...fill];
+}
+
+// ───────────────────────── clarify gate (MetaDataImprove M1) ──────────────
+
+export interface ClarifyGateOptions {
+  enabled: boolean;
+  /** Ask only when at least this many candidate tables are in play. */
+  tableThreshold: number;
+  /** Clarify rounds already spent on this record; the gate stays closed once
+   *  the budget is exhausted (an answered/skipped record never re-asks). */
+  rounds: number;
+  maxRounds: number;
+}
+
+/** Should the pipeline pause and ask the user to narrow the tables? Rule 1 of
+ *  the metadata-improvement plan: with no valid semantics (M1 has none, so
+ *  this is always the branch) and >= tableThreshold candidate tables about to
+ *  be stuffed into the schema, ask instead of guessing — one wrong pick breaks
+ *  the join. An explicitly named table/comment means the user already decided,
+ *  so no question is asked.
+ *
+ *  M1 limitation: no semantic layer yet, so "no valid semantics" degenerates
+ *  to "nothing explicitly mentioned"; multi-turn follow-ups can still trigger
+ *  the gate (mitigate via clarify.enabled / skip). */
+export function needsClarify<T extends TableRecallCandidate>(
+  candidates: T[],
+  question: string,
+  opts: ClarifyGateOptions,
+): boolean {
+  if (!opts.enabled) return false;
+  if (opts.rounds >= opts.maxRounds) return false;
+  const q = (question || '').trim();
+  if (!q) return false;
+  if (candidates.length < opts.tableThreshold) return false;
+  const explicit = detectExplicitMentions(candidates, q);
+  return explicit.names.size === 0 && explicit.comments.size === 0;
 }
 
 // ───────────────────────── keyword matching score ─────────────────────────
