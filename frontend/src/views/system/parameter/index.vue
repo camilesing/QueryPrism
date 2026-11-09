@@ -21,6 +21,7 @@ const EMBEDDING_NUMBER_KEYS = [
   'clarify.max_select',
   'clarify.max_rounds',
   'semantic.max_tables',
+  'metric.max_definitions',
 ]
 
 const state = reactive({
@@ -48,6 +49,9 @@ const state = reactive({
     'clarify.max_rounds': 1,
     'semantic.enabled': true,
     'semantic.max_tables': 1,
+    'metric.enabled': true,
+    'metric.max_definitions': 5,
+    'naming.enabled': true,
     'login.initial_pwd_disabled': false,
     'login.initial_pwd_hidden': false,
   }),
@@ -68,7 +72,9 @@ const loadData = () => {
             item.pkey?.startsWith('login') ||
             item.pkey?.startsWith('embedding') ||
             item.pkey?.startsWith('clarify') ||
-            item.pkey?.startsWith('semantic')
+            item.pkey?.startsWith('semantic') ||
+            item.pkey?.startsWith('metric') ||
+            item.pkey?.startsWith('naming')
           ) {
             if (item.pkey === 'chat.queryprism_name') {
               if (item.pval && item.pval.trim().length > 0) {
@@ -567,6 +573,70 @@ onMounted(() => {
                 step="1"
                 controls-position="right"
               />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          {{ t('parameter.metric_settings') }}
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr">
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.metric_enabled') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.metric_enabled_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-switch v-model="state.parameterForm['metric.enabled']" />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.metric_max_definitions') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.metric_max_definitions_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['metric.max_definitions']"
+                :min="1"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.naming_enabled') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.naming_enabled_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-switch v-model="state.parameterForm['naming.enabled']" />
             </div>
           </div>
         </div>

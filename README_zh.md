@@ -206,6 +206,8 @@ VITE_API_BASE_URL=http://localhost:3000/api
 - **业务语义（M2）**: 表/字段业务含义三层 scope（个人 > 工作空间 > 全局，跨层修改走审批队列，每次保存留版本）——语义覆盖的问题仅把前 `semantic.max_tables`（默认 1）张表放入 SQL 提示词，LLM 可通过 `need_clarify` 请求更多表；录入渠道：管理页（`/set/semantic`）、Excel 导入导出、API Key 认证的 `POST /meta/semantic/import`
 - **Join 拓扑（M3）**: 关系编辑器的图（`Datasource.tableRelation`，按 X6 cells 原样存储）在读取时归一化为 FK 边——cell/port id 优先经同步的 Table/Field 行解析，画布标签兜底。SQL 提示词中的 FK 行只覆盖已塞入表的可见字段，BFS ≤2 跳的桥接表（连接被召回表的中间表）自动塞入（并加入澄清候选），多表问题带上真实 join 路径
 - **维度枚举（M3）**: `role=dimension` 字段一键枚举采集——有界 DISTINCT 采样（`semantic.enum_scan_rows`，默认 10000）+ 低基数校验（`semantic.enum_max_values`，默认 50），回填带版本的 `enumValues` 缓存；按数据源限流 `semantic.enum_cooldown`（默认 60 秒）。字段语义页管理按钮，`POST /system/semantic/collect_enum/:datasource_id`
+- **指标体系（M4）**: 原子指标（绑定字段的聚合度量）、修饰词（统计范围过滤条件）、时间周期、派生指标与复合指标（对派生/复合指标编码做四则运算）——复用 M2 的三层 scope、审批队列与版本历史。问题命中指标（名称/别名）时，完整统计口径注入 generate_sql 提示词并强制纳入所需表（`metric.enabled` 开关，上限 `metric.max_definitions`，默认 5）。录入渠道：管理页（`/set/metric`）、六 sheet Excel 导入导出、API Key 认证的 `POST /meta/metric/import` 与 `POST /meta/standard/import`。复合指标为简单四则运算版，更深的组合留作后续扩展
+- **数据标准（M4）**: 度量单位字典（advisory——供管理与自动补全）与命名词典（业务词/词根 → 标准译名），同一治理栈；命名词典命中时将 `<naming_rules>` 注入 SQL 提示词（`naming.enabled` 可关）
 
 ## 开发注意事项
 

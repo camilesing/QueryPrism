@@ -18,6 +18,7 @@ import Member from '@/views/system/member/index.vue'
 import Professional from '@/views/system/professional/index.vue'
 import Training from '@/views/system/training/index.vue'
 import Semantic from '@/views/system/semantic/index.vue'
+import Metric from '@/views/system/metric/index.vue'
 import Prompt from '@/views/system/prompt/index.vue'
 import Audit from '@/views/system/audit/index.vue'
 import Appearance from '@/views/system/appearance/index.vue'
@@ -137,6 +138,12 @@ export const routes = [
         name: 'semantic',
         component: Semantic,
         meta: { title: 'semantic.menu_title' },
+      },
+      {
+        path: '/set/metric',
+        name: 'metric',
+        component: Metric,
+        meta: { title: 'metric.menu_title' },
       },
     ],
   },
