@@ -634,7 +634,7 @@ model FieldSemanticVersion {
 model SemanticChangeRequest {
   id          Int       @id @default(autoincrement())
   oid         Int // 发起人所在工作空间
-  entityType  String // table | field
+  entityType  String // table | field | metric | standard
   action      String // upsert | remove
   targetType  String // WORKSPACE | GLOBAL
   payload     Json // 目标层视角的完整内容（datasourceId/tableName/.../meaning）
@@ -649,4 +649,103 @@ model SemanticChangeRequest {
 
   @@index([oid, status, targetType])
   @@index([proposerUid, status])
+}
+
+// ============================== MetaDataImprove M4: 指标体系 + 数据标准 ==============================
+
+// 指标体系字典：kind 判别一张治理表，原子指标/修饰词/时间周期/派生指标/复合指标
+// 共用 M2 的三层 scope、版本历史与审批基建（semantic-policy + SemanticChangeRequest
+// entityType='metric'）。code 在 (scope 层, kind) 内唯一，由 service 在写事务内校验
+// （Prisma 条件唯一索引不支持）。definition 为按 kind 严格校验的 JSON 判别负载
+// （wire/存储均 snake 键，DTO 按 kind 校验 + service 跨字段校验）：
+//   atomic    {datasource_id, table_name, field_name, aggregation}
+//   modifier  {datasource_id, table_name, field_name, operator, values[]}
+//   period    {mode:'recent', time_unit, count} | {mode:'anchor', anchor}
+//   derived   {atomic_code, modifier_codes?, period_code?, time_field?}
+//   composite {expression} —— 四则运算表达式；记号只允许其他派生/复合指标 code、
+//             数字与 + - * / ( )（白名单校验；悬空引用/成环在运行时展开时跳过）
+// 已知边界：derived 只引用 atomic、composite 只引用 derived/composite，不做任意
+// 递归；引用可以指向尚未创建的 code（录入顺序自由），运行时解析失败的指标跳过
+// 注入而不是让整个请求失败。
+model MetricDef {
+  id          Int      @id @default(autoincrement())
+  kind        String // atomic | modifier | period | derived | composite
+  code        String // scope+kind 内唯一业务编码，如 pay_amount
+  name        String // 展示名（问题匹配词），如 支付金额
+  aliases     Json? // string[] 别名（同样参与问题匹配）
+  description String?
+  unit        String? // 原子指标度量单位（数据标准，advisory 注入提示词）
+  definition  Json // 按 kind 严格校验的判别负载（见上方模型注释）
+  scope       String // GLOBAL | WORKSPACE | PERSONAL
+  oid         Int? // WORKSPACE/PERSONAL: 工作空间 id；GLOBAL: null
+  ownerUid    Int? // PERSONAL: 归属用户 uid；其余 null
+  enabled     Boolean  @default(true)
+  version     Int      @default(1) // 每次落库 +1 并写历史快照；运行时只用当前行
+  createBy    Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  versions MetricDefVersion[]
+
+  @@index([kind, code])
+  @@index([oid, ownerUid])
+}
+
+// append-only 版本历史（同 TableSemanticVersion）：便于审阅，运行时只用实体当前行。
+model MetricDefVersion {
+  id        Int          @id @default(autoincrement())
+  entity    MetricDef    @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entityId  Int
+  version   Int
+  snapshot  Json // 全量快照 {kind, code, name, aliases, description, unit, definition, enabled, source}
+  changedBy Int?
+  note      String?
+  createdAt DateTime     @default(now())
+
+  @@unique([entityId, version])
+}
+
+// 数据标准字典（MetaDataImprove M4）：度量单位 + 命名词典同一治理表
+// （SemanticChangeRequest entityType='standard'）。
+//   unit   term=单位名（件/元），name=标准符号或规范名，category=currency|count|time|other
+//   naming term=业务词/表/字段词根，name=标准译名，category=business_noun|table_root|field_root
+// 运行时：命名词典词条被问题文本命中时注入 generate_sql 提示词（naming.enabled
+// 可关）；单位字典 advisory —— 供管理与自动补全，不校验 FieldSemantic.unit 等
+// 既有自由文本。与 Terminology 的边界：Terminology 是工作空间级 RAG 召回词库
+// （无版本/审批），命名词典是带治理的标准译名库，两者并存、职责不同。
+model DataStandard {
+  id          Int      @id @default(autoincrement())
+  kind        String // unit | naming
+  code        String // scope+kind 内唯一
+  term        String // 被匹配词（单位名 / 业务词、词根）
+  name        String // 标准译名 / 标准符号
+  aliases     Json? // string[] 其他参与匹配的变体
+  category    String?
+  description String?
+  scope       String // GLOBAL | WORKSPACE | PERSONAL
+  oid         Int?
+  ownerUid    Int?
+  enabled     Boolean  @default(true)
+  version     Int      @default(1)
+  createBy    Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  versions DataStandardVersion[]
+
+  @@index([kind, code])
+  @@index([oid, ownerUid])
+}
+
+model DataStandardVersion {
+  id        Int             @id @default(autoincrement())
+  entity    DataStandard    @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entityId  Int
+  version   Int
+  snapshot  Json
+  changedBy Int?
+  note      String?
+  createdAt DateTime        @default(now())
+
+  @@unique([entityId, version])
 }

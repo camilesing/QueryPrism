@@ -152,24 +152,33 @@ export class SemanticService {
     const actor = this.actor();
     const cp = currentPage > 0 ? Math.floor(currentPage) : 1;
     const ps = Math.max(10, Math.floor(pageSize));
-    const visible: Prisma.TableSemanticWhereInput = {
-      OR: [
-        { scope: 'GLOBAL' },
-        { scope: 'WORKSPACE', oid: actor.oid },
-        { scope: 'PERSONAL', oid: actor.oid, ownerUid: actor.id },
-      ],
-    };
+    // Keyword narrows WITHIN the visible layers — the visibility OR stays a
+    // separate AND clause (overwriting it would leak other workspaces' rows
+    // through a keyword search; found while building the M4 metric page on
+    // the same pattern).
+    const andClauses: Prisma.TableSemanticWhereInput[] = [
+      {
+        OR: [
+          { scope: 'GLOBAL' },
+          { scope: 'WORKSPACE', oid: actor.oid },
+          { scope: 'PERSONAL', oid: actor.oid, ownerUid: actor.id },
+        ],
+      },
+    ];
+    if (filters?.keyword?.trim()) {
+      const kw = filters.keyword.trim();
+      andClauses.push({
+        OR: [
+          { tableName: { contains: kw, mode: 'insensitive' } },
+          { meaning: { contains: kw, mode: 'insensitive' } },
+        ],
+      });
+    }
+    const visible: Prisma.TableSemanticWhereInput = { AND: andClauses };
     if (filters?.scope && SEMANTIC_SCOPES.includes(filters.scope as never)) {
       visible.scope = filters.scope;
     }
     if (filters?.datasourceId) visible.datasourceId = filters.datasourceId;
-    if (filters?.keyword?.trim()) {
-      const kw = filters.keyword.trim();
-      visible.OR = [
-        { tableName: { contains: kw, mode: 'insensitive' } },
-        { meaning: { contains: kw, mode: 'insensitive' } },
-      ];
-    }
 
     const isTable = entityType === 'table';
     const rows = isTable
@@ -361,7 +370,9 @@ export class SemanticService {
 
   /** `pending` = requests the actor can review (workspace admin → WORKSPACE
    *  target of their workspace; system admin → everything pending);
-   *  `mine` = the actor's own proposals. */
+   *  `mine` = the actor's own proposals. entityType stays table|field here —
+   *  the M4 metric/standard dictionaries have their own inbox on the shared
+   *  table (GovernedDictService.pageRequests). */
   async pageRequests(
     box: 'pending' | 'mine',
     currentPage: number,
@@ -370,12 +381,20 @@ export class SemanticService {
     const actor = this.actor();
     const cp = currentPage > 0 ? Math.floor(currentPage) : 1;
     const ps = Math.max(10, Math.floor(pageSize));
+    const base: Prisma.SemanticChangeRequestWhereInput = {
+      entityType: { in: ['table', 'field'] },
+    };
     const where: Prisma.SemanticChangeRequestWhereInput =
       box === 'mine'
-        ? { proposerUid: actor.id }
+        ? { ...base, proposerUid: actor.id }
         : isSystemAdmin(actor)
-          ? { status: 'pending' }
-          : { status: 'pending', targetType: 'WORKSPACE', oid: actor.oid };
+          ? { ...base, status: 'pending' }
+          : {
+              ...base,
+              status: 'pending',
+              targetType: 'WORKSPACE',
+              oid: actor.oid,
+            };
     const rows = await this.prisma.semanticChangeRequest.findMany({
       where,
       orderBy: { createdAt: 'desc' },

@@ -17,3 +17,8 @@ export {
   SemanticReviewDto,
   SemanticUpsertDto,
 } from './semantic.dto';
+export {
+  MetricReviewDto,
+  MetricUpsertDto,
+  StandardUpsertDto,
+} from './metric.dto';

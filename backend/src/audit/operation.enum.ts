@@ -19,6 +19,7 @@ export enum OperationModule {
   EMBEDDING = 'embedding',
   MCP = 'mcp',
   SEMANTIC = 'semantic',
+  METRIC = 'metric',
 }
 
 export enum OperationType {

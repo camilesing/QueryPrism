@@ -1,0 +1,15 @@
+{
+  "no_context_user": "请求上下文中没有登录用户",
+  "invalid_scope": "未知的数据标准层级",
+  "invalid_kind": "未知的数据标准类型",
+  "missing_fields": "编码、词条与标准译名为必填",
+  "invalid_category": "未知的标准分类",
+  "invalid_payload": "变更提案的载荷格式非法",
+  "entity_not_found": "数据标准条目不存在",
+  "edit_forbidden": "不能直接编辑该层级，请发起变更提案",
+  "request_not_pending": "该变更提案不在待审批状态",
+  "request_pending_exists": "该条目已存在待审批的变更提案",
+  "review_forbidden": "无权审批该层级的变更",
+  "import_forbidden": "仅空间管理员可导入数据标准",
+  "import_bad_file": "上传的文件不是有效的 xlsx 工作簿"
+}
