@@ -66,6 +66,11 @@ export class AiQuestionService {
     /** MetaDataImprove M2: effective table/field semantics — injected into the
      *  M-Schema as the authoritative comment layer (getMSchema passthrough). */
     semantics?: MSchemaSemantics;
+    /** MetaDataImprove M4: pre-rendered metric-definition and naming-rule
+     *  blocks (the chat pipeline resolves them next to `semantics`; empty
+     *  string / undefined renders a blank section, same as terminologies). */
+    metrics?: string;
+    namingRules?: string;
   }): Promise<AiModelQuestion> {
     const sampleDataEnabled = await this.sampleDataEnabled();
     const [schema, sampleData, terminologies, dataTraining, customPromptText] =
@@ -111,6 +116,8 @@ export class AiQuestionService {
       dataTraining,
       history: opts.history,
       customPrompt: customPromptText,
+      metrics: opts.metrics,
+      namingRules: opts.namingRules,
     };
   }
 
@@ -135,6 +142,9 @@ export class AiQuestionService {
     lang?: string;
     /** MetaDataImprove M2: passed through to buildSqlContext. */
     semantics?: MSchemaSemantics;
+    /** MetaDataImprove M4: passed through to buildSqlContext. */
+    metrics?: string;
+    namingRules?: string;
   }): Promise<AiModelQuestion> {
     const base = await this.buildSqlContext(opts);
     base.sql = opts.sql;

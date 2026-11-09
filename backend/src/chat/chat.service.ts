@@ -71,6 +71,8 @@ import {
   SemanticService,
   type SemanticAnnotations,
 } from '../semantic/semantic.service';
+import { MetricService } from '../semantic/metric.service';
+import { DataStandardService } from '../semantic/standard.service';
 import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
@@ -145,6 +147,8 @@ export class ChatService {
     private readonly rowPermissionService: RowPermissionService,
     private readonly terminologyService: TerminologyService,
     private readonly semanticService: SemanticService,
+    private readonly metricService: MetricService,
+    private readonly standardService: DataStandardService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
   ) {}
@@ -1036,6 +1040,51 @@ export class ChatService {
       }
     }
 
+    // --- metric definitions + naming rules (MetaDataImprove M4) ----------
+    // A matched metric outranks both recall ranking and the rule-2 cut: its
+    // atomic tables are force-stuffed (checked tables only — an unchecked
+    // binding still injects its caliber and the need_clarify contract covers
+    // the missing table) so what the prompt teaches is computable from the
+    // schema. Runs after the clarify gate and BEFORE the M3 bridge expansion
+    // so join connectors see the final set. Dictionary failures degrade to
+    // no injection (enrichment, never a hard dependency — vector-recall
+    // degradation rule).
+    let metricText = '';
+    let namingText = '';
+    if (cfg.metricEnabled || cfg.namingEnabled) {
+      try {
+        if (cfg.metricEnabled) {
+          const matched = await this.metricService.matchDefinitions(
+            datasourceId,
+            content,
+            cfg.metricMaxDefinitions,
+          );
+          if (matched.text) {
+            metricText = matched.text;
+            if (tableIds) {
+              const extraIds = matched.atomicTableNames
+                .filter((n) => checkedTableNames.has(n))
+                .map((n) => tableByName.get(n)?.id)
+                .filter(
+                  (id): id is number => id != null && !tableIds!.includes(id),
+                );
+              if (extraIds.length > 0) tableIds = [...tableIds, ...extraIds];
+            }
+          }
+        }
+        if (cfg.namingEnabled) {
+          namingText = await this.standardService.namingTemplateFor(
+            content,
+            cfg.metricMaxDefinitions,
+          );
+        }
+      } catch (e) {
+        this.logger.warn(
+          `metric definitions skipped: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
     // --- join-bridge expansion (MetaDataImprove M3) ----------------------
     // A narrowed schema (recall top-K / rule 2 / a clarify pick) may hold two
     // tables whose only join runs through a THIRD table recall never
@@ -1068,6 +1117,8 @@ export class ChatService {
       embeddingConfig: cfg,
       lang,
       semantics: semanticAnnotations,
+      metrics: metricText,
+      namingRules: namingText,
     });
     let sqlResult: SqlGenResult | null = null;
     // startLog INSERTs the row before the stream drains, so a
@@ -1309,6 +1360,8 @@ export class ChatService {
       embeddingConfig: cfg,
       lang,
       semantics: semanticAnnotations,
+      metrics: metricText,
+      namingRules: namingText,
     });
     let chartResult: ChartGenResult | null = null;
     const chartLogId = await this.startLog(record.id, 'GENERATE_CHART');

@@ -69,6 +69,15 @@ export interface AiModelQuestion {
    *  a `customPromptType` (GENERATE_SQL/ANALYSIS/PREDICT_DATA) — chart /
    *  select_datasource / recommend paths omit it (no injection). */
   customPrompt?: string;
+  /** MetaDataImprove M4: the `<metric_definitions>` block the chat pipeline
+   *  resolved from the metric dictionary (matched derived/composite/atomic
+   *  calibers). Flows into the generate_sql template's `{metrics}`
+   *  placeholder; empty when nothing matched or metric.enabled is off. */
+  metrics?: string;
+  /** MetaDataImprove M4: the `<naming_rules>` block of naming-dictionary
+   *  standard translations matched by the question. Flows into the
+   *  generate_sql template's `{naming_rules}` placeholder ('' when off). */
+  namingRules?: string;
 }
 
 // --- generator result types -----------------------------------------------

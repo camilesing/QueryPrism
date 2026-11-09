@@ -242,6 +242,10 @@ export class GeneratorService {
       // customPromptType was passed → renders as a blank line in the system
       // template, harmless).
       custom_prompt: ctx.customPrompt ?? '',
+      // MetaDataImprove M4: matched metric calibers + naming-dictionary
+      // standard translations (blank sections when nothing matched).
+      metrics: ctx.metrics ?? '',
+      naming_rules: ctx.namingRules ?? '',
     };
     return map;
   }

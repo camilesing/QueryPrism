@@ -26,6 +26,12 @@ const ENV_KEYS = [
   'CLARIFY_MAX_ROUNDS',
   'SEMANTIC_ENABLED',
   'SEMANTIC_MAX_TABLES',
+  'SEMANTIC_ENUM_MAX_VALUES',
+  'SEMANTIC_ENUM_SCAN_ROWS',
+  'SEMANTIC_ENUM_COOLDOWN',
+  'METRIC_ENABLED',
+  'METRIC_MAX_DEFINITIONS',
+  'NAMING_ENABLED',
 ];
 
 function makePrisma(rows: { name: string; value: unknown }[] = []) {
@@ -107,6 +113,9 @@ describe('resolveEmbeddingConfig', () => {
       semanticEnumMaxValues: 50,
       semanticEnumScanRows: 10000,
       semanticEnumCooldown: 60,
+      metricEnabled: true,
+      metricMaxDefinitions: 5,
+      namingEnabled: true,
     } satisfies EmbeddingConfig);
   });
 
@@ -164,8 +173,8 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the nineteen persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(19);
+  it('exposes exactly the twenty-two persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(22);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
     ).toHaveLength(10);
@@ -175,6 +184,30 @@ describe('resolveEmbeddingConfig', () => {
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('semantic.')),
     ).toHaveLength(5);
+    expect(
+      EMBEDDING_PARAMETER_KEYS.filter(
+        (k) => k.startsWith('metric.') || k.startsWith('naming.'),
+      ),
+    ).toHaveLength(3);
+  });
+
+  it('metric.*/naming.* rows override env with strict parsing', async () => {
+    process.env.METRIC_MAX_DEFINITIONS = '9';
+    const cfg = await resolveEmbeddingConfig(
+      makePrisma([
+        { name: 'metric.enabled', value: 'false' },
+        { name: 'metric.max_definitions', value: '3' },
+      ]) as never,
+    );
+    // saved row (3) beats env (9)
+    expect(cfg.metricEnabled).toBe(false);
+    expect(cfg.metricMaxDefinitions).toBe(3);
+    expect(cfg.namingEnabled).toBe(true);
+    await expect(
+      resolveEmbeddingConfig(
+        makePrisma([{ name: 'metric.max_definitions', value: '0' }]) as never,
+      ),
+    ).rejects.toThrow('metric.max_definitions');
   });
 
   it('semantic.enum_* rows override env with strict positive-int parsing', async () => {

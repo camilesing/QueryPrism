@@ -199,6 +199,14 @@ function makeService() {
         .fn()
         .mockResolvedValue({ tableMeanings: {}, fieldNotes: {} }),
     } as never,
+    // MetaDataImprove M4: no metric/naming matches by default (empty text →
+    // no injection; individual tests override per-case).
+    {
+      matchDefinitions: jest
+        .fn()
+        .mockResolvedValue({ text: '', atomicTableNames: [], matched: 0 }),
+    } as never,
+    { namingTemplateFor: jest.fn().mockResolvedValue('') } as never,
     audit as unknown as AuditService,
     config as unknown as ConfigService,
   );

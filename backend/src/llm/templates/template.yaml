@@ -16,6 +16,15 @@ generate_sql: |
   ## Terminologies
   {terminologies}
 
+  ## Metric Definitions
+  When a metric below matches the question, compute it EXACTLY as defined
+  (aggregation, filters, time range) instead of guessing fields.
+  {metrics}
+
+  ## Naming Standards
+  Standard enterprise translations for terms in the question.
+  {naming_rules}
+
   ## Similar Question → SQL
   {data_training}
 

@@ -1,7 +1,7 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 19 retrieval-strategy parameters resolve with the priority
+// 22 retrieval-strategy parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
@@ -9,7 +9,8 @@
 //   keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
 //   clarify gate (ask-the-user before stuffing an ambiguous schema); the
 //   5 semantic.* keys drive the semantic layer (M2 rule 2 + the M3
-//   dimension-enum collector).
+//   dimension-enum collector); the 3 metric.*/naming.* keys drive the M4
+//   metric-definition and naming-rule prompt injection.
 //
 // Parsing is STRICT on saved values:
 // booleans only accept real booleans or "true"/"false" (never 0/1), counts
@@ -60,6 +61,15 @@ export interface EmbeddingConfig {
   /** Per-datasource cooldown (seconds) between collect runs — the rate
    *  limit that keeps repeated clicks from hammering the source DB. */
   semanticEnumCooldown: number;
+  /** Metric system (MetaDataImprove M4): match the question against the
+   *  actor's metric dictionary and inject the matched definitions' calibers
+   *  into the generate_sql prompt. */
+  metricEnabled: boolean;
+  /** Cap on rendered metric definitions per question (prompt budget). */
+  metricMaxDefinitions: number;
+  /** Data standards (M4): inject naming-dictionary standard translations
+   *  matched by the question text into the generate_sql prompt. */
+  namingEnabled: boolean;
 }
 
 /** camelCase field → persisted parameter key. */
@@ -83,6 +93,9 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   semanticEnumMaxValues: 'semantic.enum_max_values',
   semanticEnumScanRows: 'semantic.enum_scan_rows',
   semanticEnumCooldown: 'semantic.enum_cooldown',
+  metricEnabled: 'metric.enabled',
+  metricMaxDefinitions: 'metric.max_definitions',
+  namingEnabled: 'naming.enabled',
 };
 
 export const EMBEDDING_PARAMETER_KEYS = Object.values(PARAMETER_KEYS);
@@ -105,6 +118,8 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'keywordEnabled',
   'clarifyEnabled',
   'semanticEnabled',
+  'metricEnabled',
+  'namingEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'terminologyTopCount',
@@ -118,6 +133,7 @@ const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'semanticEnumMaxValues',
   'semanticEnumScanRows',
   'semanticEnumCooldown',
+  'metricMaxDefinitions',
 ]);
 
 /** Object-safe display of an invalid value for error messages. */
@@ -267,6 +283,12 @@ function envDefaults(): EmbeddingConfig {
       1,
       Math.floor(envNumber('SEMANTIC_ENUM_COOLDOWN', undefined, 60)),
     ),
+    metricEnabled: envBool('METRIC_ENABLED', true),
+    metricMaxDefinitions: Math.max(
+      1,
+      Math.floor(envNumber('METRIC_MAX_DEFINITIONS', undefined, 5)),
+    ),
+    namingEnabled: envBool('NAMING_ENABLED', true),
   };
 }
 
