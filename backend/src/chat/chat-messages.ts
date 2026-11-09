@@ -31,6 +31,7 @@ export interface ChatMessages {
   recordNotClarifying: (rid: number) => string;
   clarifyAnswerRequired: string;
   clarifyTablesInvalid: string;
+  sqlSchemaInsufficient: string;
 }
 
 const ZH_CN: ChatMessages = {
@@ -60,6 +61,7 @@ const ZH_CN: ChatMessages = {
   recordNotClarifying: (rid) => `记录 #${rid} 不在待澄清状态`,
   clarifyAnswerRequired: '请选择候选表、填写补充说明，或选择跳过',
   clarifyTablesInvalid: '所选表不在澄清候选列表中',
+  sqlSchemaInsufficient: '当前选定的表不足以回答该问题，请调整所选表后重试',
 };
 
 const EN: ChatMessages = {
@@ -90,6 +92,8 @@ const EN: ChatMessages = {
     `Record #${rid} is not waiting for a clarification answer`,
   clarifyAnswerRequired: 'Pick candidate tables, add a supplement, or skip',
   clarifyTablesInvalid: 'Selected tables are not in the clarify candidates',
+  sqlSchemaInsufficient:
+    'The selected tables cannot answer this question; adjust the selection and retry',
 };
 
 /** Resolve the message set for a language tag: 'zh-CN' → Chinese, anything

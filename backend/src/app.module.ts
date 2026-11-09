@@ -22,6 +22,7 @@ import { TerminologyModule } from './terminology/terminology.module';
 import { DataTrainingModule } from './data-training/data-training.module';
 import { LlmModule } from './llm/llm.module';
 import { McpModule } from './mcp/mcp.module';
+import { SemanticModule } from './semantic/semantic.module';
 import { AssistantModule } from './assistant/assistant.module';
 import { EmbeddedModule } from './embedded/embedded.module';
 import { CustomPromptModule } from './custom-prompt/custom-prompt.module';
@@ -81,6 +82,8 @@ import configuration from './common/config/configuration';
     // g2-ssr chart→PNG client. Mounted statelessly at /api/v1/mcp;
     // authenticated with per-integration Bearer tokens.
     McpModule,
+    // MetaDataImprove M2: table/field semantics (3-layer scope + approval)
+    SemanticModule,
     // Phase 8 — embedded Assistant (type 0/2/4; CRUD + public appId lookup +
     // dynamic CORS source). 1/3 dynamic API skipped (xpack-ish).
     AssistantModule,

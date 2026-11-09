@@ -192,6 +192,13 @@ function makeService() {
     sqlSafety as unknown as SqlSafetyService,
     rowPermissionService as unknown as RowPermissionService,
     terminologyService as never,
+    // MetaDataImprove M2: no effective semantics by default (empty maps →
+    // rule 2 never narrows; individual tests override per-case).
+    {
+      effectiveAnnotations: jest
+        .fn()
+        .mockResolvedValue({ tableMeanings: {}, fieldNotes: {} }),
+    } as never,
     audit as unknown as AuditService,
     config as unknown as ConfigService,
   );

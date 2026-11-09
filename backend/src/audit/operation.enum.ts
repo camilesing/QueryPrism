@@ -18,6 +18,7 @@ export enum OperationModule {
   AUTH = 'auth',
   EMBEDDING = 'embedding',
   MCP = 'mcp',
+  SEMANTIC = 'semantic',
 }
 
 export enum OperationType {

@@ -545,3 +545,108 @@ model McpIntegration {
 
   @@index([oid])
 }
+
+// ============================== 语义层 (MetaDataImprove M2) ==============================
+
+// 三层 scope：GLOBAL（oid=null，仅系统管理员 uid 1 直接改）/ WORKSPACE（oid，
+// 空间管理员直接改）/ PERSONAL（oid+ownerUid，本人直接改、仅影响自己）。
+// 优先级 PERSONAL > WORKSPACE > GLOBAL，缺失则向上回退（resolveEffective）。
+// 下层用户可对上层发起 SemanticChangeRequest，审批通过才落版本。
+// 自然键 (datasourceId, tableName[, fieldName])，故意不用 Table/Field 外键——
+// 表结构重同步/删表不悬空语义；悬空行由管理页按「表已不存在」标注。
+// scope 内唯一性由 service 层在 $transaction 内校验（条件唯一索引 Prisma 不支持）。
+model TableSemantic {
+  id           Int      @id @default(autoincrement())
+  scope        String // GLOBAL | WORKSPACE | PERSONAL
+  oid          Int? // WORKSPACE/PERSONAL: 工作空间 id；GLOBAL: null
+  ownerUid     Int? // PERSONAL: 归属用户 uid；其余 null
+  datasourceId Int // 自然键数据源 id（无 FK）
+  tableName    String
+  meaning      String // 表的业务含义（有效语义的核心字段）
+  enabled      Boolean  @default(true)
+  version      Int      @default(1) // 当前版本号；每次落库 +1 并写历史快照
+  createBy     Int? // 创建者 uid
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  versions TableSemanticVersion[]
+
+  @@index([datasourceId, tableName])
+  @@index([scope, datasourceId, tableName])
+  @@index([oid, ownerUid])
+}
+
+// append-only 版本历史：便于审阅，运行时永远只用实体当前行（最新版本）。
+model TableSemanticVersion {
+  id        Int           @id @default(autoincrement())
+  entity    TableSemantic @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entityId  Int
+  version   Int
+  snapshot  Json // 全量快照 {meaning, enabled, source}
+  changedBy Int? // 操作者 uid（直接编辑或审批人）
+  note      String? // 变更说明（提案备注 / 直接编辑备注）
+  createdAt DateTime      @default(now())
+
+  @@unique([entityId, version])
+}
+
+model FieldSemantic {
+  id           Int      @id @default(autoincrement())
+  scope        String // GLOBAL | WORKSPACE | PERSONAL
+  oid          Int?
+  ownerUid     Int?
+  datasourceId Int
+  tableName    String
+  fieldName    String
+  role         String // metric 指标 | dimension 维度 | time 时间 | other 其他
+  meaning      String
+  unit         String? // 度量单位（数据标准）
+  enumValues   Json? // 维度枚举缓存 [{value, label?}]（M3 一键采集回填）
+  enabled      Boolean  @default(true)
+  version      Int      @default(1)
+  createBy     Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  versions FieldSemanticVersion[]
+
+  @@index([datasourceId, tableName, fieldName])
+  @@index([scope, datasourceId, tableName, fieldName])
+  @@index([oid, ownerUid])
+}
+
+model FieldSemanticVersion {
+  id        Int           @id @default(autoincrement())
+  entity    FieldSemantic @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entityId  Int
+  version   Int
+  snapshot  Json
+  changedBy Int?
+  note      String?
+  createdAt DateTime      @default(now())
+
+  @@unique([entityId, version])
+}
+
+// 跨层变更提案：普通成员 → WORKSPACE（空间管理员审批）/ GLOBAL（系统管理员
+// uid 1 审批）。PERSONAL 无需提案。审批通过后在同一事务内应用 payload
+// （upsert + version+1 + 版本历史）并闭单；拒绝仅闭单。
+model SemanticChangeRequest {
+  id          Int       @id @default(autoincrement())
+  oid         Int // 发起人所在工作空间
+  entityType  String // table | field
+  action      String // upsert | remove
+  targetType  String // WORKSPACE | GLOBAL
+  payload     Json // 目标层视角的完整内容（datasourceId/tableName/.../meaning）
+  status      String    @default("pending") // pending | approved | rejected
+  proposerUid Int
+  proposer    String? // 发起人账号快照（列表展示用）
+  reviewerUid Int?
+  reviewNote  String?
+  reviewedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([oid, status, targetType])
+  @@index([proposerUid, status])
+}

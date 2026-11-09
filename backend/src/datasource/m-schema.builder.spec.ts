@@ -169,3 +169,81 @@ describe('buildMSchema', () => {
     expect(noFk).not.toContain('【Foreign keys】');
   });
 });
+
+describe('buildMSchema semantics injection (MetaDataImprove M2)', () => {
+  const table = {
+    tableName: 'sales_order',
+    tableComment: 'so header',
+    customComment: '自定义备注',
+    checked: true,
+    fields: [
+      {
+        fieldName: 'order_status',
+        fieldType: 'varchar',
+        fieldComment: 'status',
+        customComment: null,
+        isPrimaryKey: false,
+        fieldIndex: 0,
+        checked: true,
+      },
+      {
+        fieldName: 'amount',
+        fieldType: 'decimal',
+        fieldComment: null,
+        customComment: '金额',
+        isPrimaryKey: false,
+        fieldIndex: 1,
+        checked: true,
+      },
+    ],
+  };
+
+  it('semantic table meaning beats customComment and DB comment', () => {
+    const out = buildMSchema({
+      datasourceName: 'ds',
+      tables: [table],
+      semantics: {
+        tableMeanings: { sales_order: '销售订单主表' },
+        fieldNotes: {},
+      },
+    });
+    expect(out).toContain('# Table: sales_order # 销售订单主表');
+    expect(out).not.toContain('自定义备注');
+  });
+
+  it('field note composes role tag + meaning + unit + enum sample', () => {
+    const out = buildMSchema({
+      datasourceName: 'ds',
+      tables: [table],
+      semantics: {
+        tableMeanings: {},
+        fieldNotes: {
+          'sales_order.order_status': {
+            role: 'dimension',
+            meaning: '订单状态',
+            enums: ['paid', 'refunded'],
+          },
+          'sales_order.amount': {
+            role: 'metric',
+            meaning: '支付金额',
+            unit: '元',
+          },
+        },
+      },
+    });
+    expect(out).toContain(
+      'order_status varchar # [维度] 订单状态 (枚举: paid/refunded)',
+    );
+    expect(out).toContain('amount decimal # [指标] 支付金额 (单位: 元)');
+  });
+
+  it('falls back to comments for keys without semantics; unchecked fields untouched', () => {
+    const out = buildMSchema({
+      datasourceName: 'ds',
+      tables: [table],
+      semantics: { tableMeanings: {}, fieldNotes: {} },
+    });
+    expect(out).toContain('# Table: sales_order # 自定义备注');
+    expect(out).toContain('order_status varchar # status');
+  });
+});

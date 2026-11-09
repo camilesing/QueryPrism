@@ -79,6 +79,11 @@ export interface SqlGenResult {
   tables: string[];
   chartType: string;
   brief: string;
+  /** MetaDataImprove M2 rule 2: the LLM declares the provided schema cannot
+   *  answer (missing table/join) and asks the user to narrow — the pipeline
+   *  turns this into the clarify flow instead of failing. */
+  needClarify?: boolean;
+  reason?: string;
 }
 
 export interface ChartGenResult {

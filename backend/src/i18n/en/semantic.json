@@ -1,0 +1,12 @@
+{
+  "no_context_user": "No signed-in user in the request context",
+  "invalid_scope": "Unknown semantic scope",
+  "invalid_role": "Unknown field role",
+  "invalid_payload": "The change request payload is malformed",
+  "missing_fields": "Table name, field name (for fields) and meaning are required",
+  "entity_not_found": "Semantic entry not found",
+  "edit_forbidden": "You may not edit this scope layer directly — propose a change instead",
+  "request_not_pending": "The change request is not pending review",
+  "request_pending_exists": "A pending change request already exists for this entry",
+  "review_forbidden": "You may not review changes targeting this scope layer"
+}

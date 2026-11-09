@@ -35,9 +35,14 @@ generate_sql: |
   - Never put LIMIT in a subquery, CTE, or derived table.
   - Top-N per group: filter on ROW_NUMBER() OVER (...); keep the outer LIMIT.
   - Prefer aggregation and filtering over raw rows; avoid SELECT * unless asked.
+  - The schema above may be a narrowed subset. When the question CANNOT be
+    answered with it (a required table or join is clearly missing), do NOT
+    force a wrong query — ask for more tables instead (see output contract).
 
-  Respond with ONLY JSON — no prose, no markdown fences:
+  Respond with ONLY JSON — no prose, no markdown fences. Either:
   {"success":true,"sql":"<the sql>","chart-type":"bar|column|line|pie|table","brief":"<one-sentence summary in {lang}>"}
+  or, when the schema above cannot answer the question:
+  {"need_clarify":true,"reason":"<one short sentence: which table/fields the question needs and why>"}
 
 generate_chart: |
   ## Question

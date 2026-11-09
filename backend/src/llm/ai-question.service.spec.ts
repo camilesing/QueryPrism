@@ -195,7 +195,11 @@ describe('AiQuestionService', () => {
         tableIds: [10, 20],
       }),
     );
-    expect(datasourceService.getMSchema).toHaveBeenCalledWith(1, [10, 20]);
+    expect(datasourceService.getMSchema).toHaveBeenCalledWith(
+      1,
+      [10, 20],
+      undefined,
+    );
   });
 
   it('threads tableIds through buildForResult to getMSchema', async () => {
@@ -210,7 +214,11 @@ describe('AiQuestionService', () => {
         tableIds: [5],
       }),
     );
-    expect(datasourceService.getMSchema).toHaveBeenCalledWith(1, [5]);
+    expect(datasourceService.getMSchema).toHaveBeenCalledWith(
+      1,
+      [5],
+      undefined,
+    );
   });
 
   it('calls getMSchema with undefined tableIds when not provided', async () => {
@@ -218,7 +226,11 @@ describe('AiQuestionService', () => {
     await run(() =>
       svc.buildSqlContext({ question: 'q', datasourceId: 1, engine: 'MySQL' }),
     );
-    expect(datasourceService.getMSchema).toHaveBeenCalledWith(1, undefined);
+    expect(datasourceService.getMSchema).toHaveBeenCalledWith(
+      1,
+      undefined,
+      undefined,
+    );
   });
 
   it('builds the select-datasource context with the option list', () => {

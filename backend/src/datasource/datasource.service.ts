@@ -18,7 +18,7 @@ import type {
   ConnectionConfig,
   FieldMeta,
 } from './db-connector/db-connector.interface';
-import { buildMSchema } from './m-schema.builder';
+import { buildMSchema, type MSchemaSemantics } from './m-schema.builder';
 import { calcKeywordScore, rankTables } from './table-recall';
 import {
   resolveEmbeddingConfig,
@@ -361,8 +361,13 @@ export class DatasourceService {
   /** Build the M-Schema string (tables + FK graph) for the SQL prompt.
    *  When `tableIds` is provided, narrow to that subset first (the embedding
    *  pre-filter feeds this); `buildMSchema` still drops unchecked tables/fields
-   *  on top. Undefined `tableIds` = all tables (current Phase 2 behavior). */
-  async getMSchema(id: number, tableIds?: number[]) {
+   *  on top. Undefined `tableIds` = all tables (current Phase 2 behavior).
+   *  `semantics` (MetaDataImprove M2) injects curated meanings over comments. */
+  async getMSchema(
+    id: number,
+    tableIds?: number[],
+    semantics?: MSchemaSemantics,
+  ) {
     const ds = await this.findOne(id);
     const tables = tableIds
       ? ds.tables.filter((t) => tableIds.includes(t.id))
@@ -385,6 +390,7 @@ export class DatasourceService {
         })),
       })),
       tableRelation: ds.tableRelation,
+      semantics,
     });
   }
 

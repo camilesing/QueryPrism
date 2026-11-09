@@ -68,6 +68,10 @@ import { detectQuestionLanguage } from '../common/utils/detect-language';
 import { chatMessages } from './chat-messages';
 import { TerminologyService } from '../terminology/terminology.service';
 import {
+  SemanticService,
+  type SemanticAnnotations,
+} from '../semantic/semantic.service';
+import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
@@ -135,6 +139,7 @@ export class ChatService {
     private readonly sqlSafety: SqlSafetyService,
     private readonly rowPermissionService: RowPermissionService,
     private readonly terminologyService: TerminologyService,
+    private readonly semanticService: SemanticService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
   ) {}
@@ -912,68 +917,84 @@ export class ChatService {
     }
     // Keyword-fused table pre-filter (degrades to all-checked when
     // embedding/vector unavailable — recallTables returns []).
-    const tableIds = forcedTableIds
+    let tableIds = forcedTableIds
       ? forcedTableIds
       : await this.recallNarrowedSchema(datasourceId, content, {
           keywords: expandedKeywords,
           config: cfg,
         });
 
+    // Loaded once, reused by the clarify gate, rule-2 narrowing and the
+    // need_clarify candidate mapping below.
+    const dsTables = await this.datasourceService.findOne(datasourceId);
+    const nameById = new Map(dsTables.tables.map((t) => [t.id, t.tableName]));
+    /** The clarify-pool candidates in recall rank order (every checked table
+     *  when recall degraded to "stuff everything"). */
+    const clarifyPool = (
+      tableIds
+        ? tableIds
+            .map((id) => dsTables.tables.find((t) => t.id === id))
+            .filter((t): t is (typeof dsTables.tables)[number] => !!t)
+        : dsTables.tables.filter((t) => t.checked)
+    ).map((t) => ({
+      id: t.id,
+      tableName: t.tableName,
+      comment: t.customComment || t.tableComment || '',
+    }));
+
+    // --- rule 2: semantic narrowing (MetaDataImprove M2) ------------------
+    // When candidate tables carry effective semantics ("valid semantics"),
+    // stuff only the top semantic.max_tables of the covered ones (default 1);
+    // the LLM may still request more via the need_clarify contract. Runs
+    // BEFORE the M1 gate: valid semantics answer the ambiguity the gate would
+    // ask about. Skipped when the user hand-picked tables (forcedTableIds) —
+    // their explicit choice wins. Known limitation: join paths to uncovered
+    // tables are not offered yet — M3 adds join-topology hints.
+    let semanticAnnotations: SemanticAnnotations | undefined;
+    let semanticNarrowed = false;
+    if (
+      cfg.semanticEnabled &&
+      !forcedTableIds &&
+      tableIds &&
+      tableIds.length > cfg.semanticMaxTables
+    ) {
+      const candidateNames = tableIds.map((id) => nameById.get(id) ?? `#${id}`);
+      const annotations = await this.semanticService.effectiveAnnotations(
+        datasourceId,
+        candidateNames,
+      );
+      const coveredIds = tableIds.filter(
+        (id) => annotations.tableMeanings[nameById.get(id) ?? ''] !== undefined,
+      );
+      if (coveredIds.length >= cfg.semanticMaxTables) {
+        tableIds = coveredIds.slice(0, cfg.semanticMaxTables);
+        semanticAnnotations = annotations;
+        semanticNarrowed = true;
+      }
+    }
+
     // --- clarify gate (MetaDataImprove M1 rule 1) ------------------------
-    // With no semantic layer yet ("no valid semantics" is always true in M1),
-    // ≥ threshold candidate tables about to be stuffed into the schema and no
-    // explicit table mention → pause and ask the user instead of guessing —
-    // one wrong table breaks the join. Known limitation: multi-turn follow-ups
-    // can also trip the gate; mitigate via clarify.enabled / skip.
-    if (!forcedTableIds && !opts?.skipClarify) {
-      const dsTables = await this.datasourceService.findOne(datasourceId);
-      const byId = new Map(dsTables.tables.map((t) => [t.id, t]));
-      // Recall rank order preserved when present; otherwise every checked
-      // table is the pool (what getMSchema would stuff).
-      const pool = (
-        tableIds
-          ? tableIds
-              .map((id) => byId.get(id))
-              .filter((t): t is (typeof dsTables.tables)[number] => !!t)
-          : dsTables.tables.filter((t) => t.checked)
-      ).map((t) => ({
-        id: t.id,
-        tableName: t.tableName,
-        comment: t.customComment || t.tableComment || '',
-      }));
+    // The no-valid-semantics fallback: ≥ threshold candidate tables about to
+    // be stuffed, nothing explicitly mentioned and rule 2 did not resolve it
+    // → pause and ask the user instead of guessing — one wrong table breaks
+    // the join. Known limitation: multi-turn follow-ups can also trip the
+    // gate; mitigate via clarify.enabled / skip.
+    if (!forcedTableIds && !semanticNarrowed && !opts?.skipClarify) {
       const asked = record.clarifyStatus ? 1 : 0;
       if (
-        needsClarify(pool, content, {
+        needsClarify(clarifyPool, content, {
           enabled: cfg.clarifyEnabled,
           tableThreshold: cfg.clarifyTableThreshold,
           rounds: asked,
           maxRounds: cfg.clarifyMaxRounds,
         })
       ) {
-        const payload = {
-          question: content,
-          candidates: pool.map((c) => ({
-            table_id: c.id,
-            table_name: c.tableName,
-            comment: c.comment,
-          })),
-          max_select: cfg.clarifyMaxSelect,
-        };
-        await this.prisma.chatRecord.update({
-          where: { id: record.id },
-          data: {
-            clarify: payload,
-            clarifyStatus: 'pending',
-          },
-        });
-        yield {
-          type: 'clarify',
-          data: { record_id: record.id, ...payload },
-        };
-        // `finish` closes the stream cleanly (the frontend stops its loading
-        // state); the record itself stays finish:false + clarifyStatus
-        // 'pending' until the user answers via /chat/record/:rid/clarify.
-        yield { type: 'finish', data: {} };
+        yield* this.pauseForClarify(
+          record.id,
+          content,
+          clarifyPool,
+          cfg.clarifyMaxSelect,
+        );
         return;
       }
     }
@@ -990,6 +1011,7 @@ export class ChatService {
       customPromptType: 'GENERATE_SQL',
       embeddingConfig: cfg,
       lang,
+      semantics: semanticAnnotations,
     });
     let sqlResult: SqlGenResult | null = null;
     // startLog INSERTs the row before the stream drains, so a
@@ -1024,6 +1046,32 @@ export class ChatService {
     } catch (e) {
       await this.triggerLogError(sqlLogId);
       throw e;
+    }
+
+    // --- LLM-declared insufficiency (rule 2 need_clarify) -----------------
+    // The narrowed schema cannot answer; instead of forcing a wrong query the
+    // LLM asks for more tables. Honored ONLY on a first pass — after the user
+    // already picked tables / skipped, re-asking would loop, so it fails
+    // honestly instead. The LLM call itself completed fine — endLog (not
+    // triggerLogError) so the log row closes cleanly.
+    if (sqlResult?.needClarify) {
+      await this.endLog(sqlLogId, {
+        reasoning: sqlReasoning,
+        messages: this.appendAiMessage(sqlMessages, sqlContent),
+        tokenUsage: sqlTokenUsage,
+      });
+      if (record.clarifyStatus) {
+        yield* this.fail(record.id, msgs.sqlSchemaInsufficient);
+        return;
+      }
+      yield* this.pauseForClarify(
+        record.id,
+        content,
+        clarifyPool,
+        cfg.clarifyMaxSelect,
+        sqlResult.reason,
+      );
+      return;
     }
 
     if (!sqlResult || !sqlResult.success || !sqlResult.sql) {
@@ -1204,6 +1252,7 @@ export class ChatService {
       tableIds,
       embeddingConfig: cfg,
       lang,
+      semantics: semanticAnnotations,
     });
     let chartResult: ChartGenResult | null = null;
     const chartLogId = await this.startLog(record.id, 'GENERATE_CHART');
@@ -1310,6 +1359,39 @@ export class ChatService {
   ): AsyncGenerator<ChatSseEvent> {
     yield { type: 'error', data: { content: message } };
     await this.finishRecord(recordId, message);
+    yield { type: 'finish', data: {} };
+  }
+
+  /** Persist the pending-clarify state + emit the clarify frame and the
+   *  terminal finish (the record stays finish:false + clarifyStatus:'pending'
+   *  until the user answers via /chat/record/:rid/clarify). `reason` carries
+   *  the LLM's one-liner when the pause comes from the need_clarify contract
+   *  (rule 2) rather than the deterministic gate (rule 1). */
+  private async *pauseForClarify(
+    recordId: number,
+    question: string,
+    pool: Array<{ id: number; tableName: string; comment: string }>,
+    maxSelect: number,
+    reason?: string,
+  ): AsyncGenerator<ChatSseEvent> {
+    const payload = {
+      question,
+      candidates: pool.map((c) => ({
+        table_id: c.id,
+        table_name: c.tableName,
+        comment: c.comment,
+      })),
+      max_select: maxSelect,
+      ...(reason ? { reason } : {}),
+    };
+    await this.prisma.chatRecord.update({
+      where: { id: recordId },
+      data: {
+        clarify: payload,
+        clarifyStatus: 'pending',
+      },
+    });
+    yield { type: 'clarify', data: { record_id: recordId, ...payload } };
     yield { type: 'finish', data: {} };
   }
 

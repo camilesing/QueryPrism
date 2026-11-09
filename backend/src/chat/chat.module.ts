@@ -19,6 +19,7 @@ import { LlmModule } from '../llm/llm.module';
 import { AuditModule } from '../audit/audit.module';
 import { PermissionModule } from '../permission/permission.module';
 import { TerminologyModule } from '../terminology/terminology.module';
+import { SemanticModule } from '../semantic/semantic.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { TerminologyModule } from '../terminology/terminology.module';
     AuditModule,
     PermissionModule,
     TerminologyModule, // 3fd6fa86: keyword → synonym expansion in runCore
+    SemanticModule, // MetaDataImprove M2: effective semantics in runCore
   ],
   controllers: [ChatController],
   providers: [ChatService, SqlSafetyService],

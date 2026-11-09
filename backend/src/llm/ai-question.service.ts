@@ -21,6 +21,7 @@ import type {
   DatasourceOption,
   EngineType,
 } from './ai-question';
+import type { MSchemaSemantics } from '../datasource/m-schema.builder';
 
 /** Caps on the sample-data gather so the prompt stays bounded. */
 const MAX_SAMPLE_TABLES = 8;
@@ -62,11 +63,18 @@ export class AiQuestionService {
      *  question; the analysis re-run passes the record's saved keywords. */
     knowledgeQuery?: string;
     embeddingConfig?: EmbeddingConfig;
+    /** MetaDataImprove M2: effective table/field semantics — injected into the
+     *  M-Schema as the authoritative comment layer (getMSchema passthrough). */
+    semantics?: MSchemaSemantics;
   }): Promise<AiModelQuestion> {
     const sampleDataEnabled = await this.sampleDataEnabled();
     const [schema, sampleData, terminologies, dataTraining, customPromptText] =
       await Promise.all([
-        this.datasourceService.getMSchema(opts.datasourceId, opts.tableIds),
+        this.datasourceService.getMSchema(
+          opts.datasourceId,
+          opts.tableIds,
+          opts.semantics,
+        ),
         sampleDataEnabled
           ? this.gatherSampleData(opts.datasourceId)
           : Promise.resolve(''),
@@ -125,6 +133,8 @@ export class AiQuestionService {
     embeddingConfig?: EmbeddingConfig;
     /** Per-turn language override — passed through to buildSqlContext. */
     lang?: string;
+    /** MetaDataImprove M2: passed through to buildSqlContext. */
+    semantics?: MSchemaSemantics;
   }): Promise<AiModelQuestion> {
     const base = await this.buildSqlContext(opts);
     base.sql = opts.sql;

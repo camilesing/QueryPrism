@@ -38,6 +38,46 @@ export interface MSchemaInput {
   tables: MSchemaTable[];
   /** Stored as Json on Datasource; normalized defensively here. */
   tableRelation?: unknown;
+  /** Effective business semantics (MetaDataImprove M2): resolved by the chat
+   *  layer (PERSONAL > WORKSPACE > GLOBAL) and injected as the authoritative
+   *  comment layer — a curated meaning beats both customComment and the
+   *  DB-derived comment. */
+  semantics?: MSchemaSemantics;
+}
+
+/** The annotation subset the builder consumes (structural twin of
+ *  SemanticService.SemanticAnnotations — kept local so the builder stays
+ *  free of semantic-module imports). */
+export interface MSchemaSemantics {
+  /** tableName → curated business meaning. */
+  tableMeanings: Record<string, string>;
+  /** `${tableName}.${fieldName}` → role-tagged field note. */
+  fieldNotes: Record<
+    string,
+    { role: string; meaning: string; unit?: string; enums?: string[] }
+  >;
+}
+
+/** Role tags shown before the field comment — zh labels match the project's
+ *  primary locale and read naturally inside M-Schema comment lines. */
+const ROLE_TAGS: Record<string, string> = {
+  metric: '指标',
+  dimension: '维度',
+  time: '时间',
+};
+
+/** Compose the field comment line: `[角色] 含义 (单位: x; 枚举: a/b)`. */
+function semanticFieldNote(
+  note: MSchemaSemantics['fieldNotes'][string],
+): string {
+  const tag = ROLE_TAGS[note.role];
+  const meaning = note.meaning?.trim() ?? '';
+  const head = [tag ? `[${tag}]` : '', meaning].filter(Boolean).join(' ');
+  const tails: string[] = [];
+  if (note.unit?.trim()) tails.push(`单位: ${note.unit.trim()}`);
+  if (note.enums?.length) tails.push(`枚举: ${note.enums.join('/')}`);
+  const tail = tails.length ? ` (${tails.join('; ')})` : '';
+  return `${head}${tail}`;
 }
 
 /**
@@ -97,7 +137,13 @@ export function buildMSchema(input: MSchemaInput): string {
     .sort((a, b) => a.tableName.localeCompare(b.tableName));
 
   for (const table of tables) {
-    const tableComment = commentFor(table.tableComment, table.customComment);
+    // A curated semantic meaning is the authoritative table comment; fall
+    // back to customComment, then the synced DB comment.
+    const semanticMeaning = input.semantics?.tableMeanings?.[table.tableName];
+    const tableComment =
+      semanticMeaning?.trim() ||
+      commentFor(table.tableComment, table.customComment) ||
+      null;
     lines.push(
       `# Table: ${table.tableName}${tableComment ? ` # ${tableComment}` : ''}`,
     );
@@ -113,10 +159,18 @@ export function buildMSchema(input: MSchemaInput): string {
 
     for (const field of fields) {
       const type = field.fieldType || 'unknown';
-      const comment = commentFor(field.fieldComment, field.customComment);
+      const semanticNote =
+        input.semantics?.fieldNotes?.[`${table.tableName}.${field.fieldName}`];
+      const comment =
+        semanticNote?.meaning?.trim() ||
+        commentFor(field.fieldComment, field.customComment) ||
+        null;
+      // Role/unit/enum decorations ride along after the comment text.
+      const decoration = semanticNote ? semanticFieldNote(semanticNote) : null;
+      const note = decoration || comment;
       const pk = field.isPrimaryKey ? ' (PK)' : '';
       lines.push(
-        `  ${field.fieldName} ${type}${pk}${comment ? ` # ${comment}` : ''}`,
+        `  ${field.fieldName} ${type}${pk}${note ? ` # ${note}` : ''}`,
       );
     }
   }

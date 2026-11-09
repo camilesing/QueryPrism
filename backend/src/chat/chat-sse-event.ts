@@ -55,6 +55,8 @@ export interface ChatSseEventMap {
   // The stream then terminates with `finish` (the record stays finish:false
   // + clarifyStatus:'pending' in the DB); the user answers via
   // POST /chat/record/:rid/clarify which re-streams the same record.
+  // `reason` is present when the pause came from the LLM's need_clarify
+  // contract (M2 rule 2) — its one-liner about what the schema is missing.
   clarify: {
     record_id: number;
     question: string;
@@ -64,6 +66,7 @@ export interface ChatSseEventMap {
       comment: string;
     }>;
     max_select: number;
+    reason?: string;
   };
   info: { msg: string };
   brief: { brief: string };

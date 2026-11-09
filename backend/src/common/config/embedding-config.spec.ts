@@ -24,6 +24,8 @@ const ENV_KEYS = [
   'CLARIFY_TABLE_THRESHOLD',
   'CLARIFY_MAX_SELECT',
   'CLARIFY_MAX_ROUNDS',
+  'SEMANTIC_ENABLED',
+  'SEMANTIC_MAX_TABLES',
 ];
 
 function makePrisma(rows: { name: string; value: unknown }[] = []) {
@@ -100,6 +102,8 @@ describe('resolveEmbeddingConfig', () => {
       clarifyTableThreshold: 3,
       clarifyMaxSelect: 3,
       clarifyMaxRounds: 1,
+      semanticEnabled: true,
+      semanticMaxTables: 1,
     } satisfies EmbeddingConfig);
   });
 
@@ -157,13 +161,16 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the fourteen persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(14);
+  it('exposes exactly the sixteen persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(16);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
     ).toHaveLength(10);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('clarify.')),
     ).toHaveLength(4);
+    expect(
+      EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('semantic.')),
+    ).toHaveLength(2);
   });
 });

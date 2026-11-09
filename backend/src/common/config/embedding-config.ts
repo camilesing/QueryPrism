@@ -1,7 +1,7 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 14 retrieval-strategy parameters resolve with the priority
+// 16 retrieval-strategy parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
@@ -44,6 +44,10 @@ export interface EmbeddingConfig {
   clarifyMaxSelect: number;
   /** Max clarify rounds per record (1 = never re-ask after an answer). */
   clarifyMaxRounds: number;
+  /** Semantic layer (MetaDataImprove M2 rule 2): when candidate tables have
+   *  effective semantics, stuff only the top semantic.max_tables of them. */
+  semanticEnabled: boolean;
+  semanticMaxTables: number;
 }
 
 /** camelCase field → persisted parameter key. */
@@ -62,6 +66,8 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   clarifyTableThreshold: 'clarify.table_threshold',
   clarifyMaxSelect: 'clarify.max_select',
   clarifyMaxRounds: 'clarify.max_rounds',
+  semanticEnabled: 'semantic.enabled',
+  semanticMaxTables: 'semantic.max_tables',
 };
 
 export const EMBEDDING_PARAMETER_KEYS = Object.values(PARAMETER_KEYS);
@@ -83,6 +89,7 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'tableEnabled',
   'keywordEnabled',
   'clarifyEnabled',
+  'semanticEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'terminologyTopCount',
@@ -92,6 +99,7 @@ const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'clarifyTableThreshold',
   'clarifyMaxSelect',
   'clarifyMaxRounds',
+  'semanticMaxTables',
 ]);
 
 /** Object-safe display of an invalid value for error messages. */
@@ -223,6 +231,11 @@ function envDefaults(): EmbeddingConfig {
     clarifyMaxRounds: Math.max(
       1,
       Math.floor(envNumber('CLARIFY_MAX_ROUNDS', undefined, 1)),
+    ),
+    semanticEnabled: envBool('SEMANTIC_ENABLED', true),
+    semanticMaxTables: Math.max(
+      1,
+      Math.floor(envNumber('SEMANTIC_MAX_TABLES', undefined, 1)),
     ),
   };
 }

@@ -12,3 +12,8 @@ export {
   DatasourceType,
 } from './create-datasource.dto';
 export { UpdateDatasourceDto } from './update-datasource.dto';
+export {
+  SemanticEnumValueDto,
+  SemanticReviewDto,
+  SemanticUpsertDto,
+} from './semantic.dto';
