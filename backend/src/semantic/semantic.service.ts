@@ -22,6 +22,11 @@ import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { RequestContext } from '../common/context/request-context';
 import { tr } from '../common/i18n/translate';
+import { DatasourceService } from '../datasource/datasource.service';
+import {
+  resolveEmbeddingConfig,
+  type EmbeddingConfig,
+} from '../common/config/embedding-config';
 import {
   canEditDirect,
   canReview,
@@ -66,6 +71,38 @@ export type SemanticUpsertResult =
   | { applied: true; id: number }
   | { applied: false; request_id: number };
 
+/** One dimension field handled by an enum-collection run (snake wire). */
+export interface EnumCollectItem {
+  id: number;
+  table_name: string;
+  field_name: string;
+}
+
+/** collectEnums response: backfilled rows with their cached value count +
+ *  skipped rows with the human-readable reason (i18n'd server-side). */
+export interface EnumCollectSummary {
+  collected: Array<EnumCollectItem & { values: number }>;
+  skipped: Array<EnumCollectItem & { reason: string }>;
+}
+
+/** Normalize one sampled cell into an enum value string; objects/arrays and
+ *  empty text carry no enum semantics and drop out (nulls included — a NULL
+ *  is not a dimension member). */
+function enumValueText(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return v.toISOString();
+  switch (typeof v) {
+    case 'string':
+      return v.trim() || null;
+    case 'number':
+    case 'boolean':
+    case 'bigint':
+      return String(v);
+    default:
+      return null;
+  }
+}
+
 /** The effective annotations the SQL prompt consumes (M2.2 rule 2). */
 export interface SemanticAnnotations {
   /** tableName → resolved business meaning (only tables WITH a semantic). */
@@ -81,7 +118,11 @@ type PrismaTx = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
 
 @Injectable()
 export class SemanticService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Connector access for the M3.3 enum collector (bounded DISTINCT probes).
+    private readonly datasourceService: DatasourceService,
+  ) {}
 
   private actor(): SemanticActor & { account: string } {
     const user = RequestContext.getUser();
@@ -835,5 +876,190 @@ export class SemanticService {
         },
       });
     }
+  }
+
+  // ---- dimension-enum collection (MetaDataImprove M3.3) ------------------
+
+  /** Per-datasource run bookkeeping for the enum collector: cooldownUntil
+   *  enforces the configured rerun rate limit, busyRuns collapses concurrent
+   *  double-clicks. In-memory only — this deployment is single-node. */
+  private readonly enumCooldownUntil = new Map<number, number>();
+  private readonly busyEnumRuns = new Set<number>();
+
+  /** One enum-collection run over a datasource's dimension fields: every
+   *  visible enabled FieldSemantic with role=dimension gets a bounded
+   *  DISTINCT sample (`semantic.enum_scan_rows`); fields whose distinct
+   *  count stays under `semantic.enum_max_values` are low-cardinality and
+   *  their enumValues cache is backfilled as a versioned edit
+   *  (source: 'enum_collect'). Everything else is skipped with a reason —
+   *  the response reports both, one bad field never aborts the batch.
+   *
+   *  Authority follows M2 governance: only rows the actor can edit directly
+   *  are touched (upper-layer rows keep their approval round).
+   *
+   *  Known limitation: values are sampled from the first N rows, so a
+   *  dimension whose rare values live deeper in the table may cache an
+   *  incomplete enum — re-running after data growth refreshes it. */
+  async collectEnums(datasourceId: number): Promise<EnumCollectSummary> {
+    const actor = this.actor();
+    const cfg = await resolveEmbeddingConfig(this.prisma);
+    const now = Date.now();
+    const cooldownUntil = this.enumCooldownUntil.get(datasourceId) ?? 0;
+    if (now < cooldownUntil) {
+      throw new BadRequestException(
+        tr('semantic.enum_cooldown_active', {
+          seconds: Math.ceil((cooldownUntil - now) / 1000),
+        }),
+      );
+    }
+    if (this.busyEnumRuns.has(datasourceId)) {
+      throw new BadRequestException(
+        tr('semantic.enum_cooldown_active', {
+          seconds: cfg.semanticEnumCooldown,
+        }),
+      );
+    }
+    this.busyEnumRuns.add(datasourceId);
+    try {
+      const summary = await this.runEnumCollection(datasourceId, actor, cfg);
+      // arm the rate limit only after a (possibly partial) successful run
+      this.enumCooldownUntil.set(
+        datasourceId,
+        Date.now() + cfg.semanticEnumCooldown * 1000,
+      );
+      return summary;
+    } finally {
+      this.busyEnumRuns.delete(datasourceId);
+    }
+  }
+
+  private async runEnumCollection(
+    datasourceId: number,
+    actor: SemanticActor,
+    cfg: EmbeddingConfig,
+  ): Promise<EnumCollectSummary> {
+    // findOne is oid-scoped — a foreign datasource id 404s before any probe.
+    const ds = await this.datasourceService.findOne(datasourceId);
+    const fieldsByTable = new Map(
+      ds.tables.map((t) => [
+        t.tableName,
+        new Set(t.fields.map((f) => f.fieldName)),
+      ]),
+    );
+    const rows = await this.prisma.fieldSemantic.findMany({
+      where: {
+        datasourceId,
+        role: 'dimension',
+        enabled: true,
+        OR: [
+          { scope: 'GLOBAL' },
+          { scope: 'WORKSPACE', oid: actor.oid },
+          { scope: 'PERSONAL', oid: actor.oid, ownerUid: actor.id },
+        ],
+      },
+      orderBy: [{ tableName: 'asc' }, { fieldName: 'asc' }],
+    });
+
+    const item = (row: {
+      id: number;
+      tableName: string;
+      fieldName: string;
+    }) => ({
+      id: row.id,
+      table_name: row.tableName,
+      field_name: row.fieldName,
+    });
+    const collected: EnumCollectSummary['collected'] = [];
+    const skipped: EnumCollectSummary['skipped'] = [];
+    const eligible: typeof rows = [];
+    for (const row of rows) {
+      if (!canEditDirect(actor, row.scope as SemanticScope)) {
+        skipped.push({
+          ...item(row),
+          reason: tr('semantic.enum_no_authority'),
+        });
+        continue;
+      }
+      const tableFields = fieldsByTable.get(row.tableName);
+      if (!tableFields) {
+        skipped.push({
+          ...item(row),
+          reason: tr('semantic.enum_table_missing'),
+        });
+        continue;
+      }
+      if (!tableFields.has(row.fieldName)) {
+        skipped.push({
+          ...item(row),
+          reason: tr('semantic.enum_field_missing'),
+        });
+        continue;
+      }
+      eligible.push(row);
+    }
+
+    if (eligible.length > 0) {
+      // One connector session for the whole batch; probes run sequentially
+      // (the in-run throttle — no parallel DISTINCT storm on the source DB).
+      await this.datasourceService.withConnection(datasourceId, async (c) => {
+        for (const row of eligible) {
+          let raw: unknown[];
+          try {
+            raw = await c.sampleDistinct(
+              row.tableName,
+              row.fieldName,
+              cfg.semanticEnumScanRows,
+            );
+          } catch (e) {
+            skipped.push({
+              ...item(row),
+              reason: tr('semantic.enum_query_failed', {
+                reason: e instanceof Error ? e.message : String(e),
+              }),
+            });
+            continue;
+          }
+          const distinct = [
+            ...new Set(raw.map(enumValueText).filter((v): v is string => !!v)),
+          ].sort();
+          if (distinct.length > cfg.semanticEnumMaxValues) {
+            skipped.push({
+              ...item(row),
+              reason: tr('semantic.enum_high_cardinality', {
+                max: cfg.semanticEnumMaxValues,
+              }),
+            });
+            continue;
+          }
+          const enumValues = distinct.map((value) => ({ value }));
+          await this.prisma.$transaction(async (tx) => {
+            const updated = await tx.fieldSemantic.update({
+              where: { id: row.id },
+              data: {
+                enumValues: enumValues,
+                version: { increment: 1 },
+              },
+            });
+            await tx.fieldSemanticVersion.create({
+              data: {
+                entityId: row.id,
+                version: updated.version,
+                snapshot: {
+                  role: updated.role,
+                  meaning: updated.meaning,
+                  unit: updated.unit,
+                  enumValues: updated.enumValues,
+                  enabled: updated.enabled,
+                  source: 'enum_collect',
+                },
+                changedBy: actor.id,
+              },
+            });
+          });
+          collected.push({ ...item(row), values: distinct.length });
+        }
+      });
+    }
+    return { collected, skipped };
   }
 }

@@ -1,13 +1,15 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 16 retrieval-strategy parameters resolve with the priority
+// 19 retrieval-strategy parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
 //   chat.sample_data_enabled uses. The 10 embedding.* keys drive vector/k
 //   keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
-//   clarify gate (ask-the-user before stuffing an ambiguous schema).
+//   clarify gate (ask-the-user before stuffing an ambiguous schema); the
+//   5 semantic.* keys drive the semantic layer (M2 rule 2 + the M3
+//   dimension-enum collector).
 //
 // Parsing is STRICT on saved values:
 // booleans only accept real booleans or "true"/"false" (never 0/1), counts
@@ -48,6 +50,16 @@ export interface EmbeddingConfig {
    *  effective semantics, stuff only the top semantic.max_tables of them. */
   semanticEnabled: boolean;
   semanticMaxTables: number;
+  /** Dimension-enum collector (MetaDataImprove M3.3): a field with more
+   *  distinct values than this is NOT low-cardinality — the collect run
+   *  skips it instead of caching a meaningless enum list. */
+  semanticEnumMaxValues: number;
+  /** Row cap for one DISTINCT probe: the sample is drawn from the first
+   *  N rows of the table, bounding the scan cost on large tables. */
+  semanticEnumScanRows: number;
+  /** Per-datasource cooldown (seconds) between collect runs — the rate
+   *  limit that keeps repeated clicks from hammering the source DB. */
+  semanticEnumCooldown: number;
 }
 
 /** camelCase field → persisted parameter key. */
@@ -68,6 +80,9 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   clarifyMaxRounds: 'clarify.max_rounds',
   semanticEnabled: 'semantic.enabled',
   semanticMaxTables: 'semantic.max_tables',
+  semanticEnumMaxValues: 'semantic.enum_max_values',
+  semanticEnumScanRows: 'semantic.enum_scan_rows',
+  semanticEnumCooldown: 'semantic.enum_cooldown',
 };
 
 export const EMBEDDING_PARAMETER_KEYS = Object.values(PARAMETER_KEYS);
@@ -100,6 +115,9 @@ const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'clarifyMaxSelect',
   'clarifyMaxRounds',
   'semanticMaxTables',
+  'semanticEnumMaxValues',
+  'semanticEnumScanRows',
+  'semanticEnumCooldown',
 ]);
 
 /** Object-safe display of an invalid value for error messages. */
@@ -236,6 +254,18 @@ function envDefaults(): EmbeddingConfig {
     semanticMaxTables: Math.max(
       1,
       Math.floor(envNumber('SEMANTIC_MAX_TABLES', undefined, 1)),
+    ),
+    semanticEnumMaxValues: Math.max(
+      1,
+      Math.floor(envNumber('SEMANTIC_ENUM_MAX_VALUES', undefined, 50)),
+    ),
+    semanticEnumScanRows: Math.max(
+      1,
+      Math.floor(envNumber('SEMANTIC_ENUM_SCAN_ROWS', undefined, 10000)),
+    ),
+    semanticEnumCooldown: Math.max(
+      1,
+      Math.floor(envNumber('SEMANTIC_ENUM_COOLDOWN', undefined, 60)),
     ),
   };
 }

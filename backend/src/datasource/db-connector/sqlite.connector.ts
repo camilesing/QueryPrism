@@ -168,6 +168,22 @@ export class SqliteConnector implements DbConnector {
     return rawRows.map((row) => columns.map((col) => row[col]));
   }
 
+  async sampleDistinct(
+    tableName: string,
+    fieldName: string,
+    scanRows: number,
+  ): Promise<unknown[]> {
+    // Bounded scan (see PostgresConnector.sampleDistinct).
+    this.assertValidIdentifier(tableName);
+    const rows = Math.max(1, Math.floor(scanRows));
+    const stmt = this.conn().prepare(
+      `SELECT DISTINCT v FROM (SELECT ${this.quoteIdent(fieldName)} AS v ` +
+        `FROM ${this.quoteIdent(tableName)} LIMIT ${rows}) s`,
+    );
+    const rawRows = stmt.all() as Record<string, unknown>[];
+    return rawRows.map((r) => r.v);
+  }
+
   async close(): Promise<void> {
     this.db?.close();
   }

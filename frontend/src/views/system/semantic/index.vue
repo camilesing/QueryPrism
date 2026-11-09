@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus-secondary'
 import {
   semanticApi,
+  type EnumCollectSummary,
   type SemanticChangeRequestRow,
   type SemanticEntityType,
   type SemanticRow,
@@ -255,6 +256,37 @@ function toggleEnabled(row: SemanticRow, enabled: boolean) {
   })
 }
 
+// ---- dimension-enum collection (MetaDataImprove M3.3) --------------------
+
+const collecting = ref(false)
+
+/** One-click enum sampling for the SELECTED datasource's dimension fields.
+ *  Server-side rate-limited; the response reports per-field outcomes. */
+function collectEnums() {
+  if (!dsFilter.value) {
+    ElMessage.warning(t('semantic.collect_enum_pick_ds'))
+    return
+  }
+  collecting.value = true
+  semanticApi
+    .collectEnum(dsFilter.value)
+    .then((res: EnumCollectSummary) => {
+      const collected = res.collected.length
+      const skipped = res.skipped.length
+      if (collected === 0 && skipped === 0) {
+        ElMessage.info(t('semantic.collect_enum_none'))
+      } else if (skipped > 0) {
+        ElMessage.warning(t('semantic.collect_enum_partial', [collected, skipped]))
+      } else {
+        ElMessage.success(t('semantic.collect_enum_done', [collected]))
+      }
+      search(pageInfo.currentPage)
+    })
+    .finally(() => {
+      collecting.value = false
+    })
+}
+
 // ---- version history drawer --------------------------------------------
 
 const versionDrawer = ref(false)
@@ -367,6 +399,14 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
         <el-button type="primary" @click="openCreate">
           <el-icon><icon_add_outlined /></el-icon>
           {{ t('semantic.add') }}
+        </el-button>
+        <el-button
+          v-if="activeTab === 'field'"
+          :loading="collecting"
+          :title="t('semantic.collect_enum_hint')"
+          @click="collectEnums"
+        >
+          {{ t('semantic.collect_enum') }}
         </el-button>
         <el-button @click="exportExcel">{{ t('semantic.export') }}</el-button>
         <el-button @click="triggerImport">{{ t('semantic.import') }}</el-button>

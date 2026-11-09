@@ -250,7 +250,13 @@
     "export": "导出",
     "import": "导入",
     "import_done": "已导入 {0} 条",
-    "import_partial": "导入 {0} 条，失败 {1} 条"
+    "import_partial": "导入 {0} 条，失败 {1} 条",
+    "collect_enum": "采集枚举",
+    "collect_enum_hint": "对所选数据源的低基数维度字段采样去重值，回填枚举缓存",
+    "collect_enum_pick_ds": "请先选择数据源",
+    "collect_enum_none": "该数据源没有可采集的维度字段",
+    "collect_enum_done": "已采集 {0} 个字段的枚举",
+    "collect_enum_partial": "已采集 {0} 个，跳过 {1} 个（高基数/无权限/表缺失）"
   },
   "common": {
     "start_time": "开始时间",

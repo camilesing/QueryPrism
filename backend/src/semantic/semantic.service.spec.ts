@@ -7,7 +7,7 @@ import { ForbiddenException } from '@nestjs/common';
 import { requestContextStorage } from '../common/context/request-context';
 import { setI18n } from '../common/i18n/translate';
 import { createTestI18n } from '../common/i18n/test-i18n';
-import { SemanticService } from './semantic.service';
+import { SemanticService, type EnumCollectSummary } from './semantic.service';
 
 setI18n(createTestI18n());
 
@@ -57,6 +57,7 @@ interface SemanticPrismaMock {
     findMany: jest.Mock;
   };
   table: { findMany: jest.Mock };
+  systemVariable: { findMany: jest.Mock };
   $transaction: jest.Mock;
 }
 
@@ -87,6 +88,8 @@ function makePrisma(): SemanticPrismaMock {
       findMany: jest.fn().mockResolvedValue([]),
     },
     table: { findMany: jest.fn().mockResolvedValue([]) },
+    // No saved parameter rows → resolveEmbeddingConfig uses env defaults.
+    systemVariable: { findMany: jest.fn().mockResolvedValue([]) },
     // Execute the callback with the SAME mock object as tx.
     $transaction: jest
       .fn()
@@ -99,8 +102,39 @@ function makePrisma(): SemanticPrismaMock {
 
 type MockPrisma = SemanticPrismaMock;
 
-function makeService(prisma: MockPrisma = makePrisma()) {
-  return { service: new SemanticService(prisma as never), prisma };
+/** DatasourceService mock for collectEnums: findOne returns the ds metadata,
+ * withConnection hands the probe connector straight to the callback. */
+function makeDatasourceService(sampleDistinct: jest.Mock) {
+  const connector = { sampleDistinct };
+  return {
+    findOne: jest.fn().mockResolvedValue({
+      id: 3,
+      tables: [
+        {
+          id: 30,
+          tableName: 'sales_order',
+          fields: [
+            { id: 300, fieldName: 'order_status' },
+            { id: 301, fieldName: 'amount' },
+          ],
+        },
+      ],
+    }),
+    withConnection: jest.fn(
+      (_id: number, fn: (c: unknown) => Promise<unknown>) => fn(connector),
+    ),
+  };
+}
+
+function makeService(
+  prisma: MockPrisma = makePrisma(),
+  datasourceService = makeDatasourceService(jest.fn().mockResolvedValue([])),
+) {
+  return {
+    service: new SemanticService(prisma as never, datasourceService as never),
+    prisma,
+    datasourceService,
+  };
 }
 
 const TABLE_INFO = {
@@ -436,5 +470,149 @@ describe('SemanticService.remove routing', () => {
         }),
       }),
     );
+  });
+});
+
+describe('SemanticService.collectEnums (MetaDataImprove M3.3)', () => {
+  const dimensionRow = (over: Partial<Record<string, unknown>> = {}) => ({
+    id: 77,
+    scope: 'WORKSPACE',
+    oid: 1,
+    ownerUid: null,
+    datasourceId: 3,
+    tableName: 'sales_order',
+    fieldName: 'order_status',
+    role: 'dimension',
+    meaning: '订单状态',
+    unit: null,
+    enumValues: null,
+    enabled: true,
+    version: 4,
+    ...over,
+  });
+
+  it('backfills a low-cardinality dimension with versioned enumValues', async () => {
+    const sampleDistinct = jest
+      .fn()
+      .mockResolvedValue(['paid', null, 'refunded', 'paid']);
+    const { service, prisma } = makeService(
+      makePrisma(),
+      makeDatasourceService(sampleDistinct),
+    );
+    prisma.fieldSemantic.findMany.mockResolvedValue([dimensionRow()]);
+    prisma.fieldSemantic.update.mockResolvedValue({
+      ...dimensionRow(),
+      version: 5,
+      enumValues: [{ value: 'paid' }, { value: 'refunded' }],
+    });
+
+    const summary = (await withUser(WS_ADMIN, () =>
+      service.collectEnums(3),
+    )) as EnumCollectSummary;
+
+    expect(sampleDistinct).toHaveBeenCalledWith(
+      'sales_order',
+      'order_status',
+      10000, // semantic.enum_scan_rows default
+    );
+    // NULLs dropped, duplicates collapsed, sorted
+    expect(prisma.fieldSemantic.update).toHaveBeenCalledWith({
+      where: { id: 77 },
+      data: {
+        enumValues: [{ value: 'paid' }, { value: 'refunded' }],
+        version: { increment: 1 },
+      },
+    });
+    expect(prisma.fieldSemanticVersion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        entityId: 77,
+        version: 5,
+        snapshot: expect.objectContaining({ source: 'enum_collect' }),
+      }),
+    });
+    expect(summary.collected).toEqual([
+      {
+        id: 77,
+        table_name: 'sales_order',
+        field_name: 'order_status',
+        values: 2,
+      },
+    ]);
+    expect(summary.skipped).toEqual([]);
+  });
+
+  it('skips fields above the cardinality cap and never writes them', async () => {
+    const many = Array.from({ length: 51 }, (_, i) => `v${i}`);
+    const sampleDistinct = jest.fn().mockResolvedValue(many);
+    const { service, prisma } = makeService(
+      makePrisma(),
+      makeDatasourceService(sampleDistinct),
+    );
+    prisma.fieldSemantic.findMany.mockResolvedValue([dimensionRow()]);
+
+    const summary = (await withUser(WS_ADMIN, () =>
+      service.collectEnums(3),
+    )) as EnumCollectSummary;
+
+    expect(summary.collected).toEqual([]);
+    expect(summary.skipped).toHaveLength(1);
+    expect(summary.skipped[0].reason).toContain('50');
+    expect(prisma.fieldSemantic.update).not.toHaveBeenCalled();
+  });
+
+  it('skips rows the actor cannot edit directly (upper-layer governance)', async () => {
+    const sampleDistinct = jest.fn();
+    const { service, prisma } = makeService(
+      makePrisma(),
+      makeDatasourceService(sampleDistinct),
+    );
+    // A member cannot write GLOBAL directly → approval round, not a backfill.
+    prisma.fieldSemantic.findMany.mockResolvedValue([
+      dimensionRow({ id: 88, scope: 'GLOBAL', oid: null }),
+    ]);
+
+    const summary = (await withUser(MEMBER, () =>
+      service.collectEnums(3),
+    )) as EnumCollectSummary;
+
+    expect(summary.collected).toEqual([]);
+    expect(summary.skipped).toHaveLength(1);
+    expect(sampleDistinct).not.toHaveBeenCalled();
+    expect(prisma.fieldSemantic.update).not.toHaveBeenCalled();
+  });
+
+  it('skips dangling semantics (table/field no longer synced) without probing', async () => {
+    const sampleDistinct = jest.fn();
+    const { service, prisma } = makeService(
+      makePrisma(),
+      makeDatasourceService(sampleDistinct),
+    );
+    prisma.fieldSemantic.findMany.mockResolvedValue([
+      dimensionRow({ id: 90, tableName: 'gone_table' }),
+      dimensionRow({ id: 91, fieldName: 'gone_field' }),
+    ]);
+
+    const summary = (await withUser(WS_ADMIN, () =>
+      service.collectEnums(3),
+    )) as EnumCollectSummary;
+
+    expect(summary.collected).toEqual([]);
+    expect(summary.skipped).toHaveLength(2);
+    expect(sampleDistinct).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits an immediate rerun (semantic.enum_cooldown)', async () => {
+    const sampleDistinct = jest.fn().mockResolvedValue(['a']);
+    const { service, prisma } = makeService(
+      makePrisma(),
+      makeDatasourceService(sampleDistinct),
+    );
+    prisma.fieldSemantic.findMany.mockResolvedValue([dimensionRow()]);
+    prisma.fieldSemantic.update.mockResolvedValue(dimensionRow());
+
+    await withUser(WS_ADMIN, () => service.collectEnums(3));
+    await expect(
+      withUser(WS_ADMIN, () => service.collectEnums(3)),
+    ).rejects.toThrow();
   });
 });

@@ -91,4 +91,25 @@ export const semanticApi = {
     }),
   setEnabled: (entityType: SemanticEntityType, id: number, enabled: boolean) =>
     request.get(`/system/semantic/${entityType}/${id}/enable/${enabled}`),
+  /** Dimension-enum collection (M3.3): bounded DISTINCT sampling over the
+   *  datasource's dimension fields; backfills enumValues on rows the actor
+   *  may edit directly. Rate-limited per datasource. */
+  collectEnum: (datasourceId: number) =>
+    request.post<EnumCollectSummary>(`/system/semantic/collect_enum/${datasourceId}`),
+}
+
+/** Per-field outcome of one collectEnum run (snake wire). */
+export interface EnumCollectSummary {
+  collected: Array<{
+    id: number
+    table_name: string
+    field_name: string
+    values: number
+  }>
+  skipped: Array<{
+    id: number
+    table_name: string
+    field_name: string
+    reason: string
+  }>
 }

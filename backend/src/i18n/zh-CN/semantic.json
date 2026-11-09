@@ -10,5 +10,11 @@
   "request_pending_exists": "该条目已存在待审批的变更提案",
   "review_forbidden": "无权审批该层级的变更",
   "import_forbidden": "仅空间管理员可导入语义",
-  "import_bad_file": "上传的文件不是有效的 xlsx 工作簿"
+  "import_bad_file": "上传的文件不是有效的 xlsx 工作簿",
+  "enum_cooldown_active": "该数据源的枚举采集刚运行过，{{seconds}} 秒后可重试",
+  "enum_no_authority": "跳过：直接编辑该层级需走审批",
+  "enum_table_missing": "跳过：表在数据源中已不存在",
+  "enum_field_missing": "跳过：字段在表中已不存在",
+  "enum_high_cardinality": "跳过：去重值超过 {{max}} 个，不是低基数维度",
+  "enum_query_failed": "跳过：采样失败（{{reason}}）"
 }

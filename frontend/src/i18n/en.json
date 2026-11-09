@@ -250,7 +250,13 @@
     "export": "Export",
     "import": "Import",
     "import_done": "Imported {0} rows",
-    "import_partial": "Imported {0} rows, {1} failed"
+    "import_partial": "Imported {0} rows, {1} failed",
+    "collect_enum": "Collect enums",
+    "collect_enum_hint": "Sample distinct values of the selected datasource's low-cardinality dimension fields and backfill their enum cache",
+    "collect_enum_pick_ds": "Select a datasource first",
+    "collect_enum_none": "No eligible dimension fields for this datasource",
+    "collect_enum_done": "Collected enums for {0} fields",
+    "collect_enum_partial": "Collected {0}, skipped {1} (high cardinality / no authority / missing table)"
   },
   "common": {
     "start_time": "Start Time",

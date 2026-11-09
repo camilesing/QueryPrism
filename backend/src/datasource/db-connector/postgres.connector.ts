@@ -150,6 +150,21 @@ ORDER BY a.attnum`;
     return this.buildResult(res).rows;
   }
 
+  async sampleDistinct(
+    tableName: string,
+    fieldName: string,
+    scanRows: number,
+  ): Promise<unknown[]> {
+    // Bounded scan: DISTINCT over the first N rows only, so a huge table
+    // cannot turn the enum probe into a full-table aggregate.
+    const rows = Math.max(1, Math.floor(scanRows));
+    const sql =
+      `SELECT DISTINCT v FROM (SELECT ${this.quoteIdent(fieldName)} AS v ` +
+      `FROM ${this.quoteIdent(tableName)} LIMIT ${rows}) s`;
+    const res = await this.pool.query<Record<string, unknown>>(sql);
+    return res.rows.map((r) => r.v);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

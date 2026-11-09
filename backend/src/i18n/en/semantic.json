@@ -10,5 +10,11 @@
   "request_pending_exists": "A pending change request already exists for this entry",
   "review_forbidden": "You may not review changes targeting this scope layer",
   "import_forbidden": "Only workspace admins may import semantics",
-  "import_bad_file": "The uploaded file is not a valid xlsx workbook"
+  "import_bad_file": "The uploaded file is not a valid xlsx workbook",
+  "enum_cooldown_active": "Enum collection for this datasource just ran — retry in {{seconds}}s",
+  "enum_no_authority": "Skipped: editing this scope layer needs an approval round",
+  "enum_table_missing": "Skipped: table no longer exists in the datasource",
+  "enum_field_missing": "Skipped: field no longer exists in the datasource",
+  "enum_high_cardinality": "Skipped: more than {{max}} distinct values — not a low-cardinality dimension",
+  "enum_query_failed": "Skipped: sampling failed ({{reason}})"
 }

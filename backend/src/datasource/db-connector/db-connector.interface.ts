@@ -64,6 +64,16 @@ export interface DbConnector {
   /** First N rows of a table (sample data fed to the SQL prompt). */
   getTableSampleData(tableName: string, limit?: number): Promise<unknown[][]>;
 
+  /** Distinct values of one column, drawn from at most `scanRows` source
+   *  rows — the dimension-enum collector's low-cardinality probe
+   *  (MetaDataImprove M3.3). Returns the raw single-column values; callers
+   *  own the cardinality check. */
+  sampleDistinct(
+    tableName: string,
+    fieldName: string,
+    scanRows: number,
+  ): Promise<unknown[]>;
+
   /** Release pooled connections. */
   close(): Promise<void> | void;
 }

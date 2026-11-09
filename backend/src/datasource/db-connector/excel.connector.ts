@@ -134,6 +134,17 @@ export class ExcelConnector implements DbConnector {
     return result.rows;
   }
 
+  async sampleDistinct(
+    tableName: string,
+    fieldName: string,
+    scanRows: number,
+  ): Promise<unknown[]> {
+    if (this.tableNames.length > 0 && !this.tableNames.includes(tableName)) {
+      throw new Error(tr('datasource.table_not_in_excel', { ref: tableName }));
+    }
+    return this.inner.sampleDistinct(tableName, fieldName, scanRows);
+  }
+
   async close(): Promise<void> {
     await this.inner.close();
   }

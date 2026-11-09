@@ -139,6 +139,21 @@ export class MysqlConnector implements DbConnector {
     return records.map((r) => columns.map((c) => r[c]));
   }
 
+  async sampleDistinct(
+    tableName: string,
+    fieldName: string,
+    scanRows: number,
+  ): Promise<unknown[]> {
+    // Bounded scan (see PostgresConnector.sampleDistinct); ?? placeholders
+    // carry the identifier quoting, the derived table alias is required.
+    const rows = Math.max(1, Math.floor(scanRows));
+    const { rows: records } = await this.execute(
+      'SELECT DISTINCT v FROM (SELECT ?? AS v FROM ?? LIMIT ?) s',
+      [fieldName, tableName, rows],
+    );
+    return (records as unknown as Record<string, unknown>[]).map((r) => r.v);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

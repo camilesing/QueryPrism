@@ -104,6 +104,9 @@ describe('resolveEmbeddingConfig', () => {
       clarifyMaxRounds: 1,
       semanticEnabled: true,
       semanticMaxTables: 1,
+      semanticEnumMaxValues: 50,
+      semanticEnumScanRows: 10000,
+      semanticEnumCooldown: 60,
     } satisfies EmbeddingConfig);
   });
 
@@ -161,8 +164,8 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the sixteen persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(16);
+  it('exposes exactly the nineteen persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(19);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
     ).toHaveLength(10);
@@ -171,6 +174,26 @@ describe('resolveEmbeddingConfig', () => {
     ).toHaveLength(4);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('semantic.')),
-    ).toHaveLength(2);
+    ).toHaveLength(5);
+  });
+
+  it('semantic.enum_* rows override env with strict positive-int parsing', async () => {
+    process.env.SEMANTIC_ENUM_MAX_VALUES = '20';
+    const cfg = await resolveEmbeddingConfig(
+      makePrisma([
+        { name: 'semantic.enum_max_values', value: '30' },
+        { name: 'semantic.enum_scan_rows', value: 5000 },
+      ]) as never,
+    );
+    // saved row (30) beats env (20); number values parse like strings
+    expect(cfg.semanticEnumMaxValues).toBe(30);
+    expect(cfg.semanticEnumScanRows).toBe(5000);
+    // unsaved → env/default stands
+    expect(cfg.semanticEnumCooldown).toBe(60);
+    await expect(
+      resolveEmbeddingConfig(
+        makePrisma([{ name: 'semantic.enum_cooldown', value: '0' }]) as never,
+      ),
+    ).rejects.toThrow('semantic.enum_cooldown');
   });
 });

@@ -182,4 +182,20 @@ export class SemanticController {
     }
     return this.importService.importExcel(file.buffer);
   }
+
+  /** Dimension-enum collection (MetaDataImprove M3.3): one bounded DISTINCT
+   *  probe per visible dimension field of the datasource, backfilling
+   *  enumValues on the rows the actor may edit directly. Rate-limited per
+   *  datasource (semantic.enum_cooldown); the response reports per-field
+   *  collected/skipped outcomes. */
+  @Post('collect_enum/:datasource_id')
+  @HttpCode(200)
+  @SystemLog({
+    module: OperationModule.SEMANTIC,
+    type: OperationType.IMPORT,
+    detail: '采集维度枚举',
+  })
+  collectEnum(@Param('datasource_id', ParseIntPipe) datasourceId: number) {
+    return this.semanticService.collectEnums(datasourceId);
+  }
 }
