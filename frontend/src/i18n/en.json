@@ -863,6 +863,7 @@
     "error": "Error",
     "exec-sql-err": "Execute SQL failed",
     "no_data": "No Data",
+    "empty_result_tip": "No valid results found. The table may be empty.",
     "loading_data": "Loading ...",
     "show_error_detail": "Show error info",
     "thousands_separator_setting": "Thousands Separator Setting",

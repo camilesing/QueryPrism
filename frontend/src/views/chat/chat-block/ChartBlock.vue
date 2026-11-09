@@ -119,6 +119,19 @@ const data = computed(() => {
   }
 })
 
+/** The SQL ran successfully but returned zero rows, so there is nothing to
+ *  plot. Treat it as "no valid result" and tell the user the source table may
+ *  be empty — otherwise the card only shows a bare empty chart. Skipped for
+ *  predict mode (its data comes from predict_data, not the SQL result). */
+const showEmptyResultTip = computed(() => {
+  if (props.isPredict) return false
+  const record = props.message?.record
+  if (!record?.sql || !record.finish || record.error) return false
+  if (props.loadingData) return false
+  const rows = dataObject.value.data
+  return Array.isArray(rows) && rows.length === 0
+})
+
 const chartRef = ref()
 
 const chartObject = computed<{
@@ -609,6 +622,10 @@ function getBaseAxis() {
       </div>
     </div>
 
+    <div v-if="showEmptyResultTip" class="empty-result-tip">
+      {{ t('chat.empty_result_tip') }}
+    </div>
+
     <template v-if="message?.record?.chart">
       <div class="chart-block">
         <DisplayChartBlock
@@ -918,6 +935,15 @@ function getBaseAxis() {
     width: 100%;
 
     margin-top: 16px;
+  }
+  .empty-result-tip {
+    margin-top: 12px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(230, 162, 60, 0.1);
+    color: var(--ed-color-warning, #e6a23c);
+    font-size: 13px;
+    line-height: 20px;
   }
   .over-limit-hint {
     min-height: 24px;
