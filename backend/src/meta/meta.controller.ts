@@ -1,9 +1,10 @@
 // MetaController — the authenticated external metadata ingestion API
 // (MetaDataImprove M2 ingestion channel: "expose the API Post into data
 // (with authentication)"). ApiKeyGuard authenticates the per-user key pair;
-// the import itself requires the key owner to administer the workspace
-// (fail loud — a misconfigured pipeline key gets a 403, not a silent
-// personal-layer downscope).
+// each row carries its own scope (default WORKSPACE) and is written directly
+// only when the key owner may edit that layer: PERSONAL (own rows), WORKSPACE
+// (workspace admin), GLOBAL (system admin). Unauthorized rows fail and are
+// reported — they never become pending proposals.
 //
 // Response protocol note: this controller RETURNS data (JSON envelope via
 // TransformInterceptor), unlike the SSE chat routes.
@@ -36,8 +37,9 @@ export class MetaController {
     private readonly metricImportService: MetricImportService,
   ) {}
 
-  /** Batch semantic import: array of rows, per-row upsert at WORKSPACE.
-   *  Returns {applied, failed:[{row, reason}]} — one bad row never aborts. */
+  /** Batch semantic import: array of rows, per-row `scope` (default WORKSPACE).
+   *  Returns {applied, by_scope, failed:[{row, reason}]} — one bad row never
+   *  aborts. */
   @Post('semantic/import')
   @HttpCode(200)
   @SystemLog({
@@ -55,7 +57,8 @@ export class MetaController {
     return this.importService.importJson(rows);
   }
 
-  /** Batch metric import (MetaDataImprove M4): per-row upsert at WORKSPACE. */
+  /** Batch metric import (MetaDataImprove M4): per-row `scope` (default
+   *  WORKSPACE). */
   @Post('metric/import')
   @HttpCode(200)
   @SystemLog({

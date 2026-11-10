@@ -208,6 +208,26 @@ describe('SemanticService.upsert authority routing', () => {
     expect(prisma.semanticChangeRequest.create).not.toHaveBeenCalled();
   });
 
+  it('retries once when the create race loses (P2002) and then creates', async () => {
+    const { service, prisma } = makeService();
+    prisma.tableSemantic.findFirst.mockResolvedValue(null);
+    prisma.tableSemantic.create
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unique'), { code: 'P2002' }),
+      )
+      .mockImplementationOnce(
+        ({ data }: { data: Record<string, unknown> }) => ({
+          id: 31,
+          ...data,
+          version: 1,
+        }),
+      );
+    const result = await withUser(WS_ADMIN, () => service.upsert(TABLE_INFO));
+    expect(result).toEqual({ applied: true, id: 31 });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(prisma.tableSemantic.create).toHaveBeenCalledTimes(2);
+  });
+
   it('update path increments version and snapshots the new state', async () => {
     const { service, prisma } = makeService();
     prisma.tableSemantic.findFirst.mockResolvedValue({

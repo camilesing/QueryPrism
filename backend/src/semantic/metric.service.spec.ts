@@ -163,6 +163,26 @@ describe('MetricService.upsert authority routing', () => {
     });
   });
 
+  it('retries once when the create race loses (P2002) and then creates', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findFirst.mockResolvedValue(null);
+    prisma.metricDef.create
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unique'), { code: 'P2002' }),
+      )
+      .mockImplementationOnce(
+        ({ data }: { data: Record<string, unknown> }) => ({
+          id: 41,
+          version: 1,
+          ...data,
+        }),
+      );
+    const result = await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
+    expect(result).toEqual({ applied: true, id: 41 });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(prisma.metricDef.create).toHaveBeenCalledTimes(2);
+  });
+
   it('member → WORKSPACE becomes a pending request (no direct write)', async () => {
     const { metric, prisma } = makeServices();
     const result = await withUser(MEMBER, () => metric.upsert(ATOMIC_INFO));

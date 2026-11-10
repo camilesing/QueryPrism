@@ -19,6 +19,7 @@
   "expression_invalid": "复合指标表达式非法：仅允许指标编码、数字与 + - * / ( )",
   "expression_no_refs": "复合指标表达式必须引用至少一个指标编码",
   "expression_self_ref": "复合指标表达式不能引用自身",
-  "import_forbidden": "仅空间管理员可导入指标",
-  "import_bad_file": "上传的文件不是有效的 xlsx 工作簿"
+  "import_forbidden": "无权导入到该层级（PERSONAL 仅本人；WORKSPACE 需空间管理员；GLOBAL 需系统管理员）",
+  "import_bad_file": "上传的文件不是有效的 xlsx 工作簿",
+  "write_conflict": "该条目刚被并发修改，请重试"
 }

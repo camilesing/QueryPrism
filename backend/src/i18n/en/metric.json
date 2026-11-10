@@ -19,6 +19,7 @@
   "expression_invalid": "Invalid composite expression: only metric codes, numbers and + - * / ( ) are allowed",
   "expression_no_refs": "A composite expression must reference at least one metric code",
   "expression_self_ref": "A composite expression cannot reference itself",
-  "import_forbidden": "Only workspace admins may import metrics",
-  "import_bad_file": "The uploaded file is not a valid xlsx workbook"
+  "import_forbidden": "You may not import into this scope layer (PERSONAL: yourself; WORKSPACE: workspace admin; GLOBAL: system admin)",
+  "import_bad_file": "The uploaded file is not a valid xlsx workbook",
+  "write_conflict": "This entry was changed concurrently — please retry"
 }

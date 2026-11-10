@@ -11,6 +11,7 @@
 // 'metric' | 'standard', i18n keys under the <entityType>.* namespace.
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -28,6 +29,7 @@ import {
   type SemanticActor,
   type SemanticScope,
 } from './semantic-policy';
+import { withNaturalKeyRetry } from './natural-key';
 import {
   toRequestSnake,
   type SemanticPage,
@@ -171,8 +173,12 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     if (!target) throw new BadRequestException(this.t('invalid_scope'));
 
     if (canEditDirect(actor, info.scope)) {
-      const id = await this.prisma.$transaction((tx) =>
-        this.applyUpsertTx(tx, info, target, actor.id, info.note),
+      const id = await withNaturalKeyRetry(
+        () =>
+          this.prisma.$transaction((tx) =>
+            this.applyUpsertTx(tx, info, target, actor.id, info.note),
+          ),
+        () => new ConflictException(this.t('write_conflict')),
       );
       return { applied: true, id };
     }
@@ -317,29 +323,37 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     ) {
       throw new ForbiddenException(this.t('review_forbidden'));
     }
-    await this.prisma.$transaction(async (tx) => {
-      if (approve) {
-        const info = this.infoFromPayload(request.payload);
-        const target =
-          request.targetType === 'WORKSPACE'
-            ? { scope: 'WORKSPACE' as const, oid: request.oid, ownerUid: null }
-            : { scope: 'GLOBAL' as const, oid: null, ownerUid: null };
-        if (request.action === 'upsert') {
-          await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
-        } else {
-          await this.applyRemoveTx(tx, info, target);
-        }
-      }
-      await tx.semanticChangeRequest.update({
-        where: { id },
-        data: {
-          status: approve ? 'approved' : 'rejected',
-          reviewerUid: actor.id,
-          reviewNote: reviewNote ?? null,
-          reviewedAt: new Date(),
-        },
-      });
-    });
+    await withNaturalKeyRetry(
+      () =>
+        this.prisma.$transaction(async (tx) => {
+          if (approve) {
+            const info = this.infoFromPayload(request.payload);
+            const target =
+              request.targetType === 'WORKSPACE'
+                ? {
+                    scope: 'WORKSPACE' as const,
+                    oid: request.oid,
+                    ownerUid: null,
+                  }
+                : { scope: 'GLOBAL' as const, oid: null, ownerUid: null };
+            if (request.action === 'upsert') {
+              await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
+            } else {
+              await this.applyRemoveTx(tx, info, target);
+            }
+          }
+          await tx.semanticChangeRequest.update({
+            where: { id },
+            data: {
+              status: approve ? 'approved' : 'rejected',
+              reviewerUid: actor.id,
+              reviewNote: reviewNote ?? null,
+              reviewedAt: new Date(),
+            },
+          });
+        }),
+      () => new ConflictException(this.t('write_conflict')),
+    );
   }
 
   // ---- internals ---------------------------------------------------------

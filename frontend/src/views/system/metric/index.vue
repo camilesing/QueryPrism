@@ -447,11 +447,21 @@ function onImportFile(event: Event) {
       headers: { 'Content-Type': 'multipart/form-data' },
     } as never)
     .then((res: unknown) => {
-      const out = res as { applied: number; failed: Array<{ row: string; reason: string }> }
+      const out = res as {
+        applied: number
+        by_scope?: Record<string, number>
+        failed: Array<{ row: string; reason: string }>
+      }
+      const scopes = out.by_scope ?? {}
+      const global = scopes.GLOBAL ?? 0
+      const workspace = scopes.WORKSPACE ?? 0
+      const personal = scopes.PERSONAL ?? 0
       if (out.failed?.length) {
-        ElMessage.warning(t('metric.import_partial', [out.applied, out.failed.length]))
+        ElMessage.warning(
+          t('metric.import_partial', [out.applied, global, workspace, personal, out.failed.length])
+        )
       } else {
-        ElMessage.success(t('metric.import_done', [out.applied]))
+        ElMessage.success(t('metric.import_done', [out.applied, global, workspace, personal]))
       }
       search(pageInfo.currentPage)
     })

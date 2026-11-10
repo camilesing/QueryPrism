@@ -161,9 +161,9 @@ export class MetricController {
     res.send(buf);
   }
 
-  /** Excel import (ws admin) — per-row upsert at WORKSPACE across all six
-   *  sheets; failures are reported in the response, one bad row never
-   *  aborts the batch. */
+  /** Excel import — per-row `scope` (default WORKSPACE) + `enabled` across all
+   *  six sheets; each row is written only when the actor may edit that layer.
+   *  Failures are reported in the response, one bad row never aborts. */
   @Post('uploadExcel')
   @HttpCode(200)
   @UseInterceptors(FileInterceptor('file'))

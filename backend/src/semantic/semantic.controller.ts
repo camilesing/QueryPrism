@@ -166,8 +166,9 @@ export class SemanticController {
     res.send(buf);
   }
 
-  /** Excel import (ws admin) — per-row upsert at WORKSPACE; failures are
-   *  reported in the response, one bad row never aborts the batch. */
+  /** Excel import — per-row `scope` (default WORKSPACE) + `enabled`; each row
+   *  is written only when the actor may edit that layer. Failures are reported
+   *  in the response, one bad row never aborts the batch. */
   @Post('uploadExcel')
   @HttpCode(200)
   @UseInterceptors(FileInterceptor('file'))

@@ -150,6 +150,87 @@ describe('Metric + standard ingestion (e2e)', () => {
     expect(stdRow?.name).toBe('商品交易总额');
   });
 
+  it('imports PERSONAL rows and rejects invalid scopes per row', async () => {
+    const metricRes = await request(app.getHttpServer())
+      .post('/api/v1/meta/metric/import')
+      .set('X-QUERYPRISM-APIKEY', accessKey)
+      .set('X-QUERYPRISM-APISECRET', secret)
+      .send([
+        {
+          kind: 'atomic',
+          code: 'api_personal_metric',
+          name: '个人指标',
+          unit: '元',
+          datasource_id: 1,
+          table_name: 'sales_order',
+          field_name: 'amount',
+          aggregation: 'SUM',
+          scope: 'PERSONAL',
+          enabled: false,
+        },
+        {
+          kind: 'atomic',
+          code: 'api_bad_scope_metric',
+          name: '坏层级',
+          datasource_id: 1,
+          table_name: 'sales_order',
+          field_name: 'amount',
+          aggregation: 'SUM',
+          scope: 'team',
+        },
+      ]);
+    expect(metricRes.status).toBe(200);
+    const metricOut = (
+      metricRes.body as ApiEnvelope<{
+        applied: number;
+        by_scope: Record<string, number>;
+        failed: unknown[];
+      }>
+    ).data;
+    expect(metricOut.applied).toBe(1);
+    expect(metricOut.by_scope).toEqual({
+      GLOBAL: 0,
+      WORKSPACE: 0,
+      PERSONAL: 1,
+    });
+    expect(metricOut.failed).toHaveLength(1);
+    const personalMetric = await prisma.metricDef.findFirst({
+      where: { scope: 'PERSONAL', code: 'api_personal_metric' },
+    });
+    expect(personalMetric?.ownerUid).toBe(1);
+    expect(personalMetric?.enabled).toBe(false);
+
+    const stdRes = await request(app.getHttpServer())
+      .post('/api/v1/meta/standard/import')
+      .set('X-QUERYPRISM-APIKEY', accessKey)
+      .set('X-QUERYPRISM-APISECRET', secret)
+      .send([
+        {
+          kind: 'naming',
+          code: 'api_personal_std',
+          term: '个人词',
+          name: '个人标准词',
+          category: 'business_noun',
+          scope: 'PERSONAL',
+          enabled: false,
+        },
+      ]);
+    expect(stdRes.status).toBe(200);
+    const stdOut = (
+      stdRes.body as ApiEnvelope<{
+        applied: number;
+        by_scope: Record<string, number>;
+      }>
+    ).data;
+    expect(stdOut.applied).toBe(1);
+    expect(stdOut.by_scope.PERSONAL).toBe(1);
+    const personalStd = await prisma.dataStandard.findFirst({
+      where: { scope: 'PERSONAL', code: 'api_personal_std' },
+    });
+    expect(personalStd?.ownerUid).toBe(1);
+    expect(personalStd?.enabled).toBe(false);
+  });
+
   it('Excel export → import round-trips rows across sheets', async () => {
     const exported = await request(app.getHttpServer())
       .get('/api/v1/system/metric/export')
@@ -157,6 +238,15 @@ describe('Metric + standard ingestion (e2e)', () => {
       .responseType('blob');
     expect(exported.status).toBe(200);
     expect(exported.headers['content-type']).toContain('spreadsheetml');
+    const exportedWb = new ExcelJS.Workbook();
+    const exportedBytes: unknown = exported.body;
+    await exportedWb.xlsx.load(exportedBytes as ExcelJS.Buffer);
+    expect(exportedWb.getWorksheet('time_periods')!.getRow(1).values).toContain(
+      'scope',
+    );
+    expect(
+      exportedWb.getWorksheet('data_standards')!.getRow(1).values,
+    ).toContain('scope');
 
     // Build a tiny import workbook (one metric sheet + the standards sheet).
     const wb = new ExcelJS.Workbook();
@@ -171,6 +261,7 @@ describe('Metric + standard ingestion (e2e)', () => {
       'anchor',
       'description',
       'enabled',
+      'scope',
     ]);
     period.addRow([
       'excel_7d',
@@ -181,7 +272,8 @@ describe('Metric + standard ingestion (e2e)', () => {
       7,
       '',
       '',
-      'true',
+      'false',
+      'PERSONAL',
     ]);
     const units = wb.addWorksheet('data_standards');
     units.addRow([
@@ -193,8 +285,19 @@ describe('Metric + standard ingestion (e2e)', () => {
       'category',
       'description',
       'enabled',
+      'scope',
     ]);
-    units.addRow(['unit', 'excel_jian', '件', '件', '', 'count', '', 'true']);
+    units.addRow([
+      'unit',
+      'excel_jian',
+      '件',
+      '件',
+      '',
+      'count',
+      '',
+      'false',
+      'PERSONAL',
+    ]);
     const buf = await wb.xlsx.writeBuffer();
 
     const uploaded = await request(app.getHttpServer())
@@ -206,13 +309,15 @@ describe('Metric + standard ingestion (e2e)', () => {
     expect(out.applied).toBeGreaterThanOrEqual(2);
 
     const periodRow = await prisma.metricDef.findFirst({
-      where: { scope: 'WORKSPACE', kind: 'period', code: 'excel_7d' },
+      where: { scope: 'PERSONAL', kind: 'period', code: 'excel_7d' },
     });
     expect(periodRow?.name).toBe('近7天');
+    expect(periodRow?.enabled).toBe(false);
     const unitRow = await prisma.dataStandard.findFirst({
-      where: { scope: 'WORKSPACE', code: 'excel_jian' },
+      where: { scope: 'PERSONAL', code: 'excel_jian' },
     });
     expect(unitRow?.term).toBe('件');
+    expect(unitRow?.enabled).toBe(false);
 
     // The exported workbook itself re-imports cleanly (round-trip shape).
     const reupload = await request(app.getHttpServer())

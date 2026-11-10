@@ -577,7 +577,9 @@ model McpIntegration {
 // 下层用户可对上层发起 SemanticChangeRequest，审批通过才落版本。
 // 自然键 (datasourceId, tableName[, fieldName])，故意不用 Table/Field 外键——
 // 表结构重同步/删表不悬空语义；悬空行由管理页按「表已不存在」标注。
-// scope 内唯一性由 service 层在 $transaction 内校验（条件唯一索引 Prisma 不支持）。
+// scope 内唯一性由迁移 20261110130000_semantic_natural_key_unique 的 partial
+// unique index 保证（Prisma PSL 不能表达条件索引，故只存在于 migration SQL）；
+// 写路径遇 P2002 会在新事务重试一次，仍冲突则返回 409。
 model TableSemantic {
   id           Int      @id @default(autoincrement())
   scope        String // GLOBAL | WORKSPACE | PERSONAL
@@ -678,8 +680,9 @@ model SemanticChangeRequest {
 
 // 指标体系字典：kind 判别一张治理表，原子指标/修饰词/时间周期/派生指标/复合指标
 // 共用 M2 的三层 scope、版本历史与审批基建（semantic-policy + SemanticChangeRequest
-// entityType='metric'）。code 在 (scope 层, kind) 内唯一，由 service 在写事务内校验
-// （Prisma 条件唯一索引不支持）。definition 为按 kind 严格校验的 JSON 判别负载
+// entityType='metric'）。code 在 (scope 层, kind) 内唯一，由迁移
+// 20261110130000_semantic_natural_key_unique 的 partial unique index 保证；
+// 写路径 P2002 重试一次，仍冲突返回 409。definition 为按 kind 严格校验的 JSON 判别负载
 // （wire/存储均 snake 键，DTO 按 kind 校验 + service 跨字段校验）：
 //   atomic    {datasource_id, table_name, field_name, aggregation}
 //   modifier  {datasource_id, table_name, field_name, operator, values[]}
@@ -729,7 +732,9 @@ model MetricDefVersion {
 }
 
 // 数据标准字典（MetaDataImprove M4）：度量单位 + 命名词典同一治理表
-// （SemanticChangeRequest entityType='standard'）。
+// （SemanticChangeRequest entityType='standard'）。code 在 (scope 层, kind) 内
+// 唯一，由迁移 20261110130000_semantic_natural_key_unique 的 partial unique
+// index 保证（写路径 P2002 重试一次，仍冲突返回 409）。
 //   unit   term=单位名（件/元），name=标准符号或规范名，category=currency|count|time|other
 //   naming term=业务词/表/字段词根，name=标准译名，category=business_noun|table_root|field_root
 // 运行时：命名词典词条被问题文本命中时注入 generate_sql 提示词（naming.enabled

@@ -7,13 +7,15 @@
 //
 // Natural keys (datasourceId + tableName [+ fieldName]) — deliberately NOT
 // Table/Field FKs so a schema re-sync that recreates table rows never
-// orphans semantics. Scope uniqueness is enforced inside the write
-// transaction (Prisma cannot express conditional unique indexes).
+// orphans semantics. Scope uniqueness is enforced by the partial unique
+// indexes from migration 20261110130000_semantic_natural_key_unique; a
+// concurrent create race is retried once in a fresh transaction.
 //
 // Known limitation: deleting an entity cascades its version history away;
 // the deletion itself is still audited by the @SystemLog interceptor.
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   ForbiddenException,
@@ -39,6 +41,7 @@ import {
   type SemanticActor,
   type SemanticScope,
 } from './semantic-policy';
+import { withNaturalKeyRetry } from './natural-key';
 import {
   toFieldSemanticSnake,
   toRequestSnake,
@@ -299,8 +302,12 @@ export class SemanticService {
     if (!target) throw new BadRequestException(tr('semantic.invalid_scope'));
 
     if (canEditDirect(actor, info.scope)) {
-      const id = await this.prisma.$transaction((tx) =>
-        this.applyUpsertTx(tx, info, target, actor.id, info.note),
+      const id = await withNaturalKeyRetry(
+        () =>
+          this.prisma.$transaction((tx) =>
+            this.applyUpsertTx(tx, info, target, actor.id, info.note),
+          ),
+        () => new ConflictException(tr('semantic.write_conflict')),
       );
       return { applied: true, id };
     }
@@ -481,33 +488,41 @@ export class SemanticService {
     ) {
       throw new ForbiddenException(tr('semantic.review_forbidden'));
     }
-    await this.prisma.$transaction(async (tx) => {
-      if (approve) {
-        const info = this.infoFromPayload(request.payload);
-        const target =
-          request.targetType === 'WORKSPACE'
-            ? { scope: 'WORKSPACE' as const, oid: request.oid, ownerUid: null }
-            : {
-                scope: 'GLOBAL' as const,
-                oid: null,
-                ownerUid: null,
-              };
-        if (request.action === 'upsert') {
-          await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
-        } else {
-          await this.applyRemoveTx(tx, info.entity_type, target, info);
-        }
-      }
-      await tx.semanticChangeRequest.update({
-        where: { id },
-        data: {
-          status: approve ? 'approved' : 'rejected',
-          reviewerUid: actor.id,
-          reviewNote: reviewNote ?? null,
-          reviewedAt: new Date(),
-        },
-      });
-    });
+    await withNaturalKeyRetry(
+      () =>
+        this.prisma.$transaction(async (tx) => {
+          if (approve) {
+            const info = this.infoFromPayload(request.payload);
+            const target =
+              request.targetType === 'WORKSPACE'
+                ? {
+                    scope: 'WORKSPACE' as const,
+                    oid: request.oid,
+                    ownerUid: null,
+                  }
+                : {
+                    scope: 'GLOBAL' as const,
+                    oid: null,
+                    ownerUid: null,
+                  };
+            if (request.action === 'upsert') {
+              await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
+            } else {
+              await this.applyRemoveTx(tx, info.entity_type, target, info);
+            }
+          }
+          await tx.semanticChangeRequest.update({
+            where: { id },
+            data: {
+              status: approve ? 'approved' : 'rejected',
+              reviewerUid: actor.id,
+              reviewNote: reviewNote ?? null,
+              reviewedAt: new Date(),
+            },
+          });
+        }),
+      () => new ConflictException(tr('semantic.write_conflict')),
+    );
   }
 
   // ---- effective resolution (prompt integration) ------------------------

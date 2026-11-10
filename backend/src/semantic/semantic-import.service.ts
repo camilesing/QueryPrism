@@ -1,8 +1,12 @@
-// SemanticImportService — the M2 ingestion paths: Excel export/template/
-// import (admin surface, terminology pattern) + the JSON batch used by the
-// authenticated meta API (ApiKeyGuard). All imports apply at the WORKSPACE
-// layer and require the actor to administer that workspace — an external
-// sync pipeline must carry an admin's key (fail loud, no silent downscope).
+// SemanticImportService — the M2 ingestion paths: Excel export/import (admin
+// surface, terminology pattern) + the JSON batch used by the authenticated
+// meta API (ApiKeyGuard). Rows default to the WORKSPACE layer and may carry
+// an explicit `scope` (GLOBAL/WORKSPACE/PERSONAL) + `enabled`; each row is
+// written directly only when the actor may edit that layer (PERSONAL: own
+// rows, WORKSPACE: workspace admin, GLOBAL: system admin) — an unauthorized
+// row fails and is reported, it never silently becomes a pending proposal.
+// Known limitation: a PERSONAL export row re-imports into the IMPORTER's own
+// personal layer (ownerUid is always derived from the actor, never the row).
 import {
   BadRequestException,
   ForbiddenException,
@@ -13,7 +17,17 @@ import ExcelJS from 'exceljs';
 import { PrismaService } from '../database/prisma.service';
 import { RequestContext } from '../common/context/request-context';
 import { tr } from '../common/i18n/translate';
-import { isWorkspaceAdmin } from './semantic-policy';
+import {
+  canEditDirect,
+  type SemanticActor,
+  type SemanticScope,
+} from './semantic-policy';
+import {
+  emptyScopeCounts,
+  parseImportEnabled,
+  parseImportScope,
+  type ImportSummary,
+} from './import-values';
 import { SemanticService, type SemanticUpsertInfo } from './semantic.service';
 
 const XLSX_TYPE =
@@ -57,6 +71,10 @@ export interface SemanticImportRow {
   unit?: string | null;
   /** "value|label,value|label" or "value,value" — parsed into enum_values. */
   enum_values?: string | null;
+  /** GLOBAL | WORKSPACE | PERSONAL; absent/empty → WORKSPACE. */
+  scope?: string | null;
+  /** Excel text or JSON boolean; false/'false'/'0' disables. */
+  enabled?: boolean | string | null;
 }
 
 @Injectable()
@@ -68,9 +86,18 @@ export class SemanticImportService {
     private readonly semanticService: SemanticService,
   ) {}
 
-  private requireWorkspaceAdmin(): void {
+  private actor(): SemanticActor {
     const user = RequestContext.getUser();
-    if (!user || !isWorkspaceAdmin(user)) {
+    if (!user) throw new ForbiddenException(tr('semantic.no_context_user'));
+    return { id: user.id, oid: user.oid, weight: user.weight };
+  }
+
+  /** Direct-write authority check per row (no bulk approval routing). */
+  private assertScopeAuthority(
+    actor: SemanticActor,
+    scope: SemanticScope,
+  ): void {
+    if (!canEditDirect(actor, scope)) {
       throw new ForbiddenException(tr('semantic.import_forbidden'));
     }
   }
@@ -105,6 +132,7 @@ export class SemanticImportService {
       { header: 'table_name', key: 'table_name', width: 28 },
       { header: 'meaning', key: 'meaning', width: 48 },
       { header: 'enabled', key: 'enabled', width: 10 },
+      { header: 'scope', key: 'scope', width: 12 },
     ];
     for (const t of tables) {
       ts.addRow({
@@ -112,6 +140,7 @@ export class SemanticImportService {
         table_name: t.tableName,
         meaning: t.meaning,
         enabled: t.enabled ? 'true' : 'false',
+        scope: t.scope,
       });
     }
     const fs = wb.addWorksheet('field_semantics');
@@ -124,6 +153,7 @@ export class SemanticImportService {
       { header: 'unit', key: 'unit', width: 12 },
       { header: 'enum_values', key: 'enum_values', width: 36 },
       { header: 'enabled', key: 'enabled', width: 10 },
+      { header: 'scope', key: 'scope', width: 12 },
     ];
     for (const f of fields) {
       const enums = Array.isArray(f.enumValues)
@@ -145,6 +175,7 @@ export class SemanticImportService {
         unit: f.unit ?? '',
         enum_values: enums,
         enabled: f.enabled ? 'true' : 'false',
+        scope: f.scope,
       });
     }
     const buf = await wb.xlsx.writeBuffer();
@@ -157,12 +188,9 @@ export class SemanticImportService {
 
   // ---- import -----------------------------------------------------------
 
-  /** Excel import: rows from BOTH sheets; every row upserts at WORKSPACE. */
-  async importExcel(buffer: Buffer): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
-    this.requireWorkspaceAdmin();
+  /** Excel import: rows from BOTH sheets; each row upserts into its own scope
+   *  (missing scope column → WORKSPACE; enabled column is now honored). */
+  async importExcel(buffer: Buffer): Promise<ImportSummary> {
     const wb = new ExcelJS.Workbook();
     try {
       await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
@@ -180,6 +208,8 @@ export class SemanticImportService {
             datasource_id: cellText(row.getCell(1).value),
             table_name: cellText(row.getCell(2).value),
             meaning: cellText(row.getCell(3).value),
+            enabled: cellText(row.getCell(4).value),
+            scope: cellText(row.getCell(5).value),
           },
           label: `table#row${rowNumber}`,
         });
@@ -199,6 +229,8 @@ export class SemanticImportService {
             meaning: cellText(row.getCell(5).value),
             unit: cellText(row.getCell(6).value),
             enum_values: cellText(row.getCell(7).value),
+            enabled: cellText(row.getCell(8).value),
+            scope: cellText(row.getCell(9).value),
           },
           label: `field#row${rowNumber}`,
         });
@@ -211,36 +243,37 @@ export class SemanticImportService {
   }
 
   /** JSON batch import (the authenticated /meta/semantic/import API). */
-  async importJson(rows: SemanticImportRow[]): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
-    this.requireWorkspaceAdmin();
+  async importJson(rows: SemanticImportRow[]): Promise<ImportSummary> {
     return this.applyRows(
       rows,
       rows.map((_, i) => `row${i + 1}`),
     );
   }
 
-  /** Row-by-row apply at WORKSPACE scope; one bad row never aborts the batch
-   *  (reported back instead — same contract as terminology's error workbook,
-   *  without the file round-trip: callers are machines or the admin UI). */
+  /** Row-by-row apply; one bad row (bad scope, no authority, validation)
+   *  never aborts the batch — it is reported back instead. Unauthorized rows
+   *  fail rather than becoming pending change requests, so a bulk import can
+   *  never flood the approval inbox. */
   private async applyRows(
     rows: SemanticImportRow[],
     labels: string[],
-  ): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
+  ): Promise<ImportSummary> {
+    const actor = this.actor();
     let applied = 0;
-    const failed: Array<{ row: string; reason: string }> = [];
+    const byScope = emptyScopeCounts();
+    const failed: ImportSummary['failed'] = [];
     for (let i = 0; i < rows.length; i++) {
       const raw = rows[i];
       const label = labels[i] ?? `row${i + 1}`;
       try {
         const info = this.toInfo(raw);
-        await this.semanticService.upsert(info);
+        this.assertScopeAuthority(actor, info.scope);
+        const result = await this.semanticService.upsert(info);
+        if (!result.applied) {
+          throw new ForbiddenException(tr('semantic.import_forbidden'));
+        }
         applied += 1;
+        byScope[info.scope] += 1;
       } catch (e) {
         failed.push({
           row: label,
@@ -251,10 +284,12 @@ export class SemanticImportService {
     this.logger.log(
       `semantic import: ${applied} applied, ${failed.length} failed`,
     );
-    return { applied, failed };
+    return { applied, by_scope: byScope, failed };
   }
 
   private toInfo(raw: SemanticImportRow): SemanticUpsertInfo {
+    const scope = parseImportScope(raw.scope);
+    if (!scope) throw new BadRequestException(tr('semantic.invalid_scope'));
     const entityType =
       raw.entity_type === 'field' || raw.field_name ? 'field' : 'table';
     const dsId = Number(raw.datasource_id);
@@ -266,12 +301,11 @@ export class SemanticImportService {
     }
     const info: SemanticUpsertInfo = {
       entity_type: entityType,
-      // Import always targets the WORKSPACE layer (admin-only path).
-      scope: 'WORKSPACE',
+      scope,
       datasource_id: dsId,
       table_name: raw.table_name.trim(),
       meaning: raw.meaning.trim(),
-      enabled: true,
+      enabled: parseImportEnabled(raw.enabled),
     };
     if (entityType === 'field') {
       if (!raw.field_name?.trim()) {

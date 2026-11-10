@@ -1,9 +1,12 @@
 // MetricImportService — the M4 ingestion paths: Excel export/import (six
 // sheets: the five metric kinds + data standards) + the JSON batches used by
-// the authenticated meta API (ApiKeyGuard). All imports apply at the
-// WORKSPACE layer and require the actor to administer that workspace — an
-// external sync pipeline must carry an admin's key (fail loud, no silent
-// downscope; same contract as SemanticImportService).
+// the authenticated meta API (ApiKeyGuard). Rows default to the WORKSPACE
+// layer and may carry an explicit `scope` + `enabled`; each row is written
+// directly only when the actor may edit that layer (PERSONAL: own rows,
+// WORKSPACE: workspace admin, GLOBAL: system admin). Unauthorized rows fail
+// and are reported — bulk import never creates pending proposals. A PERSONAL
+// export row re-imports into the IMPORTER's own personal layer (ownerUid is
+// always derived from the actor, never the row).
 import {
   BadRequestException,
   ForbiddenException,
@@ -14,7 +17,18 @@ import ExcelJS from 'exceljs';
 import { PrismaService } from '../database/prisma.service';
 import { RequestContext } from '../common/context/request-context';
 import { tr } from '../common/i18n/translate';
-import { isWorkspaceAdmin } from './semantic-policy';
+import {
+  canEditDirect,
+  type SemanticActor,
+  type SemanticScope,
+} from './semantic-policy';
+import {
+  emptyScopeCounts,
+  mergeImportSummaries,
+  parseImportEnabled,
+  parseImportScope,
+  type ImportSummary,
+} from './import-values';
 import { MetricService, type MetricUpsertInfo } from './metric.service';
 import {
   DataStandardService,
@@ -84,6 +98,8 @@ export interface MetricImportRow {
   time_field?: string;
   expression?: string;
   enabled?: boolean | string;
+  /** GLOBAL | WORKSPACE | PERSONAL; absent/empty → WORKSPACE. */
+  scope?: string | null;
 }
 
 export interface StandardImportRow {
@@ -95,6 +111,8 @@ export interface StandardImportRow {
   category?: string | null;
   description?: string | null;
   enabled?: boolean | string;
+  /** GLOBAL | WORKSPACE | PERSONAL; absent/empty → WORKSPACE. */
+  scope?: string | null;
 }
 
 @Injectable()
@@ -111,9 +129,20 @@ export class MetricImportService {
     return XLSX_TYPE;
   }
 
-  private requireWorkspaceAdmin(prefix: 'metric' | 'standard'): void {
+  private actor(): SemanticActor {
     const user = RequestContext.getUser();
-    if (!user || !isWorkspaceAdmin(user)) {
+    if (!user) throw new ForbiddenException(tr('metric.no_context_user'));
+    return { id: user.id, oid: user.oid, weight: user.weight };
+  }
+
+  /** Direct-write authority check per row; `prefix` selects metric.* /
+   *  standard.* i18n so a standards sheet reports in its own namespace. */
+  private assertScopeAuthority(
+    actor: SemanticActor,
+    scope: SemanticScope,
+    prefix: 'metric' | 'standard',
+  ): void {
+    if (!canEditDirect(actor, scope)) {
       throw new ForbiddenException(tr(`${prefix}.import_forbidden`));
     }
   }
@@ -229,6 +258,7 @@ export class MetricImportService {
             : []),
           { header: 'description', key: 'description', width: 36 },
           { header: 'enabled', key: 'enabled', width: 10 },
+          { header: 'scope', key: 'scope', width: 12 },
         ],
         rows: rows.map((m) => {
           const d = def(m.definition);
@@ -273,6 +303,7 @@ export class MetricImportService {
           if (kind === 'atomic') out.unit = m.unit ?? '';
           out.description = m.description ?? '';
           out.enabled = m.enabled ? 'true' : 'false';
+          out.scope = m.scope;
           return out;
         }),
       };
@@ -289,6 +320,7 @@ export class MetricImportService {
         { header: 'category', key: 'category', width: 16 },
         { header: 'description', key: 'description', width: 36 },
         { header: 'enabled', key: 'enabled', width: 10 },
+        { header: 'scope', key: 'scope', width: 12 },
       ],
       rows: standards.map((s) => ({
         kind: s.kind,
@@ -299,6 +331,7 @@ export class MetricImportService {
         category: s.category ?? '',
         description: s.description ?? '',
         enabled: s.enabled ? 'true' : 'false',
+        scope: s.scope,
       })),
     });
     for (const sheet of sheets) {
@@ -312,12 +345,9 @@ export class MetricImportService {
 
   // ---- import -----------------------------------------------------------
 
-  /** Excel import: rows from all six sheets; every row upserts at WORKSPACE. */
-  async importExcel(buffer: Buffer): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
-    this.requireWorkspaceAdmin('metric');
+  /** Excel import: rows from all six sheets; each row upserts into its own
+   *  scope (missing scope column → WORKSPACE; enabled columns are honored). */
+  async importExcel(buffer: Buffer): Promise<ImportSummary> {
     const wb = new ExcelJS.Workbook();
     try {
       await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
@@ -349,6 +379,7 @@ export class MetricImportService {
           unit: cellText(r.getCell(8).value),
           description: cellText(r.getCell(9).value),
           enabled: cellText(r.getCell(10).value),
+          scope: cellText(r.getCell(11).value),
         },
         label: `atomic#row${r.number}`,
       }),
@@ -367,6 +398,7 @@ export class MetricImportService {
           values: cellText(r.getCell(8).value),
           description: cellText(r.getCell(9).value),
           enabled: cellText(r.getCell(10).value),
+          scope: cellText(r.getCell(11).value),
         },
         label: `modifier#row${r.number}`,
       }),
@@ -384,6 +416,7 @@ export class MetricImportService {
           anchor: cellText(r.getCell(7).value),
           description: cellText(r.getCell(8).value),
           enabled: cellText(r.getCell(9).value),
+          scope: cellText(r.getCell(10).value),
         },
         label: `period#row${r.number}`,
       }),
@@ -401,6 +434,7 @@ export class MetricImportService {
           time_field: cellText(r.getCell(7).value),
           description: cellText(r.getCell(8).value),
           enabled: cellText(r.getCell(9).value),
+          scope: cellText(r.getCell(10).value),
         },
         label: `derived#row${r.number}`,
       }),
@@ -415,6 +449,7 @@ export class MetricImportService {
           expression: cellText(r.getCell(4).value),
           description: cellText(r.getCell(5).value),
           enabled: cellText(r.getCell(6).value),
+          scope: cellText(r.getCell(7).value),
         },
         label: `composite#row${r.number}`,
       }),
@@ -430,6 +465,7 @@ export class MetricImportService {
           category: cellText(r.getCell(6).value),
           description: cellText(r.getCell(7).value),
           enabled: cellText(r.getCell(8).value),
+          scope: cellText(r.getCell(9).value),
         },
         label: `standard#row${r.number}`,
       }),
@@ -444,18 +480,11 @@ export class MetricImportService {
         standardRows.map((r) => r.label),
       ),
     ]);
-    return {
-      applied: metricOut.applied + standardOut.applied,
-      failed: [...metricOut.failed, ...standardOut.failed],
-    };
+    return mergeImportSummaries(metricOut, standardOut);
   }
 
   /** JSON batch import (the authenticated /meta/metric/import API). */
-  async importJsonMetrics(rows: MetricImportRow[]): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
-    this.requireWorkspaceAdmin('metric');
+  async importJsonMetrics(rows: MetricImportRow[]): Promise<ImportSummary> {
     return this.applyMetricRows(
       rows,
       rows.map((_, i) => `row${i + 1}`),
@@ -463,11 +492,7 @@ export class MetricImportService {
   }
 
   /** JSON batch import (the authenticated /meta/standard/import API). */
-  async importJsonStandards(rows: StandardImportRow[]): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
-    this.requireWorkspaceAdmin('standard');
+  async importJsonStandards(rows: StandardImportRow[]): Promise<ImportSummary> {
     return this.applyStandardRows(
       rows,
       rows.map((_, i) => `row${i + 1}`),
@@ -477,16 +502,21 @@ export class MetricImportService {
   private async applyMetricRows(
     rows: MetricImportRow[],
     labels: string[],
-  ): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
+  ): Promise<ImportSummary> {
+    const actor = this.actor();
     let applied = 0;
-    const failed: Array<{ row: string; reason: string }> = [];
+    const byScope = emptyScopeCounts();
+    const failed: ImportSummary['failed'] = [];
     for (let i = 0; i < rows.length; i++) {
       try {
-        await this.metricService.upsert(this.toMetricInfo(rows[i]));
+        const info = this.toMetricInfo(rows[i]);
+        this.assertScopeAuthority(actor, info.scope, 'metric');
+        const result = await this.metricService.upsert(info);
+        if (!result.applied) {
+          throw new ForbiddenException(tr('metric.import_forbidden'));
+        }
         applied += 1;
+        byScope[info.scope] += 1;
       } catch (e) {
         failed.push({
           row: labels[i] ?? `row${i + 1}`,
@@ -497,22 +527,27 @@ export class MetricImportService {
     this.logger.log(
       `metric import: ${applied} applied, ${failed.length} failed`,
     );
-    return { applied, failed };
+    return { applied, by_scope: byScope, failed };
   }
 
   private async applyStandardRows(
     rows: StandardImportRow[],
     labels: string[],
-  ): Promise<{
-    applied: number;
-    failed: Array<{ row: string; reason: string }>;
-  }> {
+  ): Promise<ImportSummary> {
+    const actor = this.actor();
     let applied = 0;
-    const failed: Array<{ row: string; reason: string }> = [];
+    const byScope = emptyScopeCounts();
+    const failed: ImportSummary['failed'] = [];
     for (let i = 0; i < rows.length; i++) {
       try {
-        await this.standardService.upsert(this.toStandardInfo(rows[i]));
+        const info = this.toStandardInfo(rows[i]);
+        this.assertScopeAuthority(actor, info.scope, 'standard');
+        const result = await this.standardService.upsert(info);
+        if (!result.applied) {
+          throw new ForbiddenException(tr('standard.import_forbidden'));
+        }
         applied += 1;
+        byScope[info.scope] += 1;
       } catch (e) {
         failed.push({
           row: labels[i] ?? `row${i + 1}`,
@@ -523,10 +558,12 @@ export class MetricImportService {
     this.logger.log(
       `standard import: ${applied} applied, ${failed.length} failed`,
     );
-    return { applied, failed };
+    return { applied, by_scope: byScope, failed };
   }
 
   private toMetricInfo(raw: MetricImportRow): MetricUpsertInfo {
+    const scope = parseImportScope(raw.scope);
+    if (!scope) throw new BadRequestException(tr('metric.invalid_scope'));
     const kind = (raw.kind ?? '').trim() as MetricKind;
     const list = (v: string | string[] | undefined): string[] | undefined => {
       if (Array.isArray(v)) return v.map((s) => s.trim()).filter(Boolean);
@@ -538,16 +575,14 @@ export class MetricImportService {
       const n = Number(v);
       return Number.isInteger(n) && n > 0 ? n : undefined;
     };
-    const enabled = (v: unknown): boolean => v !== 'false' && v !== false;
     const base = {
       kind,
-      // Import always targets the WORKSPACE layer (admin-only path).
-      scope: 'WORKSPACE' as const,
+      scope,
       code: (raw.code ?? '').trim(),
       name: (raw.name ?? '').trim(),
       aliases: list(raw.aliases),
       description: raw.description?.trim() || undefined,
-      enabled: enabled(raw.enabled),
+      enabled: parseImportEnabled(raw.enabled),
     };
     switch (kind) {
       case 'atomic':
@@ -610,9 +645,11 @@ export class MetricImportService {
   }
 
   private toStandardInfo(raw: StandardImportRow): StandardUpsertInfo {
+    const scope = parseImportScope(raw.scope);
+    if (!scope) throw new BadRequestException(tr('standard.invalid_scope'));
     return {
       kind: (raw.kind ?? '').trim() as StandardKind,
-      scope: 'WORKSPACE',
+      scope,
       code: (raw.code ?? '').trim(),
       term: (raw.term ?? '').trim(),
       name: (raw.name ?? '').trim(),
@@ -621,7 +658,7 @@ export class MetricImportService {
         : splitList(raw.aliases ?? ''),
       category: raw.category?.trim() || undefined,
       description: raw.description?.trim() || undefined,
-      enabled: raw.enabled !== 'false' && raw.enabled !== false,
+      enabled: parseImportEnabled(raw.enabled),
     };
   }
 }
