@@ -204,6 +204,156 @@ describe('DatasourceService', () => {
     });
   });
 
+  // MetaDataImprove M3 follow-up: restore appends a new version, compare
+  // diffs the normalized FK edges of two saved snapshots.
+  describe('relation version restore / compare', () => {
+    const edgeA = {
+      fromTable: 'orders',
+      fromField: 'user_id',
+      toTable: 'users',
+      toField: 'id',
+    };
+    const edgeB = {
+      fromTable: 'orders',
+      fromField: 'product_id',
+      toTable: 'products',
+      toField: 'id',
+    };
+
+    function mockRestoreTx(snapshot: unknown) {
+      const tx = {
+        datasource: {
+          findFirst: jest.fn().mockResolvedValue({ id: 1 }),
+          update: jest.fn().mockResolvedValue({ relationVersion: 4 }),
+        },
+        datasourceRelationVersion: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue(
+              snapshot === null ? null : { id: 7, version: 2, snapshot },
+            ),
+          create: jest.fn().mockResolvedValue({ id: 10 }),
+        },
+      };
+      jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation((arg: unknown) =>
+          typeof arg === 'function'
+            ? (arg as (client: unknown) => Promise<unknown>)(tx)
+            : Promise.all(arg as Promise<unknown>[]),
+        );
+      return tx;
+    }
+
+    it('restores a snapshot as a new version and keeps changedBy/note', async () => {
+      const tx = mockRestoreTx([edgeA]);
+
+      await expect(service.restoreTableRelation(1, 2)).resolves.toEqual({
+        success: true,
+        version: 4,
+        restoredFrom: 2,
+      });
+      expect(tx.datasource.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: {
+          tableRelation: [edgeA],
+          relationVersion: { increment: 1 },
+        },
+        select: { relationVersion: true },
+      });
+      expect(tx.datasourceRelationVersion.create).toHaveBeenCalledWith({
+        data: {
+          datasourceId: 1,
+          version: 4,
+          snapshot: [edgeA],
+          changedBy: 1,
+          note: '从版本 2 恢复',
+        },
+      });
+    });
+
+    it('404s an unknown snapshot version', async () => {
+      mockRestoreTx(null);
+      await expect(service.restoreTableRelation(1, 9)).rejects.toThrow(
+        '数据源 #1 不存在关系版本 9',
+      );
+    });
+
+    it('compares a saved version against the newest snapshot by default', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue({ id: 1 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findFirst')
+        .mockResolvedValue({ version: 3 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findMany')
+        .mockResolvedValue([
+          { version: 3, snapshot: [edgeA, edgeB] },
+          { version: 2, snapshot: [edgeA] },
+        ] as never);
+      jest
+        .spyOn(prismaService.table, 'findMany')
+        .mockResolvedValue([] as never);
+
+      await expect(service.compareTableRelation(1, 2)).resolves.toEqual({
+        fromVersion: 2,
+        toVersion: 3,
+        added: [edgeB],
+        removed: [],
+      });
+      expect(prismaService.table.findMany).toHaveBeenCalledWith({
+        where: { datasourceId: 1 },
+        select: {
+          id: true,
+          tableName: true,
+          fields: { select: { id: true, fieldName: true } },
+        },
+      });
+    });
+
+    it('compares two explicit versions in either direction', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue({ id: 1 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findFirst')
+        .mockResolvedValue({ version: 2 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findMany')
+        .mockResolvedValue([
+          { version: 2, snapshot: [edgeA, edgeB] },
+          { version: 1, snapshot: [edgeA] },
+        ] as never);
+      jest
+        .spyOn(prismaService.table, 'findMany')
+        .mockResolvedValue([] as never);
+
+      await expect(service.compareTableRelation(1, 2, 1)).resolves.toEqual({
+        fromVersion: 2,
+        toVersion: 1,
+        added: [],
+        removed: [edgeB],
+      });
+    });
+
+    it('404s an unknown from-version', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue({ id: 1 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findFirst')
+        .mockResolvedValue({ version: 1 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findMany')
+        .mockResolvedValue([{ version: 1, snapshot: [] }] as never);
+
+      await expect(service.compareTableRelation(1, 7)).rejects.toThrow(
+        '数据源 #1 不存在关系版本 7',
+      );
+    });
+  });
+
   describe('testConnection (integration via real better-sqlite3)', () => {
     beforeEach(() => setI18n(createTestI18n()));
     let testDbPath: string;

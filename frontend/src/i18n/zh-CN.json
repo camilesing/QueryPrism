@@ -574,7 +574,18 @@
       "changed_by": "修改人",
       "snapshot": "查看快照",
       "hide_snapshot": "收起快照",
-      "empty": "暂无关系版本"
+      "empty": "暂无关系版本",
+      "restore": "恢复",
+      "restore_confirm": "恢复版本 {version}？将追加一个新版本，历史不会被改写。",
+      "restore_success": "版本已恢复",
+      "compare_current": "对比当前",
+      "compare_title": "关系差异：v{from} → v{to}",
+      "added": "新增",
+      "removed": "删除",
+      "none": "无",
+      "no_diff": "无差异",
+      "note": "备注",
+      "current": "（当前）"
     },
     "field": {
       "name": "字段名",

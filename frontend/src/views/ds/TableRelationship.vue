@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { onMounted, onBeforeUnmount, ref, nextTick } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, nextTick } from 'vue'
 import { datasourceApi } from '@/api/datasource'
 import { useI18n } from 'vue-i18n'
 import { Graph, Cell, Shape } from '@antv/x6'
@@ -34,6 +34,26 @@ const versionDrawer = ref(false)
 const versionRows = ref<any[]>([])
 const versionLoading = ref(false)
 const expandedVersion = ref<number | null>(null)
+/** Newest saved version (the graph the runtime reads). */
+const currentVersion = computed(() => versionRows.value[0]?.version ?? 0)
+/** One FK edge in a compare result (already normalized by the backend). */
+interface RelationEdge {
+  fromTable: string
+  fromField: string
+  toTable: string
+  toField: string
+}
+interface RelationCompareResult {
+  fromVersion: number
+  toVersion: number
+  added: RelationEdge[]
+  removed: RelationEdge[]
+}
+const compareVisible = ref(false)
+const compareLoading = ref(false)
+const compareFrom = ref(0)
+const compareResult = ref<RelationCompareResult | null>(null)
+const restoring = ref(false)
 
 const openVersions = async () => {
   versionLoading.value = true
@@ -46,6 +66,54 @@ const openVersions = async () => {
 }
 
 const fmtVersionTime = (value?: string) => (value ? new Date(value).toLocaleString() : '')
+
+/** Semantic diff of a saved version against the current graph. Positions are
+ *  ignored by the backend — only FK edges are compared. */
+const compareWithCurrent = async (version: number) => {
+  compareFrom.value = version
+  compareResult.value = null
+  compareVisible.value = true
+  compareLoading.value = true
+  try {
+    compareResult.value = await datasourceApi.relationCompare(props.id, version)
+  } catch {
+    // The request layer already surfaced the failure.
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+const edgeLabel = (edge: RelationEdge) =>
+  `${edge.fromTable}.${edge.fromField} → ${edge.toTable}.${edge.toField}`
+
+/** Restore appends a new version (history is preserved) — confirm first, then
+ *  refresh both the drawer and the canvas. */
+const restoreVersion = async (version: number) => {
+  try {
+    await ElMessageBox.confirm(
+      t('ds.relation.restore_confirm', { version }),
+      t('ds.relation.restore'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+      }
+    )
+  } catch {
+    return
+  }
+  restoring.value = true
+  try {
+    await datasourceApi.relationRestore(props.id, version)
+    ElMessage.success(t('ds.relation.restore_success'))
+    await openVersions()
+    reloadGraph()
+  } catch {
+    // The request layer already surfaced the failure.
+  } finally {
+    restoring.value = false
+  }
+}
 
 const cells = ref<Cell[]>([])
 const edgeOPtion = {
@@ -308,8 +376,17 @@ const getTableData = () => {
   datasourceApi
     .relationGet(props.id)
     .then((data: any) => {
-      if (!data.length) return
+      // Re-reads (restore / datasource switch) must replace the rendered graph,
+      // never append the new cells on top of the old ones.
+      cells.value = []
       nodeIds.value = data.filter((ele: any) => ele.shape === 'er-rect').map((ele: any) => ele.id)
+      if (!data.length) {
+        if (graph) {
+          graph.dispose()
+          graph = null
+        }
+        return
+      }
       nextTick(() => {
         if (!graph) {
           initGraph()
@@ -340,6 +417,11 @@ const getTableData = () => {
       loading.value = false
     })
 }
+/** Re-read the persisted graph after a restore (getTableData replaces cells). */
+const reloadGraph = () => {
+  getTableData()
+}
+
 onMounted(() => {
   getTableData()
 })
@@ -486,21 +568,47 @@ const save = () => {
           :timestamp="fmtVersionTime(row.createdAt)"
         >
           <div class="version-row">
-            <span>{{ t('ds.relation.version', { version: row.version }) }}</span>
-            <el-button
-              link
-              type="primary"
-              @click="expandedVersion = expandedVersion === row.version ? null : row.version"
-            >
-              {{
-                expandedVersion === row.version
-                  ? t('ds.relation.hide_snapshot')
-                  : t('ds.relation.snapshot')
-              }}
-            </el-button>
+            <span>
+              {{ t('ds.relation.version', { version: row.version }) }}
+              <em v-if="row.version === currentVersion" class="version-current">
+                {{ t('ds.relation.current') }}
+              </em>
+            </span>
+            <span class="version-actions">
+              <el-button
+                link
+                type="primary"
+                @click="expandedVersion = expandedVersion === row.version ? null : row.version"
+              >
+                {{
+                  expandedVersion === row.version
+                    ? t('ds.relation.hide_snapshot')
+                    : t('ds.relation.snapshot')
+                }}
+              </el-button>
+              <el-button
+                link
+                type="primary"
+                :disabled="row.version === currentVersion"
+                @click="compareWithCurrent(row.version)"
+              >
+                {{ t('ds.relation.compare_current') }}
+              </el-button>
+              <el-button
+                link
+                type="primary"
+                :disabled="row.version === currentVersion || restoring"
+                @click="restoreVersion(row.version)"
+              >
+                {{ t('ds.relation.restore') }}
+              </el-button>
+            </span>
           </div>
           <div v-if="row.changedBy != null" class="version-meta">
             {{ t('ds.relation.changed_by') }}: {{ row.changedBy }}
+          </div>
+          <div v-if="row.note" class="version-meta">
+            {{ t('ds.relation.note') }}: {{ row.note }}
           </div>
           <pre v-if="expandedVersion === row.version" class="version-snapshot">{{
             JSON.stringify(row.snapshot, null, 2)
@@ -509,6 +617,49 @@ const save = () => {
       </el-timeline>
     </div>
   </el-drawer>
+  <el-dialog
+    v-model="compareVisible"
+    :title="
+      t('ds.relation.compare_title', {
+        from: compareFrom,
+        to: compareResult?.toVersion ?? currentVersion,
+      })
+    "
+    width="640px"
+  >
+    <div v-loading="compareLoading" class="compare-body">
+      <template v-if="compareResult">
+        <el-empty
+          v-if="!compareResult.added.length && !compareResult.removed.length"
+          :description="t('ds.relation.no_diff')"
+        />
+        <template v-else>
+          <div class="compare-section">
+            <div class="compare-section-title">
+              {{ t('ds.relation.added') }} ({{ compareResult.added.length }})
+            </div>
+            <ul v-if="compareResult.added.length" class="compare-list">
+              <li v-for="edge in compareResult.added" :key="edgeLabel(edge)">
+                {{ edgeLabel(edge) }}
+              </li>
+            </ul>
+            <div v-else class="compare-empty">{{ t('ds.relation.none') }}</div>
+          </div>
+          <div class="compare-section">
+            <div class="compare-section-title">
+              {{ t('ds.relation.removed') }} ({{ compareResult.removed.length }})
+            </div>
+            <ul v-if="compareResult.removed.length" class="compare-list">
+              <li v-for="edge in compareResult.removed" :key="edgeLabel(edge)">
+                {{ edgeLabel(edge) }}
+              </li>
+            </ul>
+            <div v-else class="compare-empty">{{ t('ds.relation.none') }}</div>
+          </div>
+        </template>
+      </template>
+    </div>
+  </el-dialog>
   <div class="tooltip-content" :style="{ top: tooltipY, left: tooltipX, position: 'absolute' }">
     {{ tooltipContent }}
   </div>
@@ -547,8 +698,39 @@ const save = () => {
   justify-content: space-between;
   gap: 12px;
 }
+.version-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.version-current {
+  margin-left: 6px;
+  font-size: 12px;
+  font-style: normal;
+  color: var(--el-color-primary);
+}
 .version-meta {
   margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.compare-body {
+  min-height: 120px;
+}
+.compare-section {
+  margin-bottom: 16px;
+}
+.compare-section-title {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.compare-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+}
+.compare-empty {
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }

@@ -24,5 +24,7 @@
   "col_table_name": "Table name",
   "col_table_comment": "Table comment",
   "col_field_name": "Field name",
-  "col_field_comment": "Field comment"
+  "col_field_comment": "Field comment",
+  "relation_version_not_found": "Datasource #{{id}} has no relation version {{version}}",
+  "relation_restore_note": "Restored from version {{version}}"
 }

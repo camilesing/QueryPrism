@@ -23,3 +23,4 @@ export {
   StandardUpsertDto,
 } from './metric.dto';
 export { MetadataSyncUpsertDto } from './metadata-sync.dto';
+export { TableRelationCompareDto } from './table-relation.dto';

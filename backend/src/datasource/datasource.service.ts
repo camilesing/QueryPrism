@@ -21,6 +21,8 @@ import type {
 } from './db-connector/db-connector.interface';
 import {
   buildMSchema,
+  diffRelationEdges,
+  normalizeTableRelation,
   relationIdNamesOf,
   type MSchemaSemantics,
 } from './m-schema.builder';
@@ -569,6 +571,126 @@ export class DatasourceService {
         createdAt: true,
       },
     });
+  }
+
+  /** Restore one saved relation snapshot (MetaDataImprove M3 follow-up).
+   *  Restore is a normal write with save's authority: a NEW version is
+   *  appended and the old history rows stay untouched (no approval round,
+   *  no in-place rewrite). The snapshot is written back verbatim so the
+   *  editor returns to the exact canvas that was saved. */
+  async restoreTableRelation(id: number, version: number) {
+    const changedBy = RequestContext.getUserId() ?? null;
+    return this.prisma.$transaction(async (tx) => {
+      const owned = await tx.datasource.findFirst({
+        where: { id, oid: this.currentOid() },
+        select: { id: true },
+      });
+      if (!owned) {
+        throw new NotFoundException(tr('datasource.not_found', { id }));
+      }
+      const snapshot = await tx.datasourceRelationVersion.findFirst({
+        where: { datasourceId: id, version },
+      });
+      if (!snapshot) {
+        throw new NotFoundException(
+          tr('datasource.relation_version_not_found', { id, version }),
+        );
+      }
+      const payload = snapshot.snapshot as Prisma.InputJsonValue;
+      const updated = await tx.datasource.update({
+        where: { id },
+        data: {
+          tableRelation: payload,
+          relationVersion: { increment: 1 },
+        },
+        select: { relationVersion: true },
+      });
+      await tx.datasourceRelationVersion.create({
+        data: {
+          datasourceId: id,
+          version: updated.relationVersion,
+          snapshot: payload,
+          changedBy,
+          note: tr('datasource.relation_restore_note', { version }),
+        },
+      });
+      return {
+        success: true as const,
+        version: updated.relationVersion,
+        restoredFrom: version,
+      };
+    });
+  }
+
+  /** Semantic diff between two saved relation versions (default: the newest
+   *  saved version, i.e. the graph the runtime currently reads). Both
+   *  snapshots are normalized to FK edges with the CURRENT Table/Field rows,
+   *  so node positioning changes never show up as a diff and edges whose
+   *  endpoints were dropped since then are ignored. */
+  async compareTableRelation(
+    id: number,
+    fromVersion: number,
+    toVersion?: number,
+  ) {
+    await this.loadForConnector(id);
+    // Newest version only — never load the whole history (each snapshot is a
+    // full graph; a long-lived datasource can have many).
+    const newest = await this.prisma.datasourceRelationVersion.findFirst({
+      where: { datasourceId: id },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    const target = toVersion ?? newest?.version;
+    if (target === undefined) {
+      throw new NotFoundException(
+        tr('datasource.relation_version_not_found', {
+          id,
+          version: fromVersion,
+        }),
+      );
+    }
+    const versions = await this.prisma.datasourceRelationVersion.findMany({
+      where: {
+        datasourceId: id,
+        version: { in: [...new Set([fromVersion, target])] },
+      },
+      select: { version: true, snapshot: true },
+    });
+    const fromRow = versions.find((v) => v.version === fromVersion);
+    if (!fromRow) {
+      throw new NotFoundException(
+        tr('datasource.relation_version_not_found', {
+          id,
+          version: fromVersion,
+        }),
+      );
+    }
+    const toRow = versions.find((v) => v.version === target);
+    if (!toRow) {
+      throw new NotFoundException(
+        tr('datasource.relation_version_not_found', {
+          id,
+          version: target,
+        }),
+      );
+    }
+    const tables = await this.prisma.table.findMany({
+      where: { datasourceId: id },
+      select: {
+        id: true,
+        tableName: true,
+        fields: { select: { id: true, fieldName: true } },
+      },
+    });
+    const names = relationIdNamesOf(tables);
+    return {
+      fromVersion,
+      toVersion: toRow.version,
+      ...diffRelationEdges(
+        normalizeTableRelation(fromRow.snapshot, names),
+        normalizeTableRelation(toRow.snapshot, names),
+      ),
+    };
   }
 
   // ─── action-style route service methods ────────────────────────────

@@ -11,6 +11,7 @@ import {
   Controller,
   HttpCode,
   Param,
+  ParseIntPipe,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { WsAdminGuard } from '../auth/ws-admin.guard';
 import { SystemLog } from '../audit/system-log.decorator';
 import { OperationModule, OperationType } from '../audit/operation.enum';
+import { TableRelationCompareDto } from '../common/dtos';
 import { DatasourceService } from './datasource.service';
 
 @Controller('table_relation')
@@ -51,5 +53,33 @@ export class TableRelationController {
   @UseGuards(WsAdminGuard)
   versions(@Param('dsId') dsId: string) {
     return this.ds.getTableRelationVersions(+dsId);
+  }
+
+  /** Restore one saved relation version. Appends a NEW version (history is
+   *  never rewritten) — same authority as save, and audited. */
+  @Post('restore/:dsId/:version')
+  @HttpCode(200)
+  @UseGuards(WsAdminGuard)
+  @SystemLog({
+    module: OperationModule.DATASOURCE,
+    type: OperationType.UPDATE,
+    detail: '恢复表关系版本',
+  })
+  restore(
+    @Param('dsId', ParseIntPipe) dsId: number,
+    @Param('version', ParseIntPipe) version: number,
+  ) {
+    return this.ds.restoreTableRelation(dsId, version);
+  }
+
+  /** Semantic diff between two saved versions (default: newest saved). */
+  @Post('compare/:dsId')
+  @HttpCode(200)
+  @UseGuards(WsAdminGuard)
+  compare(
+    @Param('dsId', ParseIntPipe) dsId: number,
+    @Body() dto: TableRelationCompareDto,
+  ) {
+    return this.ds.compareTableRelation(dsId, dto.from_version, dto.to_version);
   }
 }

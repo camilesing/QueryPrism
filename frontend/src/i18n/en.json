@@ -574,7 +574,18 @@
       "changed_by": "Changed by",
       "snapshot": "View snapshot",
       "hide_snapshot": "Hide snapshot",
-      "empty": "No relation versions yet"
+      "empty": "No relation versions yet",
+      "restore": "Restore",
+      "restore_confirm": "Restore version {version}? This appends a new version; history is preserved.",
+      "restore_success": "Version restored",
+      "compare_current": "Compare with current",
+      "compare_title": "Relation diff: v{from} → v{to}",
+      "added": "Added",
+      "removed": "Removed",
+      "none": "None",
+      "no_diff": "No differences",
+      "note": "Note",
+      "current": "(current)"
     },
     "field": {
       "name": "Name",

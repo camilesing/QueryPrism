@@ -161,6 +161,53 @@ export function normalizeTableRelation(
   return list.filter(isEdge);
 }
 
+/** A semantic diff between two normalized FK-edge lists (relation-version
+ *  compare): edges present only in `to` are added, only in `from` removed.
+ *  Node positions are deliberately ignored — the editor's X6 snapshot also
+ *  carries layout, but a moved box is not a relation change. */
+export interface TableRelationDiff {
+  added: TableRelationEdge[];
+  removed: TableRelationEdge[];
+}
+
+/** Stable identity of one FK edge (a delimiter-joined string would collide on
+ *  names containing the delimiter, so serialize the tuple). */
+function edgeKey(edge: TableRelationEdge): string {
+  return JSON.stringify([
+    edge.fromTable,
+    edge.fromField,
+    edge.toTable,
+    edge.toField,
+  ]);
+}
+
+/** Diff two normalized edge lists, preserving each list's order and
+ *  collapsing exact duplicates (an edge is a set member semantically). */
+export function diffRelationEdges(
+  from: TableRelationEdge[],
+  to: TableRelationEdge[],
+): TableRelationDiff {
+  const fromKeys = new Set(from.map(edgeKey));
+  const toKeys = new Set(to.map(edgeKey));
+  const seenAdded = new Set<string>();
+  const added: TableRelationEdge[] = [];
+  for (const edge of to) {
+    const key = edgeKey(edge);
+    if (fromKeys.has(key) || seenAdded.has(key)) continue;
+    seenAdded.add(key);
+    added.push(edge);
+  }
+  const seenRemoved = new Set<string>();
+  const removed: TableRelationEdge[] = [];
+  for (const edge of from) {
+    const key = edgeKey(edge);
+    if (toKeys.has(key) || seenRemoved.has(key)) continue;
+    seenRemoved.add(key);
+    removed.push(edge);
+  }
+  return { added, removed };
+}
+
 /** An X6 cells array mixes node and edge cells; edges are the entries with
  *  a `shape` of 'edge'. Any array carrying string `shape` fields is treated
  *  as cells (a plain edge array never has one). */

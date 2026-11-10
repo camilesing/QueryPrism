@@ -6,6 +6,13 @@ export const datasourceApi = {
   relationGet: (id: any) => request.post(`/table_relation/get/${id}`),
   relationSave: (dsId: any, data: any) => request.post(`/table_relation/save/${dsId}`, data),
   relationVersions: (dsId: number) => request.post(`/table_relation/versions/${dsId}`),
+  relationRestore: (dsId: number, version: number) =>
+    request.post(`/table_relation/restore/${dsId}/${version}`),
+  relationCompare: (dsId: number, fromVersion: number, toVersion?: number) =>
+    request.post(`/table_relation/compare/${dsId}`, {
+      from_version: fromVersion,
+      ...(toVersion !== undefined ? { to_version: toVersion } : {}),
+    }),
   add: (data: any) => request.post('/datasource/add', data),
   importToDb: (data: any) => request.post('/datasource/importToDb', data),
   list: () => request.get('/datasource/list'),

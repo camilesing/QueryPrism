@@ -1,7 +1,9 @@
 import {
   buildMSchema,
+  diffRelationEdges,
   normalizeTableRelation,
   relationIdNamesOf,
+  type TableRelationEdge,
 } from './m-schema.builder';
 
 describe('normalizeTableRelation', () => {
@@ -402,5 +404,52 @@ describe('buildMSchema semantics injection (MetaDataImprove M2)', () => {
     });
     expect(out).toContain('# Table: sales_order # 自定义备注');
     expect(out).toContain('order_status varchar # status');
+  });
+});
+
+describe('diffRelationEdges (relation version compare)', () => {
+  const edge = (
+    fromTable: string,
+    fromField: string,
+    toTable: string,
+    toField: string,
+  ): TableRelationEdge => ({ fromTable, fromField, toTable, toField });
+
+  it('reports edges added and removed between two snapshots', () => {
+    const from = [edge('orders', 'user_id', 'users', 'id')];
+    const to = [
+      edge('orders', 'user_id', 'users', 'id'),
+      edge('orders', 'product_id', 'products', 'id'),
+    ];
+    expect(diffRelationEdges(from, to)).toEqual({
+      added: [edge('orders', 'product_id', 'products', 'id')],
+      removed: [],
+    });
+    expect(diffRelationEdges(to, from)).toEqual({
+      added: [],
+      removed: [edge('orders', 'product_id', 'products', 'id')],
+    });
+  });
+
+  it('ignores edge order and collapses duplicate entries', () => {
+    const a = edge('a', 'id', 'b', 'a_id');
+    const b = edge('b', 'id', 'c', 'b_id');
+    const diff = diffRelationEdges([a, b, a], [b, a]);
+    expect(diff).toEqual({ added: [], removed: [] });
+  });
+
+  it('handles an empty side', () => {
+    const e = edge('a', 'id', 'b', 'a_id');
+    expect(diffRelationEdges([], [e])).toEqual({ added: [e], removed: [] });
+    expect(diffRelationEdges([e], [])).toEqual({ added: [], removed: [e] });
+    expect(diffRelationEdges([], [])).toEqual({ added: [], removed: [] });
+  });
+
+  it('treats a renamed field as remove + add, not as the same edge', () => {
+    const from = [edge('orders', 'buyer_id', 'users', 'id')];
+    const to = [edge('orders', 'user_id', 'users', 'id')];
+    const diff = diffRelationEdges(from, to);
+    expect(diff.added).toHaveLength(1);
+    expect(diff.removed).toHaveLength(1);
   });
 });
