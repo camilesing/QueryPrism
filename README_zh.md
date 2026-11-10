@@ -202,7 +202,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 - **对话历史**: 保留最近20条对话记录
 - **数据存储**: 查询结果和图表配置以JSON格式存储
 - **向量检索**: PostgreSQL pgvector，支持术语/样例/表召回的混合检索
-- **反问收敛（澄清）**: 问题在多张候选表（默认阈值 `clarify.table_threshold`=3）间有歧义且未点名任何表时，管线先反问用户选表/补充说明/跳过，再生成 SQL（`POST /chat/record/:rid/clarify` 恢复同一记录；MCP `ask_question` 返回 `needs_clarification` 支持两段式交互）
+- **反问收敛（澄清）**: 问题在多张候选表（默认阈值 `clarify.table_threshold`=3）间有歧义且未点名任何表时，管线先反问用户选表/补充说明/跳过，再生成 SQL（`POST /chat/record/:rid/clarify` 恢复同一记录；MCP `ask_question` 返回 `needs_clarification` 支持两段式交互）。候选展示有效表语义（缺失时回退表注释）；`need_clarify` 暂停时把“召回但未塞入”的表列给 LLM，其点名的表通过 `suggested_table_ids` 回传并在卡片中预选（仅建议，恢复时仍强制 `max_select`）
 - **业务语义（M2）**: 表/字段业务含义三层 scope（个人 > 工作空间 > 全局，跨层修改走审批队列，每次保存留版本）——语义覆盖的问题仅把前 `semantic.max_tables`（默认 1）张表放入 SQL 提示词，LLM 可通过 `need_clarify` 请求更多表；有效语义会装饰每一次实际塞入的 schema（表含义、字段说明、枚举缓存），不只限于规则 2 截断的场景。录入渠道：管理页（`/set/semantic`）、Excel 导入导出、API Key 认证的 `POST /meta/semantic/import`
 - **Join 拓扑（M3）**: 关系编辑器的图（`Datasource.tableRelation`，按 X6 cells 原样存储）在读取时归一化为 FK 边——cell/port id 优先经同步的 Table/Field 行解析，画布标签兜底。SQL 提示词中的 FK 行只覆盖已塞入表的可见字段，BFS ≤2 跳的桥接表（连接被召回表的中间表）自动塞入（并加入澄清候选），多表问题带上真实 join 路径。每次保存关系同时追加版本快照（`POST /table_relation/versions/:dsId`）便于审阅，运行时仍读最新关系图
 - **维度枚举（M3）**: `role=dimension` 字段一键枚举采集——有界 DISTINCT 采样（`semantic.enum_scan_rows`，默认 10000）+ 低基数校验（`semantic.enum_max_values`，默认 50），回填带版本的 `enumValues` 缓存；按数据源限流 `semantic.enum_cooldown`（默认 60 秒）。字段语义页管理按钮，`POST /system/semantic/collect_enum/:datasource_id`

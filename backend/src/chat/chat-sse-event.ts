@@ -57,6 +57,9 @@ export interface ChatSseEventMap {
   // POST /chat/record/:rid/clarify which re-streams the same record.
   // `reason` is present when the pause came from the LLM's need_clarify
   // contract (M2 rule 2) — its one-liner about what the schema is missing.
+  // `meaning` is the effective table semantic (falls back to `comment` in the
+  // UI); `suggested_table_ids` is the current schema plus the tables the LLM
+  // named, already filtered to candidates and capped at max_select.
   clarify: {
     record_id: number;
     question: string;
@@ -64,9 +67,11 @@ export interface ChatSseEventMap {
       table_id: number;
       table_name: string;
       comment: string;
+      meaning?: string;
     }>;
     max_select: number;
     reason?: string;
+    suggested_table_ids?: number[];
   };
   info: { msg: string };
   brief: { brief: string };

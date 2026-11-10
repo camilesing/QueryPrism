@@ -77,7 +77,11 @@ import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
-import { needsClarify } from '../datasource/table-recall';
+import {
+  matchSuggestedTableIds,
+  needsClarify,
+  type TableRecallCandidate,
+} from '../datasource/table-recall';
 import {
   normalizeTableRelation,
   relationIdNamesOf,
@@ -150,6 +154,11 @@ function clarifyCandidateNames(
     clarifyCandidates(clarify).map((c) => [c.table_id, c.table_name]),
   );
 }
+
+/** A clarify candidate plus the actor-effective table semantic, when one
+ *  exists. `comment` is kept for the deterministic gate's explicit-mention
+ *  detection (needsClarify); the UI prefers `meaning` for display. */
+type ClarifyOption = TableRecallCandidate & { meaning?: string };
 
 @Injectable()
 export class ChatService {
@@ -970,6 +979,7 @@ export class ChatService {
       dsTables.tables.filter((t) => t.checked).map((t) => t.tableName),
     );
     const tableByName = new Map(dsTables.tables.map((t) => [t.tableName, t]));
+    const tableById = new Map(dsTables.tables.map((t) => [t.id, t]));
     /** The clarify-pool candidates in recall rank order (every checked table
      *  when recall degraded to "stuff everything"). */
     const clarifyPool = (
@@ -1019,6 +1029,12 @@ export class ChatService {
      *  the final decoration step below reuse the candidate load instead of
      *  hitting the semantic tables twice per run. */
     let semanticAnnotatedNames: string[] | undefined;
+    /** Candidate-pool semantics loaded by rule 2, kept separately because the
+     *  final decoration below may replace `semanticAnnotations` with the
+     *  stuffed subset. Drives the candidate_tables prompt block + clarify
+     *  candidate meanings. */
+    let clarifyAnnotations: SemanticAnnotations | undefined;
+    let clarifyAnnotatedNames: string[] | undefined;
     let semanticNarrowed = false;
     if (
       cfg.semanticEnabled &&
@@ -1035,6 +1051,8 @@ export class ChatService {
       // decoration step reuses it whenever the stuffed set is a subset.
       semanticAnnotations = annotations;
       semanticAnnotatedNames = candidateNames;
+      clarifyAnnotations = annotations;
+      clarifyAnnotatedNames = candidateNames;
       const coveredIds = tableIds.filter(
         (id) => annotations.tableMeanings[nameById.get(id) ?? ''] !== undefined,
       );
@@ -1060,10 +1078,17 @@ export class ChatService {
           maxRounds: cfg.clarifyMaxRounds,
         })
       ) {
+        const gateOptions = await this.clarifyOptionsWithMeanings(
+          datasourceId,
+          clarifyOptions,
+          cfg,
+          clarifyAnnotations,
+          clarifyAnnotatedNames,
+        );
         yield* this.pauseForClarify(
           record.id,
           content,
-          clarifyOptions,
+          gateOptions,
           cfg.clarifyMaxSelect,
         );
         return;
@@ -1133,6 +1158,40 @@ export class ChatService {
       if (bridgeIds.length > 0) tableIds = [...stuffed, ...bridgeIds];
     }
 
+    // --- clarify candidate prompt + preselect pool (MetaDataImprove M1) ----
+    // The final stuffed set can include tables added AFTER clarifyOptions was
+    // built (metric force-stuff, final bridge expansion). Bring those into the
+    // pickable pool so a need_clarify answer cannot silently drop the schema
+    // this run already had. Only tables omitted from the schema are rendered
+    // in `{candidate_tables}`; degrade-to-all-checked (tableIds undefined)
+    // skips the block because those tables are already in the schema.
+    const stuffedIds = new Set(
+      tableIds ?? dsTables.tables.filter((t) => t.checked).map((t) => t.id),
+    );
+    const clarifyOptionIds = new Set(clarifyOptions.map((o) => o.id));
+    const needClarifyOptions: ClarifyOption[] = [...clarifyOptions];
+    for (const id of tableIds ?? []) {
+      if (clarifyOptionIds.has(id)) continue;
+      const row = tableById.get(id);
+      if (!row || !row.checked) continue;
+      needClarifyOptions.push({
+        id: row.id,
+        tableName: row.tableName,
+        comment: row.customComment || row.tableComment || '',
+      });
+      clarifyOptionIds.add(id);
+    }
+    const decoratedClarifyOptions = needClarifyOptions.map((o) => {
+      const meaning = clarifyAnnotations?.tableMeanings[o.tableName];
+      return meaning ? { ...o, meaning } : o;
+    });
+    // Only the first pass can pause again (one clarify round today); skip the
+    // extra prompt block once an answer exists.
+    const candidateTablesText =
+      !record.clarifyStatus && tableIds
+        ? this.renderCandidateTables(decoratedClarifyOptions, stuffedIds)
+        : '';
+
     // --- always-on semantic decoration (MetaDataImprove M2) --------------
     // Rule-2 narrowing is a gate, not the only reason to read semantics: a
     // single recalled table, a user-picked subset, metric force-stuffing and
@@ -1172,6 +1231,7 @@ export class ChatService {
       semantics: semanticAnnotations,
       metrics: metricText,
       namingRules: namingText,
+      candidateTables: candidateTablesText || undefined,
     });
     let sqlResult: SqlGenResult | null = null;
     // startLog INSERTs the row before the stream drains, so a
@@ -1224,12 +1284,38 @@ export class ChatService {
         yield* this.fail(record.id, msgs.sqlSchemaInsufficient);
         return;
       }
+      const answerOptions = await this.clarifyOptionsWithMeanings(
+        datasourceId,
+        needClarifyOptions,
+        cfg,
+        clarifyAnnotations,
+        clarifyAnnotatedNames,
+      );
+      const matched = matchSuggestedTableIds(
+        Array.isArray(sqlResult.tables) ? sqlResult.tables : [],
+        answerOptions,
+      );
+      // Preselect the tables this run already stuffed + the LLM's additions so
+      // resuming with picks does not drop the current schema. When the stuffed
+      // set alone exceeds max_select it cannot be represented, so only the
+      // LLM's picks are suggested. Advisory: resume still enforces max_select.
+      const stuffedOptionIds = answerOptions
+        .filter((o) => stuffedIds.has(o.id))
+        .map((o) => o.id);
+      const suggestedTableIds =
+        matched.length === 0
+          ? undefined
+          : (stuffedOptionIds.length <= cfg.clarifyMaxSelect
+              ? [...new Set([...stuffedOptionIds, ...matched])]
+              : matched
+            ).slice(0, cfg.clarifyMaxSelect);
       yield* this.pauseForClarify(
         record.id,
         content,
-        clarifyOptions,
+        answerOptions,
         cfg.clarifyMaxSelect,
         sqlResult.reason,
+        suggestedTableIds,
       );
       return;
     }
@@ -1524,17 +1610,59 @@ export class ChatService {
     yield { type: 'finish', data: {} };
   }
 
+  /** Attach the actor-effective table meaning to clarify candidates. Reuses
+   *  the rule-2 annotation load when it covered every option name; otherwise
+   *  resolves the whole option set once (pauses are rare). Missing semantics
+   *  simply leave `meaning` off — the UI falls back to `comment`. */
+  private async clarifyOptionsWithMeanings(
+    datasourceId: number,
+    options: ClarifyOption[],
+    cfg: EmbeddingConfig,
+    existing?: SemanticAnnotations,
+    annotatedNames?: string[],
+  ): Promise<ClarifyOption[]> {
+    if (!cfg.semanticEnabled || options.length === 0) return options;
+    const names = options.map((o) => o.tableName);
+    const loaded = new Set(annotatedNames ?? []);
+    const annotations =
+      existing && names.every((n) => loaded.has(n))
+        ? existing
+        : await this.semanticService.effectiveAnnotations(datasourceId, names);
+    return options.map((o) => {
+      const meaning = annotations.tableMeanings[o.tableName];
+      return meaning ? { ...o, meaning } : o;
+    });
+  }
+
+  /** Render the `{candidate_tables}` prompt block: recalled tables omitted
+   *  from the stuffed schema, one `- name: meaning|comment` line each. */
+  private renderCandidateTables(
+    options: ClarifyOption[],
+    stuffedIds: Set<number>,
+  ): string {
+    return options
+      .filter((o) => !stuffedIds.has(o.id))
+      .map((o) => {
+        const desc = (o.meaning ?? '').trim() || (o.comment ?? '').trim();
+        return desc ? `- ${o.tableName}: ${desc}` : `- ${o.tableName}`;
+      })
+      .join('\n');
+  }
+
   /** Persist the pending-clarify state + emit the clarify frame and the
    *  terminal finish (the record stays finish:false + clarifyStatus:'pending'
    *  until the user answers via /chat/record/:rid/clarify). `reason` carries
    *  the LLM's one-liner when the pause comes from the need_clarify contract
-   *  (rule 2) rather than the deterministic gate (rule 1). */
+   *  (rule 2) rather than the deterministic gate (rule 1). `suggestedTableIds`
+   *  is advisory preselection (current schema + LLM-named tables, capped at
+   *  maxSelect); the resume endpoint still enforces the cap. */
   private async *pauseForClarify(
     recordId: number,
     question: string,
-    pool: Array<{ id: number; tableName: string; comment: string }>,
+    pool: ClarifyOption[],
     maxSelect: number,
     reason?: string,
+    suggestedTableIds?: number[],
   ): AsyncGenerator<ChatSseEvent> {
     const payload = {
       question,
@@ -1542,9 +1670,13 @@ export class ChatService {
         table_id: c.id,
         table_name: c.tableName,
         comment: c.comment,
+        ...(c.meaning ? { meaning: c.meaning } : {}),
       })),
       max_select: maxSelect,
       ...(reason ? { reason } : {}),
+      ...(suggestedTableIds && suggestedTableIds.length > 0
+        ? { suggested_table_ids: suggestedTableIds }
+        : {}),
     };
     await this.prisma.chatRecord.update({
       where: { id: recordId },

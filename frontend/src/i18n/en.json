@@ -1098,6 +1098,8 @@
     "generate_picture_success": "Image generated",
     "clarify_title": "Which tables should this question target?",
     "clarify_hint": "The question could match several tables. Pick up to {0} tables or add a supplement to narrow it down.",
+    "clarify_reason_label": "Why:",
+    "clarify_suggested": "Suggested",
     "clarify_supplement_placeholder": "Optional: describe what you want to query",
     "clarify_submit": "Continue",
     "clarify_skip": "Skip, just generate",

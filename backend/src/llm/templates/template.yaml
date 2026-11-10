@@ -13,6 +13,11 @@ generate_sql: |
   ## Schema (M-Schema)
   {schema}
 
+  ## Candidate Tables
+  Recalled for this question but NOT included in the schema above. If the
+  question needs one of them, name it exactly as listed here.
+  {candidate_tables}
+
   ## Terminologies
   {terminologies}
 
@@ -47,11 +52,13 @@ generate_sql: |
   - The schema above may be a narrowed subset. When the question CANNOT be
     answered with it (a required table or join is clearly missing), do NOT
     force a wrong query — ask for more tables instead (see output contract).
+  - Only name tables that appear in the schema or Candidate Tables; never
+    invent table names.
 
   Respond with ONLY JSON — no prose, no markdown fences. Either:
   {"success":true,"sql":"<the sql>","chart-type":"bar|column|line|pie|table","brief":"<one-sentence summary in {lang}>"}
   or, when the schema above cannot answer the question:
-  {"need_clarify":true,"reason":"<one short sentence: which table/fields the question needs and why>"}
+  {"need_clarify":true,"reason":"<one short sentence: which table/fields the question needs and why>","tables":["<exact additional table name(s) from Candidate Tables; [] when only fields are missing>"]}
 
 generate_chart: |
   ## Question

@@ -854,6 +854,157 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     );
   });
 
+  it('need_clarify carries meanings, candidate_tables and a preselect set', async () => {
+    const m = makeService();
+    happyMocks(m);
+    // Four recalled candidates; one semantic row is enough to narrow rule 2
+    // to users, leaving the other three as candidate_tables prompt entries.
+    m.datasourceService.findOne.mockResolvedValue({
+      id: 1,
+      name: 'main',
+      type: 'sqlite',
+      tables: [
+        {
+          id: 1,
+          tableName: 'users',
+          tableComment: '用户表',
+          customComment: null,
+          checked: true,
+          fields: [],
+        },
+        {
+          id: 2,
+          tableName: 'orders',
+          tableComment: '订单表',
+          customComment: null,
+          checked: true,
+          fields: [],
+        },
+        {
+          id: 3,
+          tableName: 'products',
+          tableComment: '商品表',
+          customComment: null,
+          checked: true,
+          fields: [],
+        },
+        {
+          id: 4,
+          tableName: 'payments',
+          tableComment: '支付表',
+          customComment: null,
+          checked: true,
+          fields: [],
+        },
+      ],
+    });
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+      { id: 2, tableName: 'orders', checked: true },
+      { id: 3, tableName: 'products', checked: true },
+      { id: 4, tableName: 'payments', checked: true },
+    ]);
+    m.semanticService.effectiveAnnotations.mockResolvedValue({
+      tableMeanings: {
+        users: '用户主表',
+        orders: '订单主表',
+        products: '商品主表',
+        payments: '支付流水',
+      },
+      fieldNotes: {},
+    });
+    m.generatorService.generateSql.mockReturnValue(
+      asyncFrom<LlmGenEvent>([
+        {
+          type: 'result',
+          data: {
+            success: false,
+            needClarify: true,
+            reason: '需要订单表 join',
+            sql: '',
+            tables: ['orders'],
+            chartType: '',
+            brief: '',
+          },
+        },
+      ]),
+    );
+
+    const events = await run(1, () =>
+      collect(m.service.runPipeline(1, '统计一下整体情况')),
+    );
+
+    const clarify = events.find((e) => e.type === 'clarify');
+    expect(clarify).toBeDefined();
+    expect(clarify!.data.reason).toBe('需要订单表 join');
+    expect(clarify!.data.candidates).toEqual([
+      {
+        table_id: 1,
+        table_name: 'users',
+        comment: '用户表',
+        meaning: '用户主表',
+      },
+      {
+        table_id: 2,
+        table_name: 'orders',
+        comment: '订单表',
+        meaning: '订单主表',
+      },
+      {
+        table_id: 3,
+        table_name: 'products',
+        comment: '商品表',
+        meaning: '商品主表',
+      },
+      {
+        table_id: 4,
+        table_name: 'payments',
+        comment: '支付表',
+        meaning: '支付流水',
+      },
+    ]);
+    // Current schema (users) + the LLM's requested table (orders).
+    expect(clarify!.data.suggested_table_ids).toEqual([1, 2]);
+
+    const sqlCtx = m.aiQuestionService.buildSqlContext.mock.calls[0][0] as {
+      tableIds?: number[];
+      candidateTables?: string;
+    };
+    expect(sqlCtx.tableIds).toEqual([1]);
+    expect(sqlCtx.candidateTables).toContain('- orders: 订单主表');
+    expect(sqlCtx.candidateTables).toContain('- products: 商品主表');
+    expect(sqlCtx.candidateTables).not.toContain('- users:');
+  });
+
+  it('skips candidate_tables when recall degrades to all checked tables', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.datasourceService.recallTables.mockResolvedValue([]);
+    m.generatorService.generateSql.mockReturnValue(
+      asyncFrom<LlmGenEvent>([
+        {
+          type: 'result',
+          data: {
+            success: false,
+            needClarify: true,
+            reason: '缺少字段',
+            sql: '',
+            tables: ['users'],
+            chartType: '',
+            brief: '',
+          },
+        },
+      ]),
+    );
+
+    await run(1, () => collect(m.service.runPipeline(1, '查询用户')));
+
+    const sqlCtx = m.aiQuestionService.buildSqlContext.mock.calls[0][0] as {
+      candidateTables?: string;
+    };
+    expect(sqlCtx.candidateTables).toBeUndefined();
+  });
+
   // MetaDataImprove M1: max_select is part of the clarify contract, not just
   // a frontend hint — the resume endpoint rejects over-picks.
   it('rejects a clarify answer exceeding the pending max_select', async () => {

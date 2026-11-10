@@ -71,6 +71,9 @@ export class AiQuestionService {
      *  string / undefined renders a blank section, same as terminologies). */
     metrics?: string;
     namingRules?: string;
+    /** MetaDataImprove clarify: recalled tables omitted from the narrowed
+     *  schema (pre-rendered list) so need_clarify can name exact tables. */
+    candidateTables?: string;
   }): Promise<AiModelQuestion> {
     const sampleDataEnabled = await this.sampleDataEnabled();
     const [schema, sampleData, terminologies, dataTraining, customPromptText] =
@@ -118,6 +121,7 @@ export class AiQuestionService {
       customPrompt: customPromptText,
       metrics: opts.metrics,
       namingRules: opts.namingRules,
+      candidateTables: opts.candidateTables,
     };
   }
 

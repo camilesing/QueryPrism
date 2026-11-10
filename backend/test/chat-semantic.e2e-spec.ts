@@ -114,16 +114,22 @@ describe('Chat semantic rule 2 (e2e)', () => {
   let capturedSemantics:
     | { tableMeanings?: Record<string, string>; fieldNotes?: unknown }
     | undefined;
+  /** The candidate_tables prompt block buildSqlContext received. */
+  let capturedCandidateTables: string | undefined;
   /** How many ranked tables recall returns (1 = no rule-2 narrowing). */
   let recallSlice: number;
   /** Flip the faked generateSql between need_clarify and a normal result. */
   let sqlMode: 'sql' | 'need_clarify';
+  /** Tables the faked need_clarify response asks for. */
+  let needClarifyTables: string[];
 
   beforeEach(async () => {
     capturedTableIds = undefined;
     capturedSemantics = undefined;
+    capturedCandidateTables = undefined;
     recallSlice = 3;
     sqlMode = 'sql';
+    needClarifyTables = [];
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -154,7 +160,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
                       needClarify: true,
                       reason: '需要客户表 join',
                       sql: '',
-                      tables: [],
+                      tables: needClarifyTables,
                       chartType: '',
                       brief: '',
                     },
@@ -186,6 +192,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
         buildForSelectDatasource: () => ({ engine: 'MySQL' }),
         buildSqlContext: (ctx: {
           tableIds?: number[];
+          candidateTables?: string;
           semantics?: {
             tableMeanings?: Record<string, string>;
             fieldNotes?: unknown;
@@ -193,6 +200,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
         }) => {
           capturedTableIds = ctx.tableIds;
           capturedSemantics = ctx.semantics;
+          capturedCandidateTables = ctx.candidateTables;
           return { engine: 'SQLite' };
         },
         buildForResult: () => ({ engine: 'SQLite' }),
@@ -385,6 +393,64 @@ describe('Chat semantic rule 2 (e2e)', () => {
       });
       expect(finished!.clarifyStatus).toBe('answered');
       expect(finished!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
+  it('need_clarify suggests recalled tables and shows their meanings', async () => {
+    sqlMode = 'need_clarify';
+    needClarifyTables = ['crm_customer'];
+    await prisma.tableSemantic.createMany({
+      data: [
+        {
+          scope: 'WORKSPACE',
+          oid: 1,
+          datasourceId: 1,
+          tableName: 'sales_order',
+          meaning: '销售订单主表',
+          enabled: true,
+        },
+        {
+          scope: 'WORKSPACE',
+          oid: 1,
+          datasourceId: 1,
+          tableName: 'crm_customer',
+          meaning: '客户主表',
+          enabled: true,
+        },
+      ],
+    });
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId, '查一下sales_order的金额');
+      expect(q.status).toBe(200);
+      const frames = sseFrames(q.text);
+      const clarify = frames.find((f) => f.type === 'clarify');
+      expect(clarify).toBeDefined();
+
+      // Candidates carry the effective semantic (not just the table comment).
+      const candidates = clarify!.candidates as Array<{
+        table_name: string;
+        meaning?: string;
+      }>;
+      expect(
+        candidates.find((c) => c.table_name === 'sales_order')?.meaning,
+      ).toBe('销售订单主表');
+      expect(
+        candidates.find((c) => c.table_name === 'crm_customer')?.meaning,
+      ).toBe('客户主表');
+
+      // Current schema (sales_order) + the LLM's requested table.
+      expect(clarify!.suggested_table_ids).toEqual([1, 2]);
+
+      // The prompt lists the omitted candidates, not the stuffed table.
+      expect(capturedCandidateTables).toContain('- crm_customer: 客户主表');
+      expect(capturedCandidateTables).toContain('- inv_stock: 库存记录');
+      expect(capturedCandidateTables).not.toContain('- sales_order:');
     } finally {
       await request(app.getHttpServer())
         .delete(`/api/v1/chat/${chatId}`)

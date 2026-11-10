@@ -449,6 +449,9 @@ export class McpService {
             // Rule 2 pauses carry the LLM's missing-schema reason; gate pauses
             // have none (JSON.stringify drops the undefined field).
             reason: collected.clarify.reason,
+            // The current schema + LLM-named candidates (advisory; max_select
+            // is still enforced on resume).
+            suggested_table_ids: collected.clarify.suggested_table_ids,
             hint: 'Re-call ask_question with clarify_record_id and either clarify_table_ids (ids from candidates), clarify_text, or clarify_skip=true.',
           }),
         );

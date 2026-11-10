@@ -1098,6 +1098,8 @@
     "generate_picture_success": "已生成图片",
     "clarify_title": "这个问题想查询哪些表？",
     "clarify_hint": "该问题可能匹配多张表，选择最多 {0} 张表，或补充说明来缩小范围。",
+    "clarify_reason_label": "原因：",
+    "clarify_suggested": "建议",
     "clarify_supplement_placeholder": "选填：补充说明想查询的内容",
     "clarify_submit": "继续生成",
     "clarify_skip": "跳过，直接生成",

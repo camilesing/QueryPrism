@@ -79,6 +79,32 @@ export interface TableRecallCandidate {
   comment: string;
 }
 
+/** Map LLM-suggested table names onto the clarify candidate pool. Names are
+ *  matched case-insensitively after stripping wrapping quotes; a
+ *  schema-qualified name (`public.orders`) also matches its bare table name.
+ *  Unknown names are dropped, ids keep the LLM's order and de-duplicate. */
+export function matchSuggestedTableIds(
+  names: readonly string[],
+  candidates: readonly TableRecallCandidate[],
+): number[] {
+  const normalize = (raw: string): string =>
+    raw.trim().replace(/[`"']/g, '').toLowerCase();
+  const byName = new Map<string, number>();
+  for (const c of candidates) {
+    const name = normalize(c.tableName);
+    if (name && !byName.has(name)) byName.set(name, c.id);
+  }
+  const ids: number[] = [];
+  for (const raw of names) {
+    const name = normalize(raw);
+    if (!name) continue;
+    const bare = name.split('.').pop() ?? name;
+    const id = byName.get(name) ?? byName.get(bare);
+    if (id != null && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 /** Shared explicit-mention detection over a candidate pool: quoted-identifier
  *  aware name spans + comment spans, resolved through longestMentions.
  *  Returns the lowercased names/comments the question explicitly carries. */

@@ -2,6 +2,7 @@
 import {
   calcKeywordScore,
   longestMentions,
+  matchSuggestedTableIds,
   mentionSpans,
   needsClarify,
   rankTables,
@@ -233,5 +234,40 @@ describe('needsClarify (clarify gate)', () => {
 
   it('empty question never triggers (degenerate input)', () => {
     expect(needsClarify(pool, '', gate())).toBe(false);
+  });
+});
+
+describe('matchSuggestedTableIds (need_clarify tables)', () => {
+  const candidates = [
+    { id: 1, tableName: 'sales_order', comment: '销售订单' },
+    { id: 2, tableName: 'crm_customer', comment: '客户信息' },
+    { id: 3, tableName: 'inv_stock', comment: '库存记录' },
+  ];
+
+  it('matches case-insensitively, strips quotes and schema prefixes', () => {
+    expect(
+      matchSuggestedTableIds(
+        [
+          'CRM_CUSTOMER',
+          '`sales_order`',
+          'public.inv_stock',
+          '"public"."sales_order"',
+        ],
+        candidates,
+      ),
+    ).toEqual([2, 1, 3]);
+  });
+
+  it('drops unknown names and de-duplicates while keeping LLM order', () => {
+    expect(
+      matchSuggestedTableIds(
+        ['missing', 'inv_stock', 'INV_STOCK', 'sales_order'],
+        candidates,
+      ),
+    ).toEqual([3, 1]);
+  });
+
+  it('returns [] when nothing matches', () => {
+    expect(matchSuggestedTableIds(['nope'], candidates)).toEqual([]);
   });
 });

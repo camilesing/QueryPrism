@@ -202,6 +202,10 @@ async function consumeChatStream(
                 question: data.question,
                 candidates: data.candidates,
                 max_select: data.max_select,
+                ...(data.reason ? { reason: data.reason } : {}),
+                ...(Array.isArray(data.suggested_table_ids)
+                  ? { suggested_table_ids: data.suggested_table_ids }
+                  : {}),
               }
               currentRecord.clarify_status = 'pending'
               break

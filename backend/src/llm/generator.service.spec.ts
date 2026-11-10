@@ -87,6 +87,32 @@ describe('GeneratorService', () => {
     });
   });
 
+  it('keeps need_clarify table suggestions and renders candidate_tables', async () => {
+    const gen = new GeneratorService(
+      mockLlm([
+        {
+          content:
+            '{"need_clarify":true,"reason":"needs the customer table","tables":["crm_customer"]}',
+        },
+      ]),
+      prompt,
+    );
+    const events = await collect(
+      gen.generateSql(ctx({ candidateTables: '- crm_customer: 客户信息' })),
+    );
+    const first = events[0] as {
+      type: 'messages';
+      messages: { type: string; content: string }[];
+    };
+    const human = first.messages.find((m) => m.type === 'human');
+    expect(human?.content).toContain('- crm_customer: 客户信息');
+    expect(result(events)).toMatchObject({
+      needClarify: true,
+      reason: 'needs the customer table',
+      tables: ['crm_customer'],
+    });
+  });
+
   it('forwards the need_clarify contract instead of degrading to empty SQL', async () => {
     const gen = new GeneratorService(
       mockLlm([

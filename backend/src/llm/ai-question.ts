@@ -78,6 +78,11 @@ export interface AiModelQuestion {
    *  standard translations matched by the question. Flows into the
    *  generate_sql template's `{naming_rules}` placeholder ('' when off). */
   namingRules?: string;
+  /** MetaDataImprove clarify: recall candidates that were NOT stuffed into the
+   *  narrowed schema, one `- table: meaning` line each. Lets generate_sql name
+   *  the exact additional tables it needs (`need_clarify.tables`) instead of
+   *  guessing names outside the schema. Flows into `{candidate_tables}`. */
+  candidateTables?: string;
 }
 
 // --- generator result types -----------------------------------------------

@@ -28,11 +28,16 @@ export interface CollectedPipeline {
       table_id: number;
       table_name: string;
       comment: string;
+      /** Effective table semantic; absent when no semantic row exists. */
+      meaning?: string;
     }>;
     max_select: number;
     /** Present when the pause came from the LLM's need_clarify contract
      *  (rule 2) — its one-liner about what the schema is missing. */
     reason?: string;
+    /** Current schema + LLM-named tables, filtered to candidates and capped
+     *  at max_select (advisory; the resume endpoint still enforces the cap). */
+    suggested_table_ids?: number[];
   } | null;
 }
 

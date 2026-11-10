@@ -12,12 +12,18 @@ interface ClarifyCandidate {
   table_id: number
   table_name: string
   comment: string
+  /** Effective table semantic; preferred over comment when present. */
+  meaning?: string
 }
 
 interface ClarifyPayload {
   question?: string
   candidates?: ClarifyCandidate[]
   max_select?: number
+  /** The LLM's explanation for a need_clarify pause. */
+  reason?: string
+  /** Advisory preselection (current schema + LLM-named tables). */
+  suggested_table_ids?: number[]
 }
 
 const props = defineProps<{ record: ChatRecord }>()
@@ -45,9 +51,20 @@ const candidates = computed<ClarifyCandidate[]>(() =>
 
 const maxSelect = computed(() => Math.max(1, payload.value.max_select ?? 3))
 
+const suggestedList = computed<number[]>(() =>
+  Array.isArray(payload.value.suggested_table_ids) ? payload.value.suggested_table_ids : []
+)
+const suggestedIds = computed(() => new Set(suggestedList.value))
+
 const pending = computed(() => props.record.clarify_status === 'pending')
 
-const selected = ref<number[]>([])
+// Preselect the backend's suggestion (current schema + LLM-named tables),
+// clamped to the offered candidates and max_select. The user can still edit.
+const selected = ref<number[]>(
+  suggestedList.value
+    .filter((id) => candidates.value.some((c) => c.table_id === id))
+    .slice(0, maxSelect.value)
+)
 const supplement = ref('')
 
 const canSubmit = computed(() => selected.value.length > 0 || supplement.value.trim().length > 0)
@@ -87,6 +104,10 @@ const summary = computed<string>(() => {
       <div class="clarify-hint">
         {{ t('chat.clarify_hint', [maxSelect]) }}
       </div>
+      <div v-if="payload.reason" class="clarify-reason">
+        <span class="reason-label">{{ t('chat.clarify_reason_label') }}</span>
+        {{ payload.reason }}
+      </div>
       <el-checkbox-group v-model="selected" class="clarify-candidates">
         <el-checkbox
           v-for="c in candidates"
@@ -95,7 +116,11 @@ const summary = computed<string>(() => {
           :disabled="selected.length >= maxSelect && !selected.includes(c.table_id)"
         >
           <span class="candidate-name">{{ c.table_name }}</span>
-          <span v-if="c.comment" class="candidate-comment">{{ c.comment }}</span>
+          <span v-if="c.meaning" class="candidate-meaning">{{ c.meaning }}</span>
+          <span v-else-if="c.comment" class="candidate-comment">{{ c.comment }}</span>
+          <el-tag v-if="suggestedIds.has(c.table_id)" size="small" class="candidate-suggested">
+            {{ t('chat.clarify_suggested') }}
+          </el-tag>
         </el-checkbox>
       </el-checkbox-group>
       <el-input
@@ -143,6 +168,18 @@ const summary = computed<string>(() => {
     color: rgba(143, 149, 158, 1);
   }
 
+  .clarify-reason {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 20px;
+    color: rgba(143, 149, 158, 1);
+
+    .reason-label {
+      margin-right: 4px;
+      font-weight: 500;
+    }
+  }
+
   .clarify-candidates {
     margin-top: 8px;
     display: flex;
@@ -154,10 +191,15 @@ const summary = computed<string>(() => {
       font-weight: 500;
     }
 
-    .candidate-comment {
+    .candidate-comment,
+    .candidate-meaning {
       margin-left: 8px;
       color: rgba(143, 149, 158, 1);
       font-weight: 400;
+    }
+
+    .candidate-suggested {
+      margin-left: 6px;
     }
   }
 

@@ -162,6 +162,34 @@ describe('collectPipeline', () => {
     expect(out.error).toBeNull();
   });
 
+  it('passes candidate meanings and suggested ids through', async () => {
+    const gen = asyncFrom<ChatSseEvent>([
+      ev('id', { id: 56 }),
+      ev('clarify', {
+        record_id: 56,
+        question: '统计一下整体情况',
+        candidates: [
+          {
+            table_id: 1,
+            table_name: 'orders',
+            comment: '订单表',
+            meaning: '订单主表',
+          },
+        ],
+        max_select: 3,
+        reason: '需要订单表',
+        suggested_table_ids: [1],
+      }),
+      ev('finish', {}),
+    ]);
+    const out = await collectPipeline(gen);
+    expect(out.clarify).toMatchObject({
+      reason: '需要订单表',
+      suggested_table_ids: [1],
+      candidates: [{ meaning: '订单主表' }],
+    });
+  });
+
   it('keeps the clarify payload alongside a resumed stream (sql wins)', async () => {
     // A resumed record that asks again mid-stream is NOT expected today
     // (max one round), but if both appear the collector keeps both — the

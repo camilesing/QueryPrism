@@ -246,6 +246,8 @@ export class GeneratorService {
       // standard translations (blank sections when nothing matched).
       metrics: ctx.metrics ?? '',
       naming_rules: ctx.namingRules ?? '',
+      // Clarify: recalled-but-omitted tables the LLM may ask for.
+      candidate_tables: ctx.candidateTables ?? '',
     };
     return map;
   }
