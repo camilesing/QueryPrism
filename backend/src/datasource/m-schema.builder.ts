@@ -89,7 +89,13 @@ export interface MSchemaSemantics {
   /** `${tableName}.${fieldName}` → role-tagged field note. */
   fieldNotes: Record<
     string,
-    { role: string; meaning: string; unit?: string; enums?: string[] }
+    {
+      role: string;
+      meaning: string;
+      unit?: string;
+      /** Cached dimension members; label is the business-facing name. */
+      enums?: Array<{ value: string; label?: string }>;
+    }
   >;
 }
 
@@ -101,7 +107,9 @@ const ROLE_TAGS: Record<string, string> = {
   time: '时间',
 };
 
-/** Compose the field comment line: `[角色] 含义 (单位: x; 枚举: a/b)`. */
+/** Compose the field comment line: `[角色] 含义 (单位: x; 枚举: a(标签)/b)`.
+ *  Enum entries render `value(label)` so the LLM sees both the exact value to
+ *  filter on and the business-facing label. */
 function semanticFieldNote(
   note: MSchemaSemantics['fieldNotes'][string],
 ): string {
@@ -110,7 +118,14 @@ function semanticFieldNote(
   const head = [tag ? `[${tag}]` : '', meaning].filter(Boolean).join(' ');
   const tails: string[] = [];
   if (note.unit?.trim()) tails.push(`单位: ${note.unit.trim()}`);
-  if (note.enums?.length) tails.push(`枚举: ${note.enums.join('/')}`);
+  if (note.enums?.length) {
+    const sample = note.enums
+      .map((e) =>
+        e.label && e.label !== e.value ? `${e.value}(${e.label})` : e.value,
+      )
+      .join('/');
+    tails.push(`枚举: ${sample}`);
+  }
   const tail = tails.length ? ` (${tails.join('; ')})` : '';
   return `${head}${tail}`;
 }

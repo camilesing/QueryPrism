@@ -49,7 +49,8 @@ export class ChatRecord {
   total_tokens?: number
   /** Clarify round (MetaDataImprove M1): clarify = {question, candidates:
    *  [{table_id, table_name, comment}], max_select}; clarify_answer = {table_ids?,
-   *  table_names?, text?, skip?}; clarify_status = pending | answered | skipped. */
+   *  table_names?, text?, texts?, skip?} (texts accumulates supplements across
+   *  rounds); clarify_status = pending | answered | skipped. */
   clarify?: any
   clarify_answer?: any
   clarify_status?: string

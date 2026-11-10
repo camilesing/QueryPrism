@@ -176,8 +176,9 @@ export interface ClarifyGateOptions {
   enabled: boolean;
   /** Ask only when at least this many candidate tables are in play. */
   tableThreshold: number;
-  /** Clarify rounds already spent on this record; the gate stays closed once
-   *  the budget is exhausted (an answered/skipped record never re-asks). */
+  /** Clarify rounds already spent on this record. The gate stays closed once
+   *  the budget is exhausted; the caller passes the persisted counter
+   *  (ChatRecord.clarifyRound), not a status-derived guess. */
   rounds: number;
   maxRounds: number;
 }

@@ -191,8 +191,8 @@ describe('collectPipeline', () => {
   });
 
   it('keeps the clarify payload alongside a resumed stream (sql wins)', async () => {
-    // A resumed record that asks again mid-stream is NOT expected today
-    // (max one round), but if both appear the collector keeps both — the
+    // A second clarify frame can occur when clarify.max_rounds > 1. The
+    // collector is single-payload today: the LAST clarify frame wins, and the
     // handler prefers sql when present.
     const gen = asyncFrom<ChatSseEvent>([
       ev('id', { id: 9 }),

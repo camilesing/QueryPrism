@@ -114,11 +114,14 @@ describe('Chat clarify (e2e)', () => {
   let app: INestApplication<App>;
   let token: string;
   let prisma: PrismaService;
-  /** Captured by the faked buildSqlContext — asserts the narrowed subset. */
+  /** Captured by the faked buildSqlContext — asserts the narrowed subset and
+   *  the accumulated multi-round question. */
   let capturedTableIds: number[] | undefined;
+  let capturedQuestion: string | undefined;
 
   beforeEach(async () => {
     capturedTableIds = undefined;
+    capturedQuestion = undefined;
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -164,9 +167,10 @@ describe('Chat clarify (e2e)', () => {
       .overrideProvider(AiQuestionService)
       .useValue({
         buildForSelectDatasource: () => ({ engine: 'MySQL' }),
-        // Capture the tableIds the SQL context was narrowed to.
-        buildSqlContext: (ctx: { tableIds?: number[] }) => {
+        // Capture the tableIds/question the SQL context was narrowed to.
+        buildSqlContext: (ctx: { tableIds?: number[]; question?: string }) => {
           capturedTableIds = ctx.tableIds;
+          capturedQuestion = ctx.question;
           return { engine: 'SQLite' };
         },
         buildForResult: () => ({ engine: 'SQLite' }),
@@ -301,6 +305,79 @@ describe('Chat clarify (e2e)', () => {
         .delete(`/api/v1/chat/${chatId}`)
         .set(TOKEN_HEADER, token)
         .send({ id: chatId });
+    }
+  });
+
+  it('asks a second round under max_rounds=2 and accumulates supplements', async () => {
+    // Opt into a two-round budget for this test only.
+    await prisma.systemVariable.deleteMany({
+      where: { name: 'clarify.max_rounds' },
+    });
+    await prisma.systemVariable.create({
+      data: {
+        type: 'parameter',
+        varType: 'int',
+        name: 'clarify.max_rounds',
+        value: 2,
+      },
+    });
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId);
+      const rid = recordIdFromSse(q.text);
+      let record = await prisma.chatRecord.findUnique({
+        where: { id: rid },
+      });
+      expect(record!.clarifyRound).toBe(1);
+
+      // A text-only answer leaves the ambiguity intact → the gate asks again
+      // (round 1 of 2 spent).
+      const second = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ text: '按天统计' });
+      expect(second.status).toBe(200);
+      const secondFrames = sseFrames(second.text);
+      expect(secondFrames.some((f) => f.type === 'clarify')).toBe(true);
+      expect(secondFrames.some((f) => f.type === 'sql')).toBe(false);
+
+      record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      expect(record!.clarifyRound).toBe(2);
+      expect(record!.clarifyStatus).toBe('pending');
+      expect(record!.clarifyAnswer).toMatchObject({
+        text: '按天统计',
+        texts: ['按天统计'],
+      });
+
+      // Second answer picks a table and adds another supplement; the run
+      // replays BOTH supplements into the SQL question.
+      const third = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [1], text: '只看销售订单' });
+      expect(third.status).toBe(200);
+      expect(third.text).toContain('"type":"sql"');
+      expect(third.text).not.toContain('"type":"clarify"');
+      expect(capturedTableIds).toEqual([1]);
+      expect(capturedQuestion).toContain('按天统计');
+      expect(capturedQuestion).toContain('只看销售订单');
+
+      record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      expect(record!.clarifyRound).toBe(2);
+      expect(record!.clarifyStatus).toBe('answered');
+      expect(record!.finish).toBe(true);
+      expect(record!.clarifyAnswer).toMatchObject({
+        table_ids: [1],
+        texts: ['按天统计', '只看销售订单'],
+      });
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+      await prisma.systemVariable.deleteMany({
+        where: { name: 'clarify.max_rounds' },
+      });
     }
   });
 

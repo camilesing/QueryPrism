@@ -102,6 +102,43 @@ function enumValueText(v: unknown): string | null {
   }
 }
 
+/** A cached dimension member as stored in FieldSemantic.enumValues. */
+interface SemanticEnumEntry {
+  value: string;
+  /** Business-facing name; absent for values collected without one. */
+  label?: string;
+}
+
+/** Defensive parse of the stored enumValues JSON into {value,label?} entries
+ *  (malformed/legacy items are dropped instead of breaking the prompt). */
+function enumEntries(raw: unknown): SemanticEnumEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SemanticEnumEntry[] = [];
+  for (const item of raw) {
+    if (item == null || typeof item !== 'object' || Array.isArray(item)) {
+      continue;
+    }
+    const { value, label } = item as { value?: unknown; label?: unknown };
+    if (typeof value !== 'string' || value.trim() === '') continue;
+    const entry: SemanticEnumEntry = { value };
+    if (typeof label === 'string' && label.trim() !== '') {
+      entry.label = label.trim();
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+/** value → label map from a stored enumValues blob (label-less entries are
+ *  skipped); used by collectEnums to keep curated labels across re-samples. */
+function enumLabelMap(raw: unknown): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const e of enumEntries(raw)) {
+    if (e.label) map.set(e.value, e.label);
+  }
+  return map;
+}
+
 /** The effective annotations the SQL prompt consumes (M2.2 rule 2). */
 export interface SemanticAnnotations {
   /** tableName → resolved business meaning (only tables WITH a semantic). */
@@ -109,7 +146,13 @@ export interface SemanticAnnotations {
   /** `${tableName}.${fieldName}` → role-tagged note for the M-Schema lines. */
   fieldNotes: Record<
     string,
-    { role: FieldRole; meaning: string; unit?: string; enums?: string[] }
+    {
+      role: FieldRole;
+      meaning: string;
+      unit?: string;
+      /** Cached dimension members; `label` is the business-facing name. */
+      enums?: Array<{ value: string; label?: string }>;
+    }
   >;
 }
 
@@ -523,17 +566,12 @@ export class SemanticService {
     for (const [key, list] of byField) {
       const effective = pickEffectiveRow(list);
       if (!effective) continue;
-      const enums = Array.isArray(effective.enumValues)
-        ? (effective.enumValues as Array<{ value?: unknown }>)
-            .map((e) => (typeof e?.value === 'string' ? e.value : ''))
-            .filter((v) => v !== '')
-            .slice(0, 20)
-        : undefined;
+      const enums = enumEntries(effective.enumValues).slice(0, 20);
       fieldNotes[key] = {
         role: effective.role as FieldRole,
         meaning: effective.meaning,
         unit: effective.unit ?? undefined,
-        enums: enums && enums.length > 0 ? enums : undefined,
+        enums: enums.length > 0 ? enums : undefined,
       };
     }
     return { tableMeanings, fieldNotes };
@@ -917,7 +955,9 @@ export class SemanticService {
    *
    *  Known limitation: values are sampled from the first N rows, so a
    *  dimension whose rare values live deeper in the table may cache an
-   *  incomplete enum — re-running after data growth refreshes it. */
+   *  incomplete enum — re-running after data growth refreshes it. Labels
+   *  already attached to still-sampled values survive the refresh; new
+   *  values start without one. */
   async collectEnums(datasourceId: number): Promise<EnumCollectSummary> {
     const actor = this.actor();
     const cfg = await resolveEmbeddingConfig(this.prisma);
@@ -1049,7 +1089,14 @@ export class SemanticService {
             });
             continue;
           }
-          const enumValues = distinct.map((value) => ({ value }));
+          // Keep curated labels for values that still appear; new values start
+          // label-less. Values no longer sampled are dropped by the existing
+          // whole-cache overwrite (the cache mirrors this sample).
+          const priorLabels = enumLabelMap(row.enumValues);
+          const enumValues = distinct.map((value) => {
+            const label = priorLabels.get(value);
+            return label ? { value, label } : { value };
+          });
           await this.prisma.$transaction(async (tx) => {
             const updated = await tx.fieldSemantic.update({
               where: { id: row.id },

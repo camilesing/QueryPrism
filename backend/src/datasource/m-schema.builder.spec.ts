@@ -378,7 +378,7 @@ describe('buildMSchema semantics injection (MetaDataImprove M2)', () => {
           'sales_order.order_status': {
             role: 'dimension',
             meaning: '订单状态',
-            enums: ['paid', 'refunded'],
+            enums: [{ value: 'paid', label: '已支付' }, { value: 'refunded' }],
           },
           'sales_order.amount': {
             role: 'metric',
@@ -389,7 +389,7 @@ describe('buildMSchema semantics injection (MetaDataImprove M2)', () => {
       },
     });
     expect(out).toContain(
-      'order_status varchar # [维度] 订单状态 (枚举: paid/refunded)',
+      'order_status varchar # [维度] 订单状态 (枚举: paid(已支付)/refunded)',
     );
     expect(out).toContain('amount decimal # [指标] 支付金额 (单位: 元)');
   });

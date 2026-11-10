@@ -155,6 +155,24 @@ function clarifyCandidateNames(
   );
 }
 
+/** Accumulated supplement texts from a stored clarify answer. Rows written by
+ *  the multi-round flow carry `texts` (one entry per answered round); legacy
+ *  rows only have the single `text`. */
+function clarifyAnswerTexts(answer: Prisma.JsonValue | null): string[] {
+  if (answer == null || typeof answer !== 'object' || Array.isArray(answer)) {
+    return [];
+  }
+  const raw = (answer as { texts?: unknown }).texts;
+  const texts = Array.isArray(raw)
+    ? raw
+        .filter((t): t is string => typeof t === 'string' && t.trim() !== '')
+        .map((t) => t.trim())
+    : [];
+  if (texts.length > 0) return texts;
+  const text = (answer as { text?: unknown }).text;
+  return typeof text === 'string' && text.trim() ? [text.trim()] : [];
+}
+
 /** A clarify candidate plus the actor-effective table semantic, when one
  *  exists. `comment` is kept for the deterministic gate's explicit-mention
  *  detection (needsClarify); the UI prefers `meaning` for display. */
@@ -449,7 +467,16 @@ export class ChatService {
    *  M1 rule 1). The SAME ChatRecord continues (no new record): picked tables
    *  force the schema subset; supplement text enriches the question (recall
    *  re-runs with it); skip re-runs with the pre-clarify behavior. The answer
-   *  is persisted BEFORE streaming so an abandoned stream still records it. */
+   *  is persisted BEFORE streaming so an abandoned stream still records it.
+   *
+   *  Multi-round (clarify.max_rounds > 1): supplement texts accumulate in
+   *  `clarifyAnswer.texts` and every round's text is replayed into this run's
+   *  question. Table picks are per-round — the latest answer is the schema
+   *  subset (the UI preselects the current set when asking again).
+   *
+   *  Known limitation: there is no round token in the answer, so a stale or
+   *  retried request could land on a later pending round. The UI collapses
+   *  the card once answered; adding a token would change the public DTO. */
   async *resumeClarified(
     recordId: number,
     answer: { tableIds?: number[]; text?: string; skip?: boolean },
@@ -501,6 +528,11 @@ export class ChatService {
     }
 
     const namesById = clarifyCandidateNames(record.clarify);
+    // Replay every round's supplement (legacy rows: the single `text`) so a
+    // later round never loses what the user said earlier. Table picks stay
+    // per-round.
+    const priorTexts = clarifyAnswerTexts(record.clarifyAnswer);
+    const accumulatedTexts = text ? [...priorTexts, text] : priorTexts;
     const persisted = {
       table_ids: wanted.length > 0 ? wanted : undefined,
       table_names:
@@ -508,10 +540,12 @@ export class ChatService {
           ? wanted.map((id) => namesById.get(id) ?? id)
           : undefined,
       text: text || undefined,
+      ...(accumulatedTexts.length > 0 ? { texts: accumulatedTexts } : {}),
       skip: answer.skip || undefined,
     };
     const status = answer.skip ? 'skipped' : 'answered';
-    // The clarify round is settled even if this stream dies — never re-ask.
+    // The clarify round is settled even if this stream dies. The round counter
+    // was already incremented at pause time, so a retry cannot re-ask.
     await this.prisma.chatRecord.update({
       where: { id: record.id },
       data: {
@@ -531,9 +565,9 @@ export class ChatService {
         chatMessages(this.profileLang()).chatNotFound(record.chatId),
       );
     }
-    // Supplement text joins the question for THIS run (the stored question
-    // stays immutable; later turns see the answer via getHistory).
-    const content = text ? `${record.question}\n${text}` : record.question;
+    // Supplement texts join the question for THIS run (the stored question
+    // stays immutable; later turns see every round via getHistory).
+    const content = [record.question, ...accumulatedTexts].join('\n');
 
     yield { type: 'id', data: { id: record.id } };
     try {
@@ -548,8 +582,8 @@ export class ChatService {
         return;
       }
       yield* this.runCore(
-        // clarifyStatus reflects the just-persisted answer so the gate's
-        // round budget stays spent (never re-ask after an answer).
+        // clarifyStatus reflects the just-persisted answer; clarifyRound was
+        // already bumped by pauseForClarify, so the gate's budget stays spent.
         { ...record, clarifyStatus: status },
         record.chatId,
         content,
@@ -562,6 +596,9 @@ export class ChatService {
         {
           forcedTableIds: wanted.length > 0 ? wanted : undefined,
           skipClarify: answer.skip || undefined,
+          // Keep last round's offered pool available if the LLM asks again;
+          // otherwise the second question could only offer the picked subset.
+          priorCandidateIds: clarifyCandidateIds(record.clarify),
         },
       );
     } catch (e) {
@@ -905,7 +942,11 @@ export class ChatService {
    *  (after datasource resolution), regenerate and resumeClarified delegate
    *  here. Assumes datasourceId + engine are already resolved by the caller. */
   private async *runCore(
-    record: { id: number; clarifyStatus?: string | null },
+    record: {
+      id: number;
+      clarifyStatus?: string | null;
+      clarifyRound?: number | null;
+    },
     chatId: number,
     content: string,
     datasourceId: number,
@@ -919,13 +960,21 @@ export class ChatService {
     /** Resume context (resumeClarified): forcedTableIds = the user picked the
      *  schema subset (skips keyword extraction + recall + the clarify gate);
      *  skipClarify = the user chose "just generate" (recall runs, gate stays
-     *  closed for this record). */
-    opts?: { forcedTableIds?: number[]; skipClarify?: boolean },
+     *  closed for this record); priorCandidateIds = the previous round's
+     *  offered pool, kept pickable if the LLM asks for more. */
+    opts?: {
+      forcedTableIds?: number[];
+      skipClarify?: boolean;
+      priorCandidateIds?: number[];
+    },
   ): AsyncGenerator<ChatSseEvent> {
     const msgs = chatMessages(lang);
     // Task-start retrieval snapshot (9e6070e8 ADR 0001): one read per task,
     // rules stay stable for the run's duration.
     const cfg = await resolveEmbeddingConfig(this.prisma);
+    // Pauses already spent on this record; a pause increments the column, so
+    // `rounds < clarify.max_rounds` is the real remaining-budget check.
+    const rounds = record.clarifyRound ?? 0;
     // A forced table subset means the user already chose the tables — keyword
     // extraction (an LLM call) and recall would both be wasted.
     const forcedTableIds = opts?.forcedTableIds;
@@ -999,14 +1048,35 @@ export class ChatService {
     // OPTIONS the user can pick from — they can select the full join chain
     // in one clarify answer. The gate itself keeps counting the ORIGINAL
     // pool: a bridge is a hint, not additional ambiguity.
+    //
+    // A resumed run also re-offers the previous round's pool: without it a
+    // second need_clarify could only ask the user to pick from the tables
+    // this run already stuffed, so asking for MORE would be meaningless.
+    const optionIds = new Set(clarifyPool.map((c) => c.id));
+    const optionNames = new Set(clarifyPool.map((c) => c.tableName));
+    const priorOptions = (opts?.priorCandidateIds ?? [])
+      .filter((id) => !optionIds.has(id))
+      .map((id) => tableById.get(id))
+      .filter((t): t is (typeof dsTables.tables)[number] => !!t && t.checked)
+      .filter((t) => !optionNames.has(t.tableName))
+      .map((t) => {
+        optionIds.add(t.id);
+        optionNames.add(t.tableName);
+        return {
+          id: t.id,
+          tableName: t.tableName,
+          comment: t.customComment || t.tableComment || '',
+        };
+      });
     const clarifyOptions = [
       ...clarifyPool,
+      ...priorOptions,
       ...joinBridgeTables(
         relationEdges,
         clarifyPool.map((c) => c.tableName),
         checkedTableNames,
       )
-        .filter((n) => !clarifyPool.some((c) => c.tableName === n))
+        .filter((n) => !optionNames.has(n))
         .map((n) => tableByName.get(n))
         .filter((t): t is (typeof dsTables.tables)[number] => !!t)
         .map((t) => ({
@@ -1064,17 +1134,17 @@ export class ChatService {
 
     // --- clarify gate (MetaDataImprove M1 rule 1) ------------------------
     // The no-valid-semantics fallback: ≥ threshold candidate tables about to
-    // be stuffed, nothing explicitly mentioned and rule 2 did not resolve it
-    // → pause and ask the user instead of guessing — one wrong table breaks
-    // the join. Known limitation: multi-turn follow-ups can also trip the
-    // gate; mitigate via clarify.enabled / skip.
+    // be stuffed, nothing explicitly mentioned, rule 2 did not resolve it and
+    // the record's round budget still has room → pause and ask the user
+    // instead of guessing — one wrong table breaks the join. Known
+    // limitation: multi-turn follow-ups can also trip the gate; mitigate via
+    // clarify.enabled / skip.
     if (!forcedTableIds && !semanticNarrowed && !opts?.skipClarify) {
-      const asked = record.clarifyStatus ? 1 : 0;
       if (
         needsClarify(clarifyPool, content, {
           enabled: cfg.clarifyEnabled,
           tableThreshold: cfg.clarifyTableThreshold,
-          rounds: asked,
+          rounds,
           maxRounds: cfg.clarifyMaxRounds,
         })
       ) {
@@ -1185,10 +1255,11 @@ export class ChatService {
       const meaning = clarifyAnnotations?.tableMeanings[o.tableName];
       return meaning ? { ...o, meaning } : o;
     });
-    // Only the first pass can pause again (one clarify round today); skip the
-    // extra prompt block once an answer exists.
+    // While the round budget has room the LLM may name more tables via
+    // need_clarify; once it is spent (or the user chose skip) the block would
+    // only invite a pause that cannot happen, so keep it out of the prompt.
     const candidateTablesText =
-      !record.clarifyStatus && tableIds
+      !opts?.skipClarify && rounds < cfg.clarifyMaxRounds && tableIds
         ? this.renderCandidateTables(decoratedClarifyOptions, stuffedIds)
         : '';
 
@@ -1270,17 +1341,18 @@ export class ChatService {
 
     // --- LLM-declared insufficiency (rule 2 need_clarify) -----------------
     // The narrowed schema cannot answer; instead of forcing a wrong query the
-    // LLM asks for more tables. Honored ONLY on a first pass — after the user
-    // already picked tables / skipped, re-asking would loop, so it fails
-    // honestly instead. The LLM call itself completed fine — endLog (not
-    // triggerLogError) so the log row closes cleanly.
+    // LLM asks for more tables. Honored while the record's round budget has
+    // room (max_rounds > 1) and the user did not choose skip; once spent,
+    // re-asking would loop, so it fails honestly instead. The LLM call itself
+    // completed fine — endLog (not triggerLogError) so the log row closes
+    // cleanly.
     if (sqlResult?.needClarify) {
       await this.endLog(sqlLogId, {
         reasoning: sqlReasoning,
         messages: this.appendAiMessage(sqlMessages, sqlContent),
         tokenUsage: sqlTokenUsage,
       });
-      if (record.clarifyStatus) {
+      if (opts?.skipClarify || rounds >= cfg.clarifyMaxRounds) {
         yield* this.fail(record.id, msgs.sqlSchemaInsufficient);
         return;
       }
@@ -1651,11 +1723,13 @@ export class ChatService {
 
   /** Persist the pending-clarify state + emit the clarify frame and the
    *  terminal finish (the record stays finish:false + clarifyStatus:'pending'
-   *  until the user answers via /chat/record/:rid/clarify). `reason` carries
-   *  the LLM's one-liner when the pause comes from the need_clarify contract
-   *  (rule 2) rather than the deterministic gate (rule 1). `suggestedTableIds`
-   *  is advisory preselection (current schema + LLM-named tables, capped at
-   *  maxSelect); the resume endpoint still enforces the cap. */
+   *  until the user answers via /chat/record/:rid/clarify). Also increments
+   *  clarifyRound, so the budget check on the next pass sees this pause even
+   *  if the stream dies here. `reason` carries the LLM's one-liner when the
+   *  pause comes from the need_clarify contract (rule 2) rather than the
+   *  deterministic gate (rule 1). `suggestedTableIds` is advisory preselection
+   *  (current schema + LLM-named tables, capped at maxSelect); the resume
+   *  endpoint still enforces the cap. */
   private async *pauseForClarify(
     recordId: number,
     question: string,
@@ -1683,6 +1757,9 @@ export class ChatService {
       data: {
         clarify: payload,
         clarifyStatus: 'pending',
+        // One pause = one spent round; the resume gate/need_clarify checks
+        // read this column instead of inferring from clarifyStatus.
+        clarifyRound: { increment: 1 },
       },
     });
     yield { type: 'clarify', data: { record_id: recordId, ...payload } };
@@ -2593,8 +2670,9 @@ export class ChatService {
         `涉及表：${tableNames.filter((n): n is string => typeof n === 'string').join('、')}`,
       );
     }
-    const text = (a as { text?: unknown }).text;
-    if (typeof text === 'string' && text.trim()) extras.push(text.trim());
+    // Every round's supplement (legacy rows: the single `text`), so later
+    // turns inherit the full clarification instead of only the last round.
+    extras.push(...clarifyAnswerTexts(a));
     return extras.length ? `${r.question}（${extras.join('；')}）` : r.question;
   }
 

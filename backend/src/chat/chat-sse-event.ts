@@ -54,7 +54,9 @@ export interface ChatSseEventMap {
   // found >= threshold candidate tables and the question names none of them.
   // The stream then terminates with `finish` (the record stays finish:false
   // + clarifyStatus:'pending' in the DB); the user answers via
-  // POST /chat/record/:rid/clarify which re-streams the same record.
+  // POST /chat/record/:rid/clarify which re-streams the same record. While
+  // the record's clarify-round budget remains (clarify.max_rounds > 1) a
+  // resumed run may pause again with a new frame for the same record.
   // `reason` is present when the pause came from the LLM's need_clarify
   // contract (M2 rule 2) — its one-liner about what the schema is missing.
   // `meaning` is the effective table semantic (falls back to `comment` in the

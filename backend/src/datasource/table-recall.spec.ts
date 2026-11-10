@@ -226,6 +226,17 @@ describe('needsClarify (clarify gate)', () => {
     expect(needsClarify(pool, '统计一下整体情况', gate(1))).toBe(false);
   });
 
+  it('keeps asking while a multi-round budget has room', () => {
+    const multi = gate(0, { maxRounds: 2 });
+    expect(needsClarify(pool, '统计一下整体情况', multi)).toBe(true);
+    expect(
+      needsClarify(pool, '统计一下整体情况', { ...multi, rounds: 1 }),
+    ).toBe(true);
+    expect(
+      needsClarify(pool, '统计一下整体情况', { ...multi, rounds: 2 }),
+    ).toBe(false);
+  });
+
   it('does not ask when the gate is disabled', () => {
     expect(
       needsClarify(pool, '统计一下整体情况', gate(0, { enabled: false })),

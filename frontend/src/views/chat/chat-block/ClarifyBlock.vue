@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ChatRecord } from '@/api/chat.ts'
 
@@ -66,6 +66,17 @@ const selected = ref<number[]>(
     .slice(0, maxSelect.value)
 )
 const supplement = ref('')
+
+/** A multi-round pause replaces `record.clarify` on the SAME component (the
+ *  parent reuses this record), so setup-time state would leak into round 2:
+ *  stale picks may no longer be candidates (400) and the previous supplement
+ *  would be submitted again. Reset whenever a new payload arrives. */
+watch(payload, () => {
+  selected.value = suggestedList.value
+    .filter((id) => candidates.value.some((c) => c.table_id === id))
+    .slice(0, maxSelect.value)
+  supplement.value = ''
+})
 
 const canSubmit = computed(() => selected.value.length > 0 || supplement.value.trim().length > 0)
 

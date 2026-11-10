@@ -54,7 +54,8 @@ export interface ChatRecordSnake {
   total_tokens: number | null;
   /** Clarify round (MetaDataImprove M1) — pass-through Json blobs + status:
    *  clarify = {question, candidates:[{table_id,table_name,comment}],
-   *  max_select}; clarify_answer = {table_ids?, table_names?, text?, skip?};
+   *  max_select}; clarify_answer = {table_ids?, table_names?, text?, texts?,
+   *  skip?} (texts accumulates one supplement per answered round);
    *  clarify_status = pending | answered | skipped | null. */
   clarify: unknown;
   clarify_answer: unknown;

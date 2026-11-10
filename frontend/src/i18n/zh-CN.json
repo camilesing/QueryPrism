@@ -124,7 +124,7 @@
     "clarify_max_select": "澄清最多可选表数",
     "clarify_max_select_hint": "用户一次澄清回答中最多可选择的表数量",
     "clarify_max_rounds": "澄清最大轮数",
-    "clarify_max_rounds_hint": "每个问题的澄清轮数上限；为 1 时首次回答后不再反问",
+    "clarify_max_rounds_hint": "每个问题的澄清轮数上限；为 1 时首次回答后不再反问，大于 1 时预算内可继续反问且补充说明跨轮累积",
     "clarify_settings": "反问收敛（澄清）设置",
     "semantic_enabled": "语义收敛（默认单表）",
     "semantic_enabled_hint": "候选表已有业务含义时，仅把语义覆盖的前 N 张表放入 SQL 提示词",

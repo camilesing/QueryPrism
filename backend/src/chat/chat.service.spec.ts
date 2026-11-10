@@ -1037,6 +1037,56 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     expect(m.prisma.chatRecord.update).not.toHaveBeenCalled();
   });
 
+  // MetaDataImprove M1 multi-round: every supplement is replayed into the
+  // next run's question and persisted as `texts` (legacy rows only have
+  // `text`, so the fallback path is covered here).
+  it('accumulates supplement texts across clarify rounds on resume', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue({
+      id: 100,
+      chatId: 1,
+      oid: 1,
+      createBy: 1,
+      question: '统计一下',
+      clarify: {
+        record_id: 100,
+        question: '统计一下',
+        max_select: 3,
+        candidates: [{ table_id: 1, table_name: 'users', comment: '' }],
+      },
+      clarifyStatus: 'pending',
+      clarifyRound: 1,
+      clarifyAnswer: { text: '上一轮说明' },
+    });
+
+    await run(1, () =>
+      collect(
+        m.service.resumeClarified(100, {
+          tableIds: [1],
+          text: '这一轮说明',
+        }),
+      ),
+    );
+
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: '统计一下\n上一轮说明\n这一轮说明',
+      }),
+    );
+    expect(m.prisma.chatRecord.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 100 },
+        data: expect.objectContaining({
+          clarifyStatus: 'answered',
+          clarifyAnswer: expect.objectContaining({
+            texts: ['上一轮说明', '这一轮说明'],
+          }),
+        }),
+      }),
+    );
+  });
+
   // MetaDataImprove M3: the relation editor's X6 cells resolve into FK edges
   // (M3.1) and a ≤2-hop bridge table joins the stuffed schema (M3.2) so the
   // LLM can write users←orders→products joins without hallucinating.
@@ -1206,6 +1256,17 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       (c: { table_name: string }) => c.table_name,
     );
     expect(names).toContain('orders');
+    // A pause spends one clarify round (the persisted counter drives the
+    // next pass's budget check, not clarifyStatus).
+    expect(m.prisma.chatRecord.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 100 },
+        data: expect.objectContaining({
+          clarifyStatus: 'pending',
+          clarifyRound: { increment: 1 },
+        }),
+      }),
+    );
     expect(m.aiQuestionService.buildSqlContext).not.toHaveBeenCalled();
   });
 

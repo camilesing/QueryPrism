@@ -401,6 +401,119 @@ describe('Chat semantic rule 2 (e2e)', () => {
     }
   });
 
+  it('asks a second need_clarify under max_rounds=2 and keeps earlier options', async () => {
+    await prisma.systemVariable.deleteMany({
+      where: { name: 'clarify.max_rounds' },
+    });
+    await prisma.systemVariable.create({
+      data: {
+        type: 'parameter',
+        varType: 'int',
+        name: 'clarify.max_rounds',
+        value: 2,
+      },
+    });
+    sqlMode = 'need_clarify';
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId, '查一下sales_order的金额');
+      const rid = recordIdFromSse(q.text);
+      let record = await prisma.chatRecord.findUnique({
+        where: { id: rid },
+      });
+      expect(record!.clarifyRound).toBe(1);
+
+      // Round 1 answer picks one table; the LLM still asks for more and the
+      // round budget (2) allows a second pause.
+      const second = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [2] });
+      expect(second.status).toBe(200);
+      const clarify2 = sseFrames(second.text).find((f) => f.type === 'clarify');
+      expect(clarify2).toBeDefined();
+      expect(clarify2!.reason).toBe('需要客户表 join');
+      // The previous round's pool is re-offered, not just the picked subset.
+      const names = (clarify2!.candidates as Array<{ table_name: string }>).map(
+        (c) => c.table_name,
+      );
+      expect(names).toEqual(
+        expect.arrayContaining(['sales_order', 'crm_customer', 'inv_stock']),
+      );
+
+      record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      expect(record!.clarifyRound).toBe(2);
+      expect(record!.clarifyStatus).toBe('pending');
+
+      // Budget spent → the next answer generates SQL instead of asking again.
+      sqlMode = 'sql';
+      const third = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [1, 2] });
+      expect(third.status).toBe(200);
+      expect(third.text).toContain('"type":"sql"');
+      expect(capturedTableIds).toEqual([1, 2]);
+
+      record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      expect(record!.clarifyRound).toBe(2);
+      expect(record!.clarifyStatus).toBe('answered');
+      expect(record!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+      await prisma.systemVariable.deleteMany({
+        where: { name: 'clarify.max_rounds' },
+      });
+    }
+  });
+
+  it('skip still suppresses need_clarify under max_rounds=2', async () => {
+    await prisma.systemVariable.deleteMany({
+      where: { name: 'clarify.max_rounds' },
+    });
+    await prisma.systemVariable.create({
+      data: {
+        type: 'parameter',
+        varType: 'int',
+        name: 'clarify.max_rounds',
+        value: 2,
+      },
+    });
+    sqlMode = 'need_clarify';
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId, '查一下sales_order的金额');
+      const rid = recordIdFromSse(q.text);
+
+      // "Just generate" is a user decision: a remaining round budget must not
+      // override it with another question.
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ skip: true });
+      expect(res.status).toBe(200);
+      const frames = sseFrames(res.text);
+      expect(frames.some((f) => f.type === 'clarify')).toBe(false);
+      expect(frames.some((f) => f.type === 'error')).toBe(true);
+
+      const record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      expect(record!.clarifyStatus).toBe('skipped');
+      expect(record!.clarifyRound).toBe(1);
+      expect(record!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+      await prisma.systemVariable.deleteMany({
+        where: { name: 'clarify.max_rounds' },
+      });
+    }
+  });
+
   it('need_clarify suggests recalled tables and shows their meanings', async () => {
     sqlMode = 'need_clarify';
     needClarifyTables = ['crm_customer'];

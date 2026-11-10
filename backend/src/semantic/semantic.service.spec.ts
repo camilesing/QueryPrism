@@ -392,7 +392,7 @@ describe('SemanticService.effectiveAnnotations', () => {
         role: 'dimension',
         meaning: '订单状态',
         unit: null,
-        enumValues: [{ value: 'paid' }, { value: 'refunded' }],
+        enumValues: [{ value: 'paid', label: '已支付' }, { value: 'refunded' }],
       },
     ]);
     const out = await withUser(MEMBER, () =>
@@ -403,7 +403,7 @@ describe('SemanticService.effectiveAnnotations', () => {
       role: 'dimension',
       meaning: '订单状态',
       unit: undefined,
-      enums: ['paid', 'refunded'],
+      enums: [{ value: 'paid', label: '已支付' }, { value: 'refunded' }],
     });
   });
 
@@ -539,6 +539,36 @@ describe('SemanticService.collectEnums (MetaDataImprove M3.3)', () => {
       },
     ]);
     expect(summary.skipped).toEqual([]);
+  });
+
+  it('preserves labels of still-sampled values and drops absent ones', async () => {
+    const sampleDistinct = jest.fn().mockResolvedValue(['refunded', 'paid']);
+    const { service, prisma } = makeService(
+      makePrisma(),
+      makeDatasourceService(sampleDistinct),
+    );
+    prisma.fieldSemantic.findMany.mockResolvedValue([
+      dimensionRow({
+        enumValues: [
+          { value: 'paid', label: '已支付' },
+          { value: 'void', label: '作废' },
+          // malformed legacy entry — must not break the run
+          'legacy-string',
+        ],
+      }),
+    ]);
+    prisma.fieldSemantic.update.mockResolvedValue(dimensionRow());
+
+    await withUser(WS_ADMIN, () => service.collectEnums(3));
+
+    // paid keeps its curated label; refunded is new; void was not sampled.
+    expect(prisma.fieldSemantic.update).toHaveBeenCalledWith({
+      where: { id: 77 },
+      data: {
+        enumValues: [{ value: 'paid', label: '已支付' }, { value: 'refunded' }],
+        version: { increment: 1 },
+      },
+    });
   });
 
   it('skips fields above the cardinality cap and never writes them', async () => {

@@ -45,7 +45,9 @@ export interface EmbeddingConfig {
   clarifyTableThreshold: number;
   /** Max tables the user may pick in one clarify answer. */
   clarifyMaxSelect: number;
-  /** Max clarify rounds per record (1 = never re-ask after an answer). */
+  /** Max clarify pauses per record. 1 (default) = never re-ask after the
+   *  first answer; >1 lets the gate/need_clarify ask again until the budget
+   *  is spent (supplement texts accumulate across rounds). */
   clarifyMaxRounds: number;
   /** Semantic layer (MetaDataImprove M2 rule 2): when candidate tables have
    *  effective semantics, stuff only the top semantic.max_tables of them. */
@@ -260,8 +262,8 @@ function envDefaults(): EmbeddingConfig {
       1,
       Math.floor(envNumber('CLARIFY_MAX_SELECT', undefined, 3)),
     ),
-    // >=1 rounds; a value of 1 (default) means the pipeline never re-asks
-    // after the user's first answer (skip / pick / supplement all count).
+    // >=1 pauses per record; 1 (default) never re-asks after the user's first
+    // answer. >1 lets the gate/need_clarify ask again while budget remains.
     clarifyMaxRounds: Math.max(
       1,
       Math.floor(envNumber('CLARIFY_MAX_ROUNDS', undefined, 1)),

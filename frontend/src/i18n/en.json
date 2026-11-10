@@ -124,7 +124,7 @@
     "clarify_max_select": "Clarify max table picks",
     "clarify_max_select_hint": "Max tables the user may pick in one clarify answer",
     "clarify_max_rounds": "Clarify max rounds",
-    "clarify_max_rounds_hint": "Clarify rounds per question; 1 never re-asks after the first answer",
+    "clarify_max_rounds_hint": "Clarify rounds per question; 1 never re-asks after the first answer, while >1 can ask again while budget remains and accumulates supplements across rounds",
     "clarify_settings": "Ask-to-narrow (clarify) settings",
     "semantic_enabled": "Semantic schema narrowing",
     "semantic_enabled_hint": "When candidate tables carry recorded meanings, stuff only the top semantic.max_tables of them into the SQL prompt",
