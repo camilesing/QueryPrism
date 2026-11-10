@@ -114,6 +114,7 @@ function makeService() {
     chatRecord: {
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
     },
@@ -249,6 +250,8 @@ function happyMocks(m: ReturnType<typeof makeService>) {
     datasourceId: 1,
   });
   m.prisma.chatRecord.update.mockResolvedValue({ id: 100 });
+  // Clarify answers claim the pending row; the default matches the happy path.
+  m.prisma.chatRecord.updateMany.mockResolvedValue({ count: 1 });
   m.prisma.chatRecord.findMany.mockResolvedValue([]); // no prior history
   m.prisma.chatLog.create.mockResolvedValue({ id: 1 });
   m.prisma.chatLog.update.mockResolvedValue({ id: 1 });
@@ -1034,7 +1037,7 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       ),
     ).rejects.toThrow('最多只能选择 1 张表');
     // The rejected answer is not persisted.
-    expect(m.prisma.chatRecord.update).not.toHaveBeenCalled();
+    expect(m.prisma.chatRecord.updateMany).not.toHaveBeenCalled();
   });
 
   // MetaDataImprove M1 multi-round: every supplement is replayed into the
@@ -1074,9 +1077,9 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
         question: '统计一下\n上一轮说明\n这一轮说明',
       }),
     );
-    expect(m.prisma.chatRecord.update).toHaveBeenCalledWith(
+    expect(m.prisma.chatRecord.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 100 },
+        where: { id: 100, oid: 1, clarifyStatus: 'pending' },
         data: expect.objectContaining({
           clarifyStatus: 'answered',
           clarifyAnswer: expect.objectContaining({
@@ -1085,6 +1088,62 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
         }),
       }),
     );
+  });
+
+  // Double-click / network retry: the conditional claim is the answer's only
+  // writer, so exactly one request runs the pipeline and the other gets the
+  // same 400 as an already-settled record.
+  it('claims a pending clarify answer only once (concurrent resumes)', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue({
+      id: 100,
+      chatId: 1,
+      oid: 1,
+      createBy: 1,
+      question: '统计一下',
+      clarify: {
+        record_id: 100,
+        question: '统计一下',
+        max_select: 3,
+        candidates: [{ table_id: 1, table_name: 'users', comment: '' }],
+      },
+      clarifyStatus: 'pending',
+      clarifyRound: 1,
+    });
+    let pending = true;
+    m.prisma.chatRecord.updateMany.mockImplementation(
+      (args: {
+        where: { id?: number; oid?: number; clarifyStatus?: string };
+      }) => {
+        const where = args.where;
+        if (
+          where.id !== 100 ||
+          where.oid !== 1 ||
+          where.clarifyStatus !== 'pending' ||
+          !pending
+        ) {
+          return Promise.resolve({ count: 0 });
+        }
+        pending = false;
+        return Promise.resolve({ count: 1 });
+      },
+    );
+
+    const results = await run(1, () =>
+      Promise.allSettled([
+        collect(m.service.resumeClarified(100, { tableIds: [1] })),
+        collect(m.service.resumeClarified(100, { tableIds: [1] })),
+      ]),
+    );
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    );
+    expect(rejected?.reason).toBeInstanceOf(BadRequestException);
+    // Only the winner reached the SQL step.
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledTimes(1);
   });
 
   // MetaDataImprove M3: the relation editor's X6 cells resolve into FK edges

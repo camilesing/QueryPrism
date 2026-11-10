@@ -438,6 +438,40 @@ describe('Chat clarify (e2e)', () => {
     }
   });
 
+  it('claims a concurrent resume only once (one 200, one 400)', async () => {
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId);
+      const rid = recordIdFromSse(q.text);
+      // Two submits for the same pending record; whichever loses the
+      // conditional claim must not stream or run the pipeline.
+      const [a, b] = await Promise.all([
+        request(app.getHttpServer())
+          .post(`/api/v1/chat/record/${rid}/clarify`)
+          .set(TOKEN_HEADER, token)
+          .send({ table_ids: [1] }),
+        request(app.getHttpServer())
+          .post(`/api/v1/chat/record/${rid}/clarify`)
+          .set(TOKEN_HEADER, token)
+          .send({ table_ids: [2] }),
+      ]);
+      expect([a.status, b.status].sort()).toEqual([200, 400]);
+      const rejected = a.status === 400 ? a : b;
+      expect(rejected.headers['content-type']).toContain('text/plain');
+
+      const record = await prisma.chatRecord.findUnique({
+        where: { id: rid },
+      });
+      expect(record!.clarifyStatus).toBe('answered');
+      expect(record!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
   it('rejects a clarify answer on a record that is not pending (400)', async () => {
     const chatId = await startChat();
     try {

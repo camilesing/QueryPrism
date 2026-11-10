@@ -474,9 +474,10 @@ export class ChatService {
    *  question. Table picks are per-round — the latest answer is the schema
    *  subset (the UI preselects the current set when asking again).
    *
-   *  Known limitation: there is no round token in the answer, so a stale or
-   *  retried request could land on a later pending round. The UI collapses
-   *  the card once answered; adding a token would change the public DTO. */
+   *  The pending round is claimed with ONE conditional update
+   *  (`clarifyStatus='pending'` + oid) before any streaming, so a duplicate
+   *  submit/retry cannot run the pipeline twice: the loser matches 0 rows and
+   *  gets a plain-text 400. The update is the answer's only writer. */
   async *resumeClarified(
     recordId: number,
     answer: { tableIds?: number[]; text?: string; skip?: boolean },
@@ -544,15 +545,27 @@ export class ChatService {
       skip: answer.skip || undefined,
     };
     const status = answer.skip ? 'skipped' : 'answered';
-    // The clarify round is settled even if this stream dies. The round counter
-    // was already incremented at pause time, so a retry cannot re-ask.
-    await this.prisma.chatRecord.update({
-      where: { id: record.id },
+    // Claim the pending round BEFORE any streaming: this conditional update is
+    // the answer's only writer, so two concurrent resumes (double-click or a
+    // retry) run the pipeline exactly once. The loser matches 0 rows and gets
+    // the same 400 as an already-settled record — it cannot tell whether it
+    // lost a race or arrived late, and it must not touch the record.
+    const claimed = await this.prisma.chatRecord.updateMany({
+      where: {
+        id: record.id,
+        oid,
+        clarifyStatus: 'pending',
+      },
       data: {
         clarifyAnswer: persisted,
         clarifyStatus: status,
       },
     });
+    if (claimed.count === 0) {
+      throw new BadRequestException(
+        chatMessages(this.profileLang()).recordNotClarifying(recordId),
+      );
+    }
 
     // The resume follows the source question's language.
     const lang = this.detectLang(record.question);
