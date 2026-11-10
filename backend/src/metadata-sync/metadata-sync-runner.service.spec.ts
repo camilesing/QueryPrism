@@ -1,5 +1,5 @@
 // Runner tests: actor revalidation, target dispatch, run persistence and the
-// per-source concurrency guard (MetaDataImprove M5).
+// per-source FIFO queue (MetaDataImprove M5).
 import type { MetadataSyncSource } from '@prisma/client';
 import { setI18n } from '../common/i18n/translate';
 import { createTestI18n } from '../common/i18n/test-i18n';
@@ -226,25 +226,91 @@ describe('MetadataSyncRunnerService', () => {
     );
   });
 
-  it('rejects a concurrent run of the same source', async () => {
+  it('queues a second run of the same source behind the first', async () => {
     const m = makeRunner();
     m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
     m.prisma.user.findUnique.mockResolvedValue(ADMIN);
-    let release: (rows: unknown[]) => void = () => undefined;
+    const pending: Array<(rows: unknown[]) => void> = [];
     m.fetchService.fetchRows.mockImplementation(
       () =>
         new Promise<unknown[]>((resolve) => {
-          release = resolve;
+          pending.push(resolve);
+        }),
+    );
+    m.semanticImport.importJson.mockResolvedValue({ applied: 1, failed: [] });
+
+    const first = m.runner.run(1, 'manual');
+    // Let the first run reach its fetch await before the second is queued.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = m.runner.run(1, 'manual');
+
+    // While the first fetch is unresolved, the queued trigger must stay
+    // parked. Without the FIFO chain it would reach fetchRows within a few
+    // microtasks, so this window is what makes the assertion meaningful.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(pending).toHaveLength(1);
+
+    pending[0]([{ table_name: 'first' }]);
+    await expect(first).resolves.toMatchObject({ status: 'success' });
+    // The queued trigger starts only after the first one settles.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pending).toHaveLength(2);
+
+    pending[1]([{ table_name: 'second' }]);
+    await expect(second).resolves.toMatchObject({ status: 'success' });
+
+    expect(m.semanticImport.importJson).toHaveBeenNthCalledWith(1, [
+      { table_name: 'first' },
+    ]);
+    expect(m.semanticImport.importJson).toHaveBeenNthCalledWith(2, [
+      { table_name: 'second' },
+    ]);
+  });
+
+  it('keeps the queue alive after a failed run', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.user.findUnique.mockResolvedValue(ADMIN);
+    m.fetchService.fetchRows
+      .mockRejectedValueOnce(new Error('HTTP 500'))
+      .mockResolvedValueOnce([{ table_name: 'ok' }]);
+    m.semanticImport.importJson.mockResolvedValue({ applied: 1, failed: [] });
+
+    const first = m.runner.run(1, 'manual');
+    const second = m.runner.run(1, 'manual');
+
+    // The failure belongs to its own caller only; the next trigger still runs.
+    await expect(first).rejects.toThrow('HTTP 500');
+    await expect(second).resolves.toMatchObject({ status: 'success' });
+    expect(m.fetchService.fetchRows).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not serialize runs of different sources', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockImplementation(
+      (args: { where: { id: number } }) =>
+        Promise.resolve(source({ id: args.where.id })),
+    );
+    m.prisma.user.findUnique.mockResolvedValue(ADMIN);
+    const pending: Array<(rows: unknown[]) => void> = [];
+    m.fetchService.fetchRows.mockImplementation(
+      () =>
+        new Promise<unknown[]>((resolve) => {
+          pending.push(resolve);
         }),
     );
     m.semanticImport.importJson.mockResolvedValue({ applied: 0, failed: [] });
 
     const first = m.runner.run(1, 'manual');
-    // Let the first run pass findUnique/update and reach the fetch await.
+    const second = m.runner.run(2, 'manual');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await expect(m.runner.run(1, 'manual')).rejects.toThrow('already running');
-    release([]);
-    await first;
+
+    // Separate queues: both sources fetch without waiting for one another.
+    expect(m.fetchService.fetchRows).toHaveBeenCalledTimes(2);
+
+    pending[0]([]);
+    pending[1]([]);
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
   });
 
   it('enforces the 5000-row pull cap before importing', async () => {

@@ -2,6 +2,13 @@
 // admin, fetch the batch, then reuse the existing /meta import services so
 // validation/upsert/versioning stay in ONE place. Manual and cron triggers
 // share this path; every attempt is persisted as a MetadataSyncRun.
+// Triggers are serialized per source through an in-process FIFO queue: a run
+// waits for the ones already queued for the same source instead of failing,
+// while different sources still run in parallel.
+// KNOWN LIMITATION: the queue lives in this process (single-instance
+// assumption, see the scheduler), so a second replica would keep its own
+// queue. It is unbounded, but each run is capped by the fetch timeout, so a
+// backlog drains rather than growing without bound at normal cron intervals.
 
 import {
   BadRequestException,
@@ -50,9 +57,9 @@ export interface ImportOutcome {
 @Injectable()
 export class MetadataSyncRunnerService {
   private readonly logger = new Logger(MetadataSyncRunnerService.name);
-  /** Per-source in-process guard. Single-instance assumption (documented in
-   *  the scheduler): a second replica would run its own copy. */
-  private readonly running = new Set<number>();
+  /** FIFO tail per source id: `run` chains onto the previous promise, so
+   *  concurrent triggers execute one after another in arrival order. */
+  private readonly tails = new Map<number, Promise<unknown>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -62,10 +69,26 @@ export class MetadataSyncRunnerService {
     private readonly audit: AuditService,
   ) {}
 
-  async run(sourceId: number, trigger: SyncTrigger): Promise<SyncRunResult> {
-    if (this.running.has(sourceId)) {
-      throw new BadRequestException(tr('metadata-sync.already_running'));
-    }
+  run(sourceId: number, trigger: SyncTrigger): Promise<SyncRunResult> {
+    const previous = this.tails.get(sourceId) ?? Promise.resolve();
+    const job = previous
+      // A failed run rejects only its own caller: swallowing the previous
+      // outcome here keeps the queue alive for the triggers behind it.
+      .catch(() => undefined)
+      .then(() => this.execute(sourceId, trigger));
+    this.tails.set(sourceId, job);
+    const clear = (): void => {
+      if (this.tails.get(sourceId) === job) this.tails.delete(sourceId);
+    };
+    // Empty tail when the last queued run settles (fulfilled or rejected).
+    void job.then(clear, clear);
+    return job;
+  }
+
+  private async execute(
+    sourceId: number,
+    trigger: SyncTrigger,
+  ): Promise<SyncRunResult> {
     const source = await this.prisma.metadataSyncSource.findUnique({
       where: { id: sourceId },
     });
@@ -74,7 +97,6 @@ export class MetadataSyncRunnerService {
         tr('metadata-sync.not_found', { id: sourceId }),
       );
     }
-    this.running.add(sourceId);
     const startedAt = new Date();
     await this.prisma.metadataSyncSource.update({
       where: { id: sourceId },
@@ -181,8 +203,6 @@ export class MetadataSyncRunnerService {
       // scheduler. Never leak auth headers: messages only carry the URL/status
       // produced by the fetch service.
       throw new BadRequestException(msg);
-    } finally {
-      this.running.delete(sourceId);
     }
   }
 

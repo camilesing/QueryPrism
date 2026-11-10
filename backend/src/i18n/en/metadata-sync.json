@@ -8,7 +8,6 @@
   "invalid_target": "Unsupported sync target",
   "missing_tool": "MCP sources require a tool name",
   "auth_invalid": "Invalid authentication configuration",
-  "already_running": "This sync source is already running",
   "run_as_invalid": "The sync source owner is no longer a workspace admin",
   "http_status": "External API returned HTTP {{status}}",
   "invalid_payload": "The external source must return a JSON array or {data: [...]}",

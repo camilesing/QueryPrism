@@ -208,7 +208,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 - **维度枚举（M3）**: `role=dimension` 字段一键枚举采集——有界 DISTINCT 采样（`semantic.enum_scan_rows`，默认 10000）+ 低基数校验（`semantic.enum_max_values`，默认 50），回填带版本的 `enumValues` 缓存；按数据源限流 `semantic.enum_cooldown`（默认 60 秒）。重新采集时仍被采样到的值保留已有 `value|label` 标签，SQL 提示词按 `value(label)` 渲染。字段语义页管理按钮，`POST /system/semantic/collect_enum/:datasource_id`
 - **指标体系（M4）**: 原子指标（绑定字段的聚合度量）、修饰词（统计范围过滤条件）、时间周期、派生指标与复合指标（对派生/复合指标编码做四则运算）——复用 M2 的三层 scope、审批队列与版本历史。问题命中指标（名称/别名）时，完整统计口径注入 generate_sql 提示词并强制纳入所需表（`metric.enabled` 开关，上限 `metric.max_definitions`，默认 5）。录入渠道：管理页（`/set/metric`）、六 sheet Excel 导入导出、API Key 认证的 `POST /meta/metric/import` 与 `POST /meta/standard/import`；导入行支持 `scope`（默认工作空间）与 `enabled`，遵循同样的逐层权限规则，导出包含 `scope` 列。匹配以字面优先：名称/别名命中永远优先，其后由指标向量（collection `vec_metric_def`，写入/审批后增量建索引、启动与手动回填补齐 NULL 行）补充剩余 `metric.max_definitions` 空位，只纳入余弦相似度严格高于 `metric.similarity_threshold`（默认 0.55）的原子指标；派生/复合指标仍需字面命中。embedding 或 pgvector 不可用时自动退化为纯字面匹配并记日志。复合指标为简单四则运算版，更深的组合留作后续扩展
 - **数据标准（M4）**: 度量单位字典（advisory——供管理与自动补全）与命名词典（业务词/词根 → 标准译名），同一治理栈；命名词典命中时将 `<naming_rules>` 注入 SQL 提示词（`naming.enabled` 可关）
-- **外部元数据同步（M5）**: 空间管理员可在 `/set/metadata-sync` 配置 HTTP API 或 MCP 拉取源，按与 `/meta/*` 相同的行格式导入（行可携带 `scope`；运行身份需具备目标层级的直接写权限），支持 5 段 cron 定时或立即执行；凭据 AES 加密且不回传，每次运行记录成功/失败行数与逐行失败明细。调度器按单实例设计（已知限制）
+- **外部元数据同步（M5）**: 空间管理员可在 `/set/metadata-sync` 配置 HTTP API 或 MCP 拉取源，按与 `/meta/*` 相同的行格式导入（行可携带 `scope`；运行身份需具备目标层级的直接写权限），支持 5 段 cron 定时或立即执行；凭据 AES 加密且不回传，每次运行记录成功/失败行数与逐行失败明细。同一同步源的并发触发通过进程内 FIFO 队列串行执行，第二次触发会排队等待而不是重复运行。调度器按单实例设计（已知限制）
 
 ## 开发注意事项
 

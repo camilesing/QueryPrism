@@ -8,7 +8,6 @@
   "invalid_target": "不支持的同步目标",
   "missing_tool": "MCP 同步源必须填写工具名",
   "auth_invalid": "认证配置不合法",
-  "already_running": "该同步源正在运行中",
   "run_as_invalid": "同步源创建者已不是空间管理员",
   "http_status": "外部接口返回 HTTP {{status}}",
   "invalid_payload": "外部数据必须是 JSON 数组或 {data: [...]}",

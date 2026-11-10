@@ -2,6 +2,8 @@
 // Uses the `cron` package directly (CommonJS) rather than @nestjs/schedule's
 // ESM-only wrapper, keeping the Jest/ts-jest unit suite runnable.
 // Jobs are keyed by source id and refreshed on CRUD.
+// The runner serializes triggers per source in-process (FIFO queue), so one
+// replica never overlaps two runs of the same source.
 // KNOWN LIMITATION: this is a single-instance scheduler — every replica
 // registers its own copy, so a multi-instance deployment would trigger the
 // same source more than once. Add a DB/advisory lock before scaling out.
