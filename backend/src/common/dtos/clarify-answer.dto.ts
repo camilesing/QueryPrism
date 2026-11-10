@@ -30,6 +30,14 @@ export class ClarifyAnswerDto {
   @IsBoolean()
   skip?: boolean;
 
+  /** Round token echoed from the clarify frame / stored clarify payload.
+   *  Optional: pre-token clients omit it and fall back to the legacy
+   *  status-only claim; when present the answer is pinned to that pause. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  round?: number;
+
   @IsOptional()
   @IsInt()
   @Min(1)

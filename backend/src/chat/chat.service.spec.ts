@@ -249,7 +249,10 @@ function happyMocks(m: ReturnType<typeof makeService>) {
     question: '查询所有用户',
     datasourceId: 1,
   });
-  m.prisma.chatRecord.update.mockResolvedValue({ id: 100 });
+  m.prisma.chatRecord.update.mockResolvedValue({
+    id: 100,
+    clarifyRound: 1,
+  });
   // Clarify answers claim the pending row; the default matches the happy path.
   m.prisma.chatRecord.updateMany.mockResolvedValue({ count: 1 });
   m.prisma.chatRecord.findMany.mockResolvedValue([]); // no prior history
@@ -348,6 +351,27 @@ function happyMocks(m: ReturnType<typeof makeService>) {
   m.prisma.dsRecommendedProblem.findMany.mockResolvedValue([
     { id: 1, question: '示例问题' },
   ]);
+}
+
+/** Pending clarify fixture for resume-claim tests; `round` mirrors the
+ *  committed clarifyRound the answer token must match. */
+function pendingClarifyRecord(round = 1) {
+  return {
+    id: 100,
+    chatId: 1,
+    oid: 1,
+    createBy: 1,
+    question: '统计一下',
+    clarify: {
+      record_id: 100,
+      round,
+      question: '统计一下',
+      max_select: 3,
+      candidates: [{ table_id: 1, table_name: 'users', comment: '' }],
+    },
+    clarifyStatus: 'pending',
+    clarifyRound: round,
+  };
 }
 
 const types = (events: ChatSseEvent[]) => events.map((e) => e.type).join(',');
@@ -1054,6 +1078,7 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       question: '统计一下',
       clarify: {
         record_id: 100,
+        round: 1,
         question: '统计一下',
         max_select: 3,
         candidates: [{ table_id: 1, table_name: 'users', comment: '' }],
@@ -1068,6 +1093,7 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
         m.service.resumeClarified(100, {
           tableIds: [1],
           text: '这一轮说明',
+          round: 1,
         }),
       ),
     );
@@ -1079,7 +1105,12 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     );
     expect(m.prisma.chatRecord.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 100, oid: 1, clarifyStatus: 'pending' },
+        where: {
+          id: 100,
+          oid: 1,
+          clarifyStatus: 'pending',
+          clarifyRound: 1,
+        },
         data: expect.objectContaining({
           clarifyStatus: 'answered',
           clarifyAnswer: expect.objectContaining({
@@ -1096,33 +1127,81 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
   it('claims a pending clarify answer only once (concurrent resumes)', async () => {
     const m = makeService();
     happyMocks(m);
-    m.prisma.chatRecord.findFirst.mockResolvedValue({
-      id: 100,
-      chatId: 1,
-      oid: 1,
-      createBy: 1,
-      question: '统计一下',
-      clarify: {
-        record_id: 100,
-        question: '统计一下',
-        max_select: 3,
-        candidates: [{ table_id: 1, table_name: 'users', comment: '' }],
-      },
-      clarifyStatus: 'pending',
-      clarifyRound: 1,
-    });
+    m.prisma.chatRecord.findFirst.mockResolvedValue(pendingClarifyRecord(1));
     let pending = true;
     m.prisma.chatRecord.updateMany.mockImplementation(
       (args: {
-        where: { id?: number; oid?: number; clarifyStatus?: string };
+        where: {
+          id?: number;
+          oid?: number;
+          clarifyStatus?: string;
+          clarifyRound?: number;
+        };
       }) => {
         const where = args.where;
+        if (where.id !== 100 || where.oid !== 1) {
+          return Promise.resolve({ count: 0 });
+        }
+        // Model the DB: only the predicates actually supplied are enforced, so
+        // dropping one from the claim silently widens the match instead of
+        // failing. `clarifyStatus` must still be pending when asked for it.
         if (
-          where.id !== 100 ||
-          where.oid !== 1 ||
-          where.clarifyStatus !== 'pending' ||
-          !pending
+          where.clarifyStatus !== undefined &&
+          (where.clarifyStatus !== 'pending' || !pending)
         ) {
+          return Promise.resolve({ count: 0 });
+        }
+        if (where.clarifyRound !== undefined && where.clarifyRound !== 1) {
+          return Promise.resolve({ count: 0 });
+        }
+        pending = false;
+        return Promise.resolve({ count: 1 });
+      },
+    );
+
+    const results = await run(1, () =>
+      Promise.allSettled([
+        collect(m.service.resumeClarified(100, { tableIds: [1], round: 1 })),
+        collect(m.service.resumeClarified(100, { tableIds: [1], round: 1 })),
+      ]),
+    );
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    );
+    expect(rejected?.reason).toBeInstanceOf(BadRequestException);
+    // Only the winner reached the SQL step.
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledTimes(1);
+  });
+
+  // Pre-token clients (deployed frontend/API consumers) omit `round`; the
+  // fallback claim must still be single-writer.
+  it('legacy resumes without a round token are still claimed once', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue(pendingClarifyRecord(1));
+    let pending = true;
+    m.prisma.chatRecord.updateMany.mockImplementation(
+      (args: {
+        where: {
+          id?: number;
+          oid?: number;
+          clarifyStatus?: string;
+          clarifyRound?: number;
+        };
+      }) => {
+        const where = args.where;
+        if (where.id !== 100 || where.oid !== 1) {
+          return Promise.resolve({ count: 0 });
+        }
+        if (
+          where.clarifyStatus !== undefined &&
+          (where.clarifyStatus !== 'pending' || !pending)
+        ) {
+          return Promise.resolve({ count: 0 });
+        }
+        if (where.clarifyRound !== undefined && where.clarifyRound !== 1) {
           return Promise.resolve({ count: 0 });
         }
         pending = false;
@@ -1142,8 +1221,69 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       (r): r is PromiseRejectedResult => r.status === 'rejected',
     );
     expect(rejected?.reason).toBeInstanceOf(BadRequestException);
-    // Only the winner reached the SQL step.
+    const where = m.prisma.chatRecord.updateMany.mock.calls[0][0].where;
+    expect(where).not.toHaveProperty('clarifyRound');
     expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledTimes(1);
+  });
+
+  // A card rendered for an older round must not resume the newer pending one:
+  // the stalled older answer would otherwise run the pipeline against the
+  // wrong schema subset.
+  it('rejects a stale clarify round without running the pipeline', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue(pendingClarifyRecord(2));
+    m.prisma.chatRecord.updateMany.mockImplementation(
+      (args: { where: { clarifyRound?: number } }) =>
+        Promise.resolve({
+          count:
+            args.where.clarifyRound === undefined ||
+            args.where.clarifyRound === 2
+              ? 1
+              : 0,
+        }),
+    );
+
+    await expect(
+      run(1, () =>
+        collect(m.service.resumeClarified(100, { tableIds: [1], round: 1 })),
+      ),
+    ).rejects.toThrow('不在待澄清状态');
+
+    expect(m.prisma.chatRecord.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 100,
+          oid: 1,
+          clarifyStatus: 'pending',
+          clarifyRound: 1,
+        }),
+      }),
+    );
+    expect(m.aiQuestionService.buildSqlContext).not.toHaveBeenCalled();
+  });
+
+  // Skip is an answer too: it must go through the same pinned claim, or a
+  // double-clicked skip could resume twice.
+  it('claims the pending round on a skip answer', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue(pendingClarifyRecord(2));
+
+    await run(1, () =>
+      collect(m.service.resumeClarified(100, { skip: true, round: 2 })),
+    );
+
+    expect(m.prisma.chatRecord.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ clarifyRound: 2 }),
+        data: expect.objectContaining({
+          clarifyStatus: 'skipped',
+          clarifyAnswer: expect.objectContaining({ skip: true }),
+        }),
+      }),
+    );
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalled();
   });
 
   // MetaDataImprove M3: the relation editor's X6 cells resolve into FK edges
@@ -1315,17 +1455,31 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       (c: { table_name: string }) => c.table_name,
     );
     expect(names).toContain('orders');
-    // A pause spends one clarify round (the persisted counter drives the
-    // next pass's budget check, not clarifyStatus).
-    expect(m.prisma.chatRecord.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 100 },
-        data: expect.objectContaining({
-          clarifyStatus: 'pending',
-          clarifyRound: { increment: 1 },
-        }),
-      }),
+    // A pause spends one clarify round: the counter increments first, then the
+    // payload stores the post-increment token the resume must echo. Other
+    // pipeline steps also update the record, so match by shape and order.
+    const updates = m.prisma.chatRecord.update.mock.calls.map(
+      (call) =>
+        call[0] as {
+          data?: {
+            clarifyRound?: unknown;
+            clarify?: { round?: number };
+            clarifyStatus?: string;
+          };
+        },
     );
+    const incrementAt = updates.findIndex((u) => u.data?.clarifyRound != null);
+    const payloadAt = updates.findIndex(
+      (u) => u.data?.clarifyStatus === 'pending' && u.data?.clarify != null,
+    );
+    expect(incrementAt).toBeGreaterThanOrEqual(0);
+    expect(payloadAt).toBeGreaterThan(incrementAt);
+    expect(updates[incrementAt].data?.clarifyRound).toEqual({
+      increment: 1,
+    });
+    expect(updates[payloadAt].data?.clarify?.round).toBe(1);
+    // The SSE frame carries the same token the persisted payload has.
+    expect(clarify!.data.round).toBe(1);
     expect(m.aiQuestionService.buildSqlContext).not.toHaveBeenCalled();
   });
 

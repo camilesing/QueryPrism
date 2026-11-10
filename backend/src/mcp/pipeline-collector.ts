@@ -23,6 +23,8 @@ export interface CollectedPipeline {
    *  supplement / skip. */
   clarify: {
     record_id: number;
+    /** Round token committed with this pause (echoed back on resume). */
+    round: number;
     question: string;
     candidates: Array<{
       table_id: number;

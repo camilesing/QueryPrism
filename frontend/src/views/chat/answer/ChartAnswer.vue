@@ -199,6 +199,7 @@ async function consumeChatStream(
               // ClarifyBlock renders the candidates; the stream then closes
               // with a terminal finish (handled below as 'stop').
               currentRecord.clarify = {
+                ...(typeof data.round === 'number' ? { round: data.round } : {}),
                 question: data.question,
                 candidates: data.candidates,
                 max_select: data.max_select,
@@ -276,7 +277,12 @@ const sendMessage = async () => {
 
 /** Answer a clarify-paused record (MetaDataImprove M1): resume the SAME
  *  record over SSE. Called by the ClarifyBlock card rendered in this slot. */
-const answerClarify = async (body: { table_ids?: number[]; text?: string; skip?: boolean }) => {
+const answerClarify = async (body: {
+  table_ids?: number[]
+  text?: string
+  skip?: boolean
+  round?: number
+}) => {
   stopFlag.value = false
   _loading.value = true
 

@@ -474,13 +474,23 @@ export class ChatService {
    *  question. Table picks are per-round — the latest answer is the schema
    *  subset (the UI preselects the current set when asking again).
    *
-   *  The pending round is claimed with ONE conditional update
-   *  (`clarifyStatus='pending'` + oid) before any streaming, so a duplicate
-   *  submit/retry cannot run the pipeline twice: the loser matches 0 rows and
-   *  gets a plain-text 400. The update is the answer's only writer. */
+   *  The pending round is claimed with ONE conditional update before any
+   *  streaming, so a duplicate submit/retry cannot run the pipeline twice.
+   *  Each pause stores its round token in the clarify payload (and the SSE
+   *  frame); the resume pins `clarifyRound` to that token, so an answer to an
+   *  older round matches 0 rows and gets a plain-text 400. Omitting the token
+   *  keeps the pre-token behavior (status-only claim) for legacy clients and
+   *  is logged; it is a compatibility path, not the intended contract.
+   *  The update is the answer's only writer. */
   async *resumeClarified(
     recordId: number,
-    answer: { tableIds?: number[]; text?: string; skip?: boolean },
+    answer: {
+      tableIds?: number[];
+      text?: string;
+      skip?: boolean;
+      /** Round token from the pending clarify payload (pauseForClarify). */
+      round?: number;
+    },
     modelId?: number,
   ): AsyncGenerator<ChatSseEvent> {
     const oid = this.currentOid();
@@ -550,11 +560,19 @@ export class ChatService {
     // retry) run the pipeline exactly once. The loser matches 0 rows and gets
     // the same 400 as an already-settled record — it cannot tell whether it
     // lost a race or arrived late, and it must not touch the record.
+    // With a round token the claim is also pinned to the pause the card was
+    // rendered for; a stale token (or one from a later round) matches nothing.
+    if (answer.round == null) {
+      this.logger.debug(
+        `clarify resume for record #${recordId} without a round token (legacy client) — status-only claim`,
+      );
+    }
     const claimed = await this.prisma.chatRecord.updateMany({
       where: {
         id: record.id,
         oid,
         clarifyStatus: 'pending',
+        ...(answer.round != null ? { clarifyRound: answer.round } : {}),
       },
       data: {
         clarifyAnswer: persisted,
@@ -1738,9 +1756,11 @@ export class ChatService {
   /** Persist the pending-clarify state + emit the clarify frame and the
    *  terminal finish (the record stays finish:false + clarifyStatus:'pending'
    *  until the user answers via /chat/record/:rid/clarify). Also increments
-   *  clarifyRound, so the budget check on the next pass sees this pause even
-   *  if the stream dies here. `reason` carries the LLM's one-liner when the
-   *  pause comes from the need_clarify contract (rule 2) rather than the
+   *  clarifyRound and stores the post-increment value as the payload/frame
+   *  `round` token, so the budget check and the resume claim share one
+   *  committed value even if the stream dies here. `reason` carries the LLM's
+   *  one-liner when the pause comes from the need_clarify contract (rule 2)
+   *  rather than the
    *  deterministic gate (rule 1). `suggestedTableIds` is advisory preselection
    *  (current schema + LLM-named tables, capped at maxSelect); the resume
    *  endpoint still enforces the cap. */
@@ -1752,7 +1772,7 @@ export class ChatService {
     reason?: string,
     suggestedTableIds?: number[],
   ): AsyncGenerator<ChatSseEvent> {
-    const payload = {
+    const basePayload = {
       question,
       candidates: pool.map((c) => ({
         table_id: c.id,
@@ -1766,15 +1786,22 @@ export class ChatService {
         ? { suggested_table_ids: suggestedTableIds }
         : {}),
     };
-    await this.prisma.chatRecord.update({
-      where: { id: recordId },
-      data: {
-        clarify: payload,
-        clarifyStatus: 'pending',
-        // One pause = one spent round; the resume gate/need_clarify checks
-        // read this column instead of inferring from clarifyStatus.
-        clarifyRound: { increment: 1 },
-      },
+    // The round token must equal the committed counter the resume claim
+    // checks. Increment + payload write share ONE transaction: a crash between
+    // them would otherwise leave a pending record whose stored token is
+    // missing. `round` is the post-increment value (one pause = one round).
+    const payload = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.chatRecord.update({
+        where: { id: recordId },
+        data: { clarifyRound: { increment: 1 } },
+        select: { clarifyRound: true },
+      });
+      const next = { ...basePayload, round: updated.clarifyRound };
+      await tx.chatRecord.update({
+        where: { id: recordId },
+        data: { clarify: next, clarifyStatus: 'pending' },
+      });
+      return next;
     });
     yield { type: 'clarify', data: { record_id: recordId, ...payload } };
     yield { type: 'finish', data: {} };

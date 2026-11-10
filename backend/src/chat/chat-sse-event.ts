@@ -64,6 +64,10 @@ export interface ChatSseEventMap {
   // named, already filtered to candidates and capped at max_select.
   clarify: {
     record_id: number;
+    /** Round token: the committed clarifyRound of this pause. The resume must
+     *  echo it; the pinned claim then rejects an answer rendered for an older
+     *  round (stale card / retried request). */
+    round: number;
     question: string;
     candidates: Array<{
       table_id: number;

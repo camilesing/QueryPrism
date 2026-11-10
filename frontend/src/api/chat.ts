@@ -47,10 +47,11 @@ export class ChatRecord {
   regenerate_record_id?: number
   duration?: number
   total_tokens?: number
-  /** Clarify round (MetaDataImprove M1): clarify = {question, candidates:
+  /** Clarify round (MetaDataImprove M1): clarify = {round, question, candidates:
    *  [{table_id, table_name, comment}], max_select}; clarify_answer = {table_ids?,
    *  table_names?, text?, texts?, skip?} (texts accumulates supplements across
-   *  rounds); clarify_status = pending | answered | skipped. */
+   *  rounds); clarify_status = pending | answered | skipped. `round` is the
+   *  pause token and must be sent back when answering. */
   clarify?: any
   clarify_answer?: any
   clarify_status?: string
@@ -492,7 +493,7 @@ export const chatApi = {
    *  record over SSE, so it uses the same streaming consumption path. */
   answerClarify: (
     record_id: number | undefined,
-    data: { table_ids?: number[]; text?: string; skip?: boolean },
+    data: { table_ids?: number[]; text?: string; skip?: boolean; round?: number },
     controller?: AbortController
   ) => {
     return request.fetchStream(`/chat/record/${record_id}/clarify`, data, controller)

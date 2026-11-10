@@ -74,6 +74,14 @@ function sseFrames(text: string): Array<Record<string, unknown>> {
     .map((f) => JSON.parse(f.slice('data:'.length)) as Record<string, unknown>);
 }
 
+/** Round token carried by the clarify frame; the resume must echo it back. */
+function clarifyRoundFromSse(text: string): number {
+  const frame = sseFrames(text).find((f) => f.type === 'clarify');
+  expect(frame).toBeDefined();
+  expect(typeof frame!.round).toBe('number');
+  return frame!.round as number;
+}
+
 // 4 checked tables, none named by the ambiguous question below.
 const FAKE_TABLES = [
   {
@@ -226,6 +234,27 @@ describe('Chat clarify (e2e)', () => {
       .send({ chat_id: chatId, question });
   }
 
+  /** Opt this test into a two-round clarify budget (parameter is global). */
+  async function setMaxRounds(value: number): Promise<void> {
+    await prisma.systemVariable.deleteMany({
+      where: { name: 'clarify.max_rounds' },
+    });
+    await prisma.systemVariable.create({
+      data: {
+        type: 'parameter',
+        varType: 'int',
+        name: 'clarify.max_rounds',
+        value,
+      },
+    });
+  }
+
+  async function clearMaxRounds(): Promise<void> {
+    await prisma.systemVariable.deleteMany({
+      where: { name: 'clarify.max_rounds' },
+    });
+  }
+
   it('pauses with a clarify frame over >= threshold unnamed candidate tables', async () => {
     const chatId = await startChat();
     try {
@@ -239,6 +268,8 @@ describe('Chat clarify (e2e)', () => {
       // All four checked tables are offered (recall degraded to all-checked).
       expect(clarify!.candidates).toHaveLength(4);
       expect(clarify!.max_select).toBe(3);
+      // The frame carries the committed round token the resume must echo.
+      expect(clarify!.round).toBe(1);
       // The pipeline stopped BEFORE generate_sql.
       expect(frames.some((f) => f.type === 'sql')).toBe(false);
       expect(frames.some((f) => f.type === 'finish')).toBe(true);
@@ -246,6 +277,7 @@ describe('Chat clarify (e2e)', () => {
       const rid = recordIdFromSse(res.text);
       const record = await prisma.chatRecord.findUnique({ where: { id: rid } });
       expect(record!.clarifyStatus).toBe('pending');
+      expect(record!.clarify).toMatchObject({ round: 1 });
       expect(record!.finish).toBe(false);
       expect(record!.sql).toBeNull();
     } finally {
@@ -276,11 +308,12 @@ describe('Chat clarify (e2e)', () => {
     try {
       const q = await ask(chatId);
       const rid = recordIdFromSse(q.text);
+      const round = clarifyRoundFromSse(q.text);
 
       const res = await request(app.getHttpServer())
         .post(`/api/v1/chat/record/${rid}/clarify`)
         .set(TOKEN_HEADER, token)
-        .send({ table_ids: [1, 2] });
+        .send({ table_ids: [1, 2], round });
       expect(res.status).toBe(200);
       const frames = sseFrames(res.text);
       // Same record id re-emitted, then the normal tail.
@@ -310,40 +343,31 @@ describe('Chat clarify (e2e)', () => {
 
   it('asks a second round under max_rounds=2 and accumulates supplements', async () => {
     // Opt into a two-round budget for this test only.
-    await prisma.systemVariable.deleteMany({
-      where: { name: 'clarify.max_rounds' },
-    });
-    await prisma.systemVariable.create({
-      data: {
-        type: 'parameter',
-        varType: 'int',
-        name: 'clarify.max_rounds',
-        value: 2,
-      },
-    });
+    await setMaxRounds(2);
     const chatId = await startChat();
     try {
       const q = await ask(chatId);
       const rid = recordIdFromSse(q.text);
-      let record = await prisma.chatRecord.findUnique({
-        where: { id: rid },
-      });
-      expect(record!.clarifyRound).toBe(1);
+      expect(clarifyRoundFromSse(q.text)).toBe(1);
 
       // A text-only answer leaves the ambiguity intact → the gate asks again
-      // (round 1 of 2 spent).
+      // (round 1 of 2 spent). The answer echoes round 1, the new pause is 2.
       const second = await request(app.getHttpServer())
         .post(`/api/v1/chat/record/${rid}/clarify`)
         .set(TOKEN_HEADER, token)
-        .send({ text: '按天统计' });
+        .send({ text: '按天统计', round: 1 });
       expect(second.status).toBe(200);
       const secondFrames = sseFrames(second.text);
       expect(secondFrames.some((f) => f.type === 'clarify')).toBe(true);
+      expect(clarifyRoundFromSse(second.text)).toBe(2);
       expect(secondFrames.some((f) => f.type === 'sql')).toBe(false);
 
-      record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      let record = await prisma.chatRecord.findUnique({
+        where: { id: rid },
+      });
       expect(record!.clarifyRound).toBe(2);
       expect(record!.clarifyStatus).toBe('pending');
+      expect(record!.clarify).toMatchObject({ round: 2 });
       expect(record!.clarifyAnswer).toMatchObject({
         text: '按天统计',
         texts: ['按天统计'],
@@ -354,7 +378,7 @@ describe('Chat clarify (e2e)', () => {
       const third = await request(app.getHttpServer())
         .post(`/api/v1/chat/record/${rid}/clarify`)
         .set(TOKEN_HEADER, token)
-        .send({ table_ids: [1], text: '只看销售订单' });
+        .send({ table_ids: [1], text: '只看销售订单', round: 2 });
       expect(third.status).toBe(200);
       expect(third.text).toContain('"type":"sql"');
       expect(third.text).not.toContain('"type":"clarify"');
@@ -375,9 +399,7 @@ describe('Chat clarify (e2e)', () => {
         .delete(`/api/v1/chat/${chatId}`)
         .set(TOKEN_HEADER, token)
         .send({ id: chatId });
-      await prisma.systemVariable.deleteMany({
-        where: { name: 'clarify.max_rounds' },
-      });
+      await clearMaxRounds();
     }
   });
 
@@ -390,7 +412,7 @@ describe('Chat clarify (e2e)', () => {
       const res = await request(app.getHttpServer())
         .post(`/api/v1/chat/record/${rid}/clarify`)
         .set(TOKEN_HEADER, token)
-        .send({ skip: true });
+        .send({ skip: true, round: clarifyRoundFromSse(q.text) });
       expect(res.status).toBe(200);
       expect(res.text).toContain('"type":"sql"');
       expect(res.text).not.toContain('"type":"clarify"');
@@ -443,8 +465,95 @@ describe('Chat clarify (e2e)', () => {
     try {
       const q = await ask(chatId);
       const rid = recordIdFromSse(q.text);
-      // Two submits for the same pending record; whichever loses the
+      const round = clarifyRoundFromSse(q.text);
+      // Two submits for the same pending round; whichever loses the
       // conditional claim must not stream or run the pipeline.
+      const [a, b] = await Promise.all([
+        request(app.getHttpServer())
+          .post(`/api/v1/chat/record/${rid}/clarify`)
+          .set(TOKEN_HEADER, token)
+          .send({ table_ids: [1], round }),
+        request(app.getHttpServer())
+          .post(`/api/v1/chat/record/${rid}/clarify`)
+          .set(TOKEN_HEADER, token)
+          .send({ table_ids: [2], round }),
+      ]);
+      expect([a.status, b.status].sort()).toEqual([200, 400]);
+      const rejected = a.status === 400 ? a : b;
+      expect(rejected.headers['content-type']).toContain('text/plain');
+
+      const record = await prisma.chatRecord.findUnique({
+        where: { id: rid },
+      });
+      expect(record!.clarifyStatus).toBe('answered');
+      expect(record!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
+  // A card from an older round must not resume the newer pending pause: the
+  // delayed answer would otherwise run the pipeline against the wrong schema.
+  it('rejects a stale clarify round and keeps the newer pause pending', async () => {
+    await setMaxRounds(2);
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId);
+      const rid = recordIdFromSse(q.text);
+      expect(clarifyRoundFromSse(q.text)).toBe(1);
+
+      // Round-1 answer pauses again as round 2.
+      const second = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ text: '按天统计', round: 1 });
+      expect(second.status).toBe(200);
+      expect(clarifyRoundFromSse(second.text)).toBe(2);
+
+      // A stale round-1 card arrives late: it must not claim round 2.
+      const stale = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [1], round: 1 });
+      expect(stale.status).toBe(400);
+      expect(stale.headers['content-type']).toContain('text/plain');
+
+      let record = await prisma.chatRecord.findUnique({
+        where: { id: rid },
+      });
+      expect(record!.clarifyStatus).toBe('pending');
+      expect(record!.clarifyRound).toBe(2);
+      expect(record!.finish).toBe(false);
+
+      // The current round still resumes normally.
+      const third = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [1], round: 2 });
+      expect(third.status).toBe(200);
+      expect(third.text).toContain('"type":"sql"');
+      record = await prisma.chatRecord.findUnique({ where: { id: rid } });
+      expect(record!.clarifyStatus).toBe('answered');
+      expect(record!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+      await clearMaxRounds();
+    }
+  });
+
+  // Pre-token clients omit `round`; the fallback claim must still be exactly
+  // one winner (the status-only where clause is the compatibility path).
+  it('keeps legacy no-round resumes single-writer', async () => {
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId);
+      const rid = recordIdFromSse(q.text);
       const [a, b] = await Promise.all([
         request(app.getHttpServer())
           .post(`/api/v1/chat/record/${rid}/clarify`)

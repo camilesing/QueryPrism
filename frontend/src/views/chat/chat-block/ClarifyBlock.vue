@@ -17,6 +17,9 @@ interface ClarifyCandidate {
 }
 
 interface ClarifyPayload {
+  /** Pause token: sent back with the answer so the backend can reject a
+   *  stale/duplicated submit instead of running the pipeline twice. */
+  round?: number
   question?: string
   candidates?: ClarifyCandidate[]
   max_select?: number
@@ -28,7 +31,10 @@ interface ClarifyPayload {
 
 const props = defineProps<{ record: ChatRecord }>()
 const emit = defineEmits<{
-  (e: 'answer', body: { table_ids?: number[]; text?: string; skip?: boolean }): void
+  (
+    e: 'answer',
+    body: { table_ids?: number[]; text?: string; skip?: boolean; round?: number }
+  ): void
 }>()
 
 const { t } = useI18n()
@@ -85,11 +91,12 @@ function submit() {
   emit('answer', {
     table_ids: selected.value.length > 0 ? [...selected.value] : undefined,
     text: supplement.value.trim() || undefined,
+    round: payload.value.round,
   })
 }
 
 function skip() {
-  emit('answer', { skip: true })
+  emit('answer', { skip: true, round: payload.value.round })
 }
 
 /** Collapsed summary after the round is settled (answered / skipped). */

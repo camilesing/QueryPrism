@@ -54,6 +54,9 @@ export interface AskQuestionArgs {
   /** Two-phase clarify (MetaDataImprove M1): the record_id from a
    *  needs_clarification result. Presence switches the call to resume mode. */
   clarify_record_id?: number;
+  /** Round token from the needs_clarification result. Pins the answer to that
+   *  pause; optional only for legacy callers that omit it. */
+  clarify_round?: number;
   /** Table picks from the offered candidates (ids must come from it). */
   clarify_table_ids?: number[];
   /** Free-text supplement joined to the original question. */
@@ -181,7 +184,7 @@ export class McpService {
       'ask_question',
       {
         description:
-          'Ask a natural-language question against this workspace data. Returns { record_id, sql, brief, data, chart_type, chart_config }. When the question is ambiguous across many tables the tool returns { needs_clarification: true, record_id, candidates, max_select } instead of SQL — re-call with clarify_record_id plus clarify_table_ids (picked from candidates), clarify_text, or clarify_skip=true to resume the SAME record. Set return_img=true to also return a PNG image block for bar/column/line/pie charts. lang is only a fallback (used for scripts like ja/ko the detector does not recognize) — the reply language follows the question text itself.',
+          'Ask a natural-language question against this workspace data. Returns { record_id, sql, brief, data, chart_type, chart_config }. When the question is ambiguous across many tables the tool returns { needs_clarification: true, record_id, round, candidates, max_select } instead of SQL — re-call with clarify_record_id and clarify_round (both from that result) plus clarify_table_ids (picked from candidates), clarify_text, or clarify_skip=true to resume the SAME record. clarify_round pins the answer to that pause, so a retry cannot answer a newer round; omit it only for legacy compatibility. Set return_img=true to also return a PNG image block for bar/column/line/pie charts. lang is only a fallback (used for scripts like ja/ko the detector does not recognize) — the reply language follows the question text itself.',
         inputSchema: {
           question: z.string().min(1).optional(),
           chat_id: z.number().int().positive().optional(),
@@ -190,6 +193,7 @@ export class McpService {
           model_id: z.number().int().positive().optional(),
           return_img: z.boolean().optional(),
           clarify_record_id: z.number().int().positive().optional(),
+          clarify_round: z.number().int().positive().optional(),
           clarify_table_ids: z.array(z.number().int().positive()).optional(),
           clarify_text: z.string().optional(),
           clarify_skip: z.boolean().optional(),
@@ -204,6 +208,7 @@ export class McpService {
           model_id: args.model_id,
           return_img: args.return_img,
           clarify_record_id: args.clarify_record_id,
+          clarify_round: args.clarify_round,
           clarify_table_ids: args.clarify_table_ids,
           clarify_text: args.clarify_text,
           clarify_skip: args.clarify_skip,
@@ -383,6 +388,7 @@ export class McpService {
               tableIds: args.clarify_table_ids,
               text: args.clarify_text,
               skip: args.clarify_skip,
+              round: args.clarify_round,
             },
             modelId,
           ),
@@ -443,6 +449,7 @@ export class McpService {
           JSON.stringify({
             needs_clarification: true,
             record_id: collected.clarify.record_id,
+            round: collected.clarify.round,
             question: collected.clarify.question,
             candidates: collected.clarify.candidates,
             max_select: collected.clarify.max_select,
@@ -452,7 +459,7 @@ export class McpService {
             // The current schema + LLM-named candidates (advisory; max_select
             // is still enforced on resume).
             suggested_table_ids: collected.clarify.suggested_table_ids,
-            hint: 'Re-call ask_question with clarify_record_id and either clarify_table_ids (ids from candidates), clarify_text, or clarify_skip=true.',
+            hint: 'Re-call ask_question with clarify_record_id + clarify_round (from this result) and either clarify_table_ids (ids from candidates), clarify_text, or clarify_skip=true.',
           }),
         );
       }

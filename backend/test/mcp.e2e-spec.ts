@@ -655,6 +655,7 @@ describe('MCP ask_question clarify (e2e)', () => {
     const asked = JSON.parse(firstResult.content[0].text ?? '') as {
       needs_clarification: boolean;
       record_id: number;
+      round: number;
       question: string;
       candidates: Array<{ table_id: number; table_name: string }>;
       max_select: number;
@@ -662,6 +663,8 @@ describe('MCP ask_question clarify (e2e)', () => {
     expect(asked.needs_clarification).toBe(true);
     expect(asked.candidates).toHaveLength(4);
     expect(asked.max_select).toBe(3);
+    // The response carries the round token the caller must echo back.
+    expect(asked.round).toBe(1);
 
     // Phase 2: answer with two table picks → the same record produces SQL.
     const picks = asked.candidates.slice(0, 2).map((c) => c.table_id);
@@ -673,6 +676,7 @@ describe('MCP ask_question clarify (e2e)', () => {
         arguments: {
           clarify_record_id: asked.record_id,
           clarify_table_ids: picks,
+          clarify_round: asked.round,
         },
       },
       2,

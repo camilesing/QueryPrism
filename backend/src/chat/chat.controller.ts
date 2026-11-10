@@ -254,6 +254,7 @@ export class ChatController {
           tableIds: dto.table_ids,
           text: dto.text,
           skip: dto.skip,
+          round: dto.round,
         },
         dto.model_id,
       ),
