@@ -35,7 +35,7 @@ database name with `_test`), reset that database, and seed it.
 
 - Prisma models live in the `public` schema (`backend/prisma/schema.prisma`).
 - Derived vector tables live in the **`vector_store`** schema:
-  `vec_terminology`, `vec_data_training`, `vec_datasource`, `vec_table`.
+  `vec_terminology`, `vec_data_training`, `vec_datasource`, `vec_table`, `vec_metric_def`.
   Each has an HNSW index using `vector_cosine_ops`.
 - `vector_store` is deliberately *not* in Prisma's managed schemas, so the
   runtime-created tables never show up as `prisma migrate dev` drift.

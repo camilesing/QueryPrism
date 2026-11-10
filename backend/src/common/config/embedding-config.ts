@@ -1,7 +1,7 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 22 retrieval-strategy parameters resolve with the priority
+// 23 retrieval-strategy parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
@@ -9,8 +9,9 @@
 //   keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
 //   clarify gate (ask-the-user before stuffing an ambiguous schema); the
 //   5 semantic.* keys drive the semantic layer (M2 rule 2 + the M3
-//   dimension-enum collector); the 3 metric.*/naming.* keys drive the M4
-//   metric-definition and naming-rule prompt injection.
+//   dimension-enum collector); the 4 metric.*/naming.* keys drive the M4
+//   metric-definition and naming-rule prompt injection (metric.enabled /
+//   metric.max_definitions / metric.similarity_threshold / naming.enabled).
 //
 // Parsing is STRICT on saved values:
 // booleans only accept real booleans or "true"/"false" (never 0/1), counts
@@ -69,6 +70,10 @@ export interface EmbeddingConfig {
   metricEnabled: boolean;
   /** Cap on rendered metric definitions per question (prompt budget). */
   metricMaxDefinitions: number;
+  /** Cosine similarity a metric vector hit must EXCEED to supplement the
+   *  literal matcher (metric recall degrades to literal-only when the vector
+   *  index or the embedding provider is unavailable). */
+  metricSimilarityThreshold: number;
   /** Data standards (M4): inject naming-dictionary standard translations
    *  matched by the question text into the generate_sql prompt. */
   namingEnabled: boolean;
@@ -97,6 +102,7 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   semanticEnumCooldown: 'semantic.enum_cooldown',
   metricEnabled: 'metric.enabled',
   metricMaxDefinitions: 'metric.max_definitions',
+  metricSimilarityThreshold: 'metric.similarity_threshold',
   namingEnabled: 'naming.enabled',
 };
 
@@ -289,6 +295,14 @@ function envDefaults(): EmbeddingConfig {
     metricMaxDefinitions: Math.max(
       1,
       Math.floor(envNumber('METRIC_MAX_DEFINITIONS', undefined, 5)),
+    ),
+    // Stricter than the terminology default (0.4): metric names are short and
+    // domain-adjacent ("订单量" vs "支付金额"), so a loose threshold would
+    // force-stuff unrelated metric tables into the prompt.
+    metricSimilarityThreshold: envNumber(
+      'METRIC_SIMILARITY_THRESHOLD',
+      undefined,
+      0.55,
     ),
     namingEnabled: envBool('NAMING_ENABLED', true),
   };

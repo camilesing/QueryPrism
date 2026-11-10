@@ -1,14 +1,28 @@
 // metric-policy — pure policy for the MetaDataImprove M4 metric system +
 // data standards: kind discriminators, strict definition parsing/validation,
 // effective resolution by (kind, code) (reusing semantic-policy's layer
-// priority), question matching by name/alias inclusion, and prompt rendering
-// for derived/composite metrics and naming rules. No Nest/Prisma imports so
-// the rules stay unit-testable in isolation — services own all persistence.
+// priority), question matching, and prompt rendering for derived/composite
+// metrics and naming rules. No Nest/Prisma imports so the rules stay
+// unit-testable in isolation — services own all persistence.
+//
+// Matching is literal-first with an optional vector supplement (M4 follow-up):
+// `matchMetricDefinitions` renders every name/alias substring hit, THEN fills
+// the remaining `max` slots with ATOMIC metrics whose `kind:code` the caller
+// selected via metric vector recall (`opts.fuzzy`, most similar first). The
+// ranking guarantees are deliberate:
+// - a literal hit is never dropped or reordered for a fuzzy one;
+// - derived/composite metrics expand ONLY on a literal hit — a fuzzy hit never
+//   invents a composed caliber (a wrong composition is worse than none);
+// - modifiers/periods stay literal-only: they inject WHERE constraints, and a
+//   fuzzy wrong modifier silently changes the result set;
+// - a fuzzy atomic is otherwise rendered exactly like a literal one (same
+//   datasource binding, same literal-matched modifiers/period, same tables).
+// Services decide whether to consult the vector index at all; with no `fuzzy`
+// option the behavior is byte-for-byte the pre-vector matcher.
 //
 // Known limitations (by design):
-// - matching is plain case-insensitive substring inclusion, not vector
-//   recall; a metric whose name never literally appears in the question is
-//   not injected (a later milestone can fuse table-recall-style vectors in)
+// - fuzzy recall only supplements atomics; it cannot surface a derived or
+//   composite metric whose name the user never said
 // - composite operands may only be atomic/derived/composite codes — modifier
 //   or period codes inside an expression are rejected as invalid references
 import { pickEffectiveRow } from './semantic-policy';
@@ -566,6 +580,12 @@ export function renderComposite(
 
 // ---- the whole-question matcher -------------------------------------------
 
+/** Why the service could not consult the vector index. Set by the service on
+ *  the result (never by the pure matcher) so callers can log/diagnose a
+ *  literal-only run without parsing logs. */
+export type MetricRecallDegradeReason =
+  'disabled' | 'no_config' | 'no_embedding' | 'no_vector' | 'error';
+
 export interface MetricMatchResult {
   /** `<metric_definitions>` block ('' when nothing matched). */
   text: string;
@@ -573,6 +593,17 @@ export interface MetricMatchResult {
   atomicTableNames: string[];
   /** How many metrics rendered (for the metric.max_definitions cap report). */
   matched: number;
+  /** Present when vector recall was skipped — the run is literal-only. */
+  degradeReason?: MetricRecallDegradeReason;
+}
+
+export interface MetricMatchOptions {
+  /** Vector-recall candidates as `kind:code` keys, most similar first. Only
+   *  ATOMIC entries are expanded (see the header rules); the caller has
+   *  already applied the similarity threshold and the row invisibility
+   *  filter, and builds the keys from the EFFECTIVE row so layer priority
+   *  still wins. Omitted → pure literal matching. */
+  fuzzy?: readonly string[];
 }
 
 /** Match a question against the actor-visible enabled metric rows of ONE
@@ -581,6 +612,7 @@ export interface MetricMatchResult {
  *  2. atomic metrics likewise — composed ad hoc with any modifier of the
  *     same table and the first matching period that also appears in the
  *     question
+ *  3. then, only while `max` has room, atomic metrics from `opts.fuzzy`
  *  Rows of other datasources never render (atomic/modifier defs are filtered
  *  by datasourceId; derived/composite only render through their atomics).
  *  Dangling references and cycles skip the metric, never the request. */
@@ -590,6 +622,7 @@ export function matchMetricDefinitions(
   question: string,
   max: number,
   timeFieldOf: (tableName: string) => string | undefined,
+  opts?: MetricMatchOptions,
 ): MetricMatchResult {
   const effective = effectiveByCode(rows);
   const ctx: MetricRenderContext = { rows: effective, timeFieldOf };
@@ -637,7 +670,9 @@ export function matchMetricDefinitions(
     }
   }
 
-  // 2) matched modifiers/periods for ad-hoc composition with matched atomics
+  // 2) matched modifiers/periods for ad-hoc composition with matched atomics.
+  //    Literal-only on purpose: a modifier is a WHERE constraint, so a fuzzy
+  //    wrong one silently changes the numbers.
   const matchedModifiers = inScope.filter(
     (r) =>
       r.kind === 'modifier' && matchesQuestion(r.name, r.aliases, question),
@@ -646,16 +681,15 @@ export function matchMetricDefinitions(
     (r) => r.kind === 'period' && matchesQuestion(r.name, r.aliases, question),
   );
 
-  for (const row of inScope) {
-    if (blocks.length >= max) break;
-    if (row.kind !== 'atomic') continue;
-    if (coveredAtomicCodes.has(row.code)) continue;
-    if (!matchesQuestion(row.name, row.aliases, question)) continue;
+  /** Render one atomic (with any literal-matched modifier/period of the same
+   *  table). Shared by the literal and fuzzy passes so both produce exactly
+   *  the same caliber text. */
+  const renderAtomic = (row: MetricDefLike): string | null => {
     const def = parseMetricDefinition(
       'atomic',
       row.definition,
     ) as AtomicDef | null;
-    if (!def) continue;
+    if (!def) return null;
     const parts = [atomicLine(row, def)];
     const mods = matchedModifiers
       .map((m) => ({
@@ -686,8 +720,38 @@ export function matchMetricDefinitions(
       }
     }
     const line = `${row.name} (${row.code}): ${parts.join('; ')}`;
-    blocks.push(`- ${line}`);
     if (!tables.includes(def.tableName)) tables.push(def.tableName);
+    return line;
+  };
+
+  const renderedAtomicCodes = new Set<string>();
+  for (const row of inScope) {
+    if (blocks.length >= max) break;
+    if (row.kind !== 'atomic') continue;
+    if (coveredAtomicCodes.has(row.code)) continue;
+    if (!matchesQuestion(row.name, row.aliases, question)) continue;
+    const line = renderAtomic(row);
+    if (!line) continue;
+    blocks.push(`- ${line}`);
+    renderedAtomicCodes.add(row.code);
+  }
+
+  // 3) vector supplement: ATOMIC only, most-similar first, never evicting a
+  //    literal hit and never re-stating one (covered / already rendered).
+  for (const key of opts?.fuzzy ?? []) {
+    if (blocks.length >= max) break;
+    const row = effective.get(key);
+    if (!row || row.kind !== 'atomic') continue;
+    if (!row.enabled || !isDsBound(row)) continue;
+    if (coveredAtomicCodes.has(row.code)) continue;
+    if (renderedAtomicCodes.has(row.code)) continue;
+    // a literal hit would already be in `renderedAtomicCodes`; the guard
+    // keeps a caller-supplied key from bypassing the literal naming rule
+    if (matchesQuestion(row.name, row.aliases, question)) continue;
+    const line = renderAtomic(row);
+    if (!line) continue;
+    blocks.push(`- ${line}`);
+    renderedAtomicCodes.add(row.code);
   }
 
   if (blocks.length === 0)

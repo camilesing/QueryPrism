@@ -160,6 +160,15 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     changedBy: number,
   ): Promise<void>;
 
+  /** Called AFTER a governance write committed, with the affected entity ids.
+   *  Overridden by dictionaries that maintain a derived search index (metric
+   *  vector recall); the default is a no-op (data standards have none). It must
+   *  be synchronous and swallow its own errors — a search-index refresh must
+   *  never fail or roll back a governance write. Remove paths pass no ids:
+   *  a stale vector row is harmless because recall re-reads the entity and
+   *  drops ids that no longer exist. */
+  protected afterCommit(_ids: number[]): void {}
+
   // ---- the shared governance flow ---------------------------------------
 
   /** Upsert one entry. Direct edit when the actor owns the target layer's
@@ -180,6 +189,7 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
           ),
         () => new ConflictException(this.t('write_conflict')),
       );
+      this.afterCommit([id]);
       return { applied: true, id };
     }
     const requestId = await this.prisma.$transaction(async (tx) => {
@@ -251,6 +261,9 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     await this.prisma.$transaction((tx) =>
       this.setEnabledTx(tx, id, enabled, actor.id),
     );
+    // An enabled row with no vector (it was disabled while the index was
+    // built, or the key was missing) must become recallable again.
+    this.afterCommit([id]);
   }
 
   /** The approval inbox. `pending` = requests the actor can review (workspace
@@ -297,7 +310,15 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
   }
 
   /** Approve / reject a request. Approval applies the payload at the target
-   *  layer in ONE transaction (upsert/remove + version history + close). */
+   *  layer in ONE transaction (claim + upsert/remove + version history).
+   *  Concurrency: the status read above happens outside the transaction, so
+   *  two reviewers can both see `pending`. The conditional claim inside the
+   *  transaction is the real guard — only one `updateMany` matches
+   *  `status='pending'`; the loser waits on the row lock and then matches 0
+   *  rows (PostgreSQL re-checks the WHERE against the newest row version), so
+   *  the request is applied exactly once and the second call gets the same
+   *  "not pending" error as a repeat click. A payload failure rolls the claim
+   *  back with the rest of the transaction, leaving the request reviewable. */
   async review(
     id: number,
     approve: boolean,
@@ -323,27 +344,13 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     ) {
       throw new ForbiddenException(this.t('review_forbidden'));
     }
+    let affected: number[] = [];
     await withNaturalKeyRetry(
       () =>
         this.prisma.$transaction(async (tx) => {
-          if (approve) {
-            const info = this.infoFromPayload(request.payload);
-            const target =
-              request.targetType === 'WORKSPACE'
-                ? {
-                    scope: 'WORKSPACE' as const,
-                    oid: request.oid,
-                    ownerUid: null,
-                  }
-                : { scope: 'GLOBAL' as const, oid: null, ownerUid: null };
-            if (request.action === 'upsert') {
-              await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
-            } else {
-              await this.applyRemoveTx(tx, info, target);
-            }
-          }
-          await tx.semanticChangeRequest.update({
-            where: { id },
+          affected = [];
+          const claimed = await tx.semanticChangeRequest.updateMany({
+            where: { id, status: 'pending' },
             data: {
               status: approve ? 'approved' : 'rejected',
               reviewerUid: actor.id,
@@ -351,9 +358,30 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
               reviewedAt: new Date(),
             },
           });
+          if (claimed.count === 0) {
+            throw new BadRequestException(this.t('request_not_pending'));
+          }
+          if (!approve) return;
+          const info = this.infoFromPayload(request.payload);
+          const target =
+            request.targetType === 'WORKSPACE'
+              ? {
+                  scope: 'WORKSPACE' as const,
+                  oid: request.oid,
+                  ownerUid: null,
+                }
+              : { scope: 'GLOBAL' as const, oid: null, ownerUid: null };
+          if (request.action === 'upsert') {
+            affected = [
+              await this.applyUpsertTx(tx, info, target, actor.id, reviewNote),
+            ];
+          } else {
+            await this.applyRemoveTx(tx, info, target);
+          }
         }),
       () => new ConflictException(this.t('write_conflict')),
     );
+    this.afterCommit(affected);
   }
 
   // ---- internals ---------------------------------------------------------
@@ -377,6 +405,13 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     return true;
   }
 
+  /** Best-effort duplicate-proposal probe: it scans ONE pending request of the
+   *  actor and compares its natural key. Two truly concurrent proposals can
+   *  both miss each other (the other's row is not committed yet), so duplicates
+   *  are possible; that is accepted — approval applies the surviving payloads
+   *  in order (last one wins) and never creates a duplicate entity, because the
+   *  natural key is unique per layer. A DB constraint is not worth the
+   *  non-null/expression-index migration cost here. */
   private async assertNoPendingRequest(
     tx: PrismaTx,
     info: Info,

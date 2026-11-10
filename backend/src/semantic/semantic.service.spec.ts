@@ -3,7 +3,7 @@
 // PERSONAL > WORKSPACE > GLOBAL effective resolution. Prisma is mocked; the
 // actor comes from the real RequestContext ALS (assistant.service.spec
 // pattern).
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { requestContextStorage } from '../common/context/request-context';
 import { setI18n } from '../common/i18n/translate';
 import { createTestI18n } from '../common/i18n/test-i18n';
@@ -52,6 +52,7 @@ interface SemanticPrismaMock {
   semanticChangeRequest: {
     create: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
     findFirst: jest.Mock;
     findUnique: jest.Mock;
     findMany: jest.Mock;
@@ -83,6 +84,7 @@ function makePrisma(): SemanticPrismaMock {
           ...data,
         })),
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
@@ -314,10 +316,20 @@ describe('SemanticService.review', () => {
     );
     await withUser(WS_ADMIN, () => service.review(100, true));
     expect(prisma.tableSemantic.create).toHaveBeenCalled();
-    expect(prisma.semanticChangeRequest.update).toHaveBeenCalledWith({
-      where: { id: 100 },
+    expect(prisma.semanticChangeRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: 100, status: 'pending' },
       data: expect.objectContaining({ status: 'approved', reviewerUid: 5 }),
     });
+  });
+
+  it('does not re-apply a request claimed by a concurrent review', async () => {
+    const { service, prisma } = makeService();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue(pendingRequest);
+    prisma.semanticChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      withUser(WS_ADMIN, () => service.review(100, true)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.tableSemantic.create).not.toHaveBeenCalled();
   });
 
   it('a foreign workspace admin cannot review another workspace request', async () => {
@@ -339,8 +351,8 @@ describe('SemanticService.review', () => {
     expect(prisma.tableSemantic.delete).toHaveBeenCalledWith({
       where: { id: 41 },
     });
-    expect(prisma.semanticChangeRequest.update).toHaveBeenCalledWith({
-      where: { id: 100 },
+    expect(prisma.semanticChangeRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: 100, status: 'pending' },
       data: expect.objectContaining({ status: 'approved' }),
     });
   });
@@ -350,8 +362,8 @@ describe('SemanticService.review', () => {
     prisma.semanticChangeRequest.findUnique.mockResolvedValue(pendingRequest);
     await withUser(WS_ADMIN, () => service.review(100, false, '不需要'));
     expect(prisma.tableSemantic.create).not.toHaveBeenCalled();
-    expect(prisma.semanticChangeRequest.update).toHaveBeenCalledWith({
-      where: { id: 100 },
+    expect(prisma.semanticChangeRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: 100, status: 'pending' },
       data: expect.objectContaining({
         status: 'rejected',
         reviewNote: '不需要',

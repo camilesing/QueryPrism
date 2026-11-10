@@ -213,6 +213,17 @@ export class ParameterService {
           ),
         );
     }
+    if (!previous.metricEnabled && current.metricEnabled) {
+      void this.embeddingBackfill
+        .runMetrics()
+        .catch((e) =>
+          this.logger.error(
+            `metric backfill after metric.enabled re-enable failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          ),
+        );
+    }
     return result;
   }
 }

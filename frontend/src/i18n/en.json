@@ -136,7 +136,9 @@
     "metric_max_definitions": "Metric definition cap",
     "metric_max_definitions_hint": "Max metric definitions injected per question (prompt budget)",
     "naming_enabled": "Naming dictionary injection",
-    "naming_enabled_hint": "Inject matched term → standard-translation pairs into the prompt"
+    "naming_enabled_hint": "Inject matched term → standard-translation pairs into the prompt",
+    "metric_similarity_threshold": "Metric vector similarity threshold",
+    "metric_similarity_threshold_hint": "Cosine similarity a metric vector must exceed to fill the remaining metric slots; literal name/alias matches always win and vector recall falls back to literal when unavailable"
   },
   "prompt": {
     "default_password": "Default password:{msg}",

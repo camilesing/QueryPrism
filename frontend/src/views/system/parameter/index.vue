@@ -22,6 +22,7 @@ const EMBEDDING_NUMBER_KEYS = [
   'clarify.max_rounds',
   'semantic.max_tables',
   'metric.max_definitions',
+  'metric.similarity_threshold',
 ]
 
 const state = reactive({
@@ -51,6 +52,7 @@ const state = reactive({
     'semantic.max_tables': 1,
     'metric.enabled': true,
     'metric.max_definitions': 5,
+    'metric.similarity_threshold': 0.55,
     'naming.enabled': true,
     'login.initial_pwd_disabled': false,
     'login.initial_pwd_hidden': false,
@@ -618,6 +620,30 @@ onMounted(() => {
                 v-model.number="state.parameterForm['metric.max_definitions']"
                 :min="1"
                 step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.metric_similarity_threshold') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.metric_similarity_threshold_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['metric.similarity_threshold']"
+                :min="0"
+                :max="1"
+                :step="0.01"
+                :precision="2"
                 controls-position="right"
               />
             </div>

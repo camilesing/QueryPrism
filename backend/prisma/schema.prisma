@@ -699,6 +699,7 @@ model MetricDef {
   code        String // scope+kind 内唯一业务编码，如 pay_amount
   name        String // 展示名（问题匹配词），如 支付金额
   aliases     Json? // string[] 别名（同样参与问题匹配）
+  embedding   Json? // 向量数组 (number[]); 与 VectorService vec_metric_def 表保持同步
   description String?
   unit        String? // 原子指标度量单位（数据标准，advisory 注入提示词）
   definition  Json // 按 kind 严格校验的判别负载（见上方模型注释）

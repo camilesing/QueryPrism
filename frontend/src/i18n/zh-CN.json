@@ -136,7 +136,9 @@
     "metric_max_definitions": "指标注入上限",
     "metric_max_definitions_hint": "单次问题最多注入的指标定义数量（提示词预算）",
     "naming_enabled": "命名词典注入",
-    "naming_enabled_hint": "问题命中命名词典词条时，将「业务词 → 标准译名」注入提示词"
+    "naming_enabled_hint": "问题命中命名词典词条时，将「业务词 → 标准译名」注入提示词",
+    "metric_similarity_threshold": "指标向量相似度阈值",
+    "metric_similarity_threshold_hint": "指标向量的余弦相似度需超过该值才会补充指标提示词空位；字面名称/别名命中永远优先，向量不可用时自动退化为纯字面匹配"
   },
   "prompt": {
     "default_password": "默认密码：{msg}",

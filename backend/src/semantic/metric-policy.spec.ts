@@ -445,3 +445,147 @@ describe('namingTemplate', () => {
     expect(namingTemplate(std, '', 5)).toBe('');
   });
 });
+
+describe('matchMetricDefinitions vector supplement', () => {
+  const atomic = (over: Partial<MetricDefLike>): MetricDefLike =>
+    base({
+      kind: 'atomic',
+      definition: {
+        datasource_id: 1,
+        table_name: 'orders',
+        field_name: 'pay_amount',
+        aggregation: 'SUM',
+      },
+      ...over,
+    });
+  const pay = atomic({ id: 1, code: 'pay_amount', name: '支付金额' });
+  const refund = atomic({
+    id: 2,
+    code: 'refund_amount',
+    name: '退款金额',
+    definition: {
+      datasource_id: 1,
+      table_name: 'orders',
+      field_name: 'refund_amount',
+      aggregation: 'SUM',
+    },
+  });
+
+  it('renders fuzzy atomics AFTER every literal hit', () => {
+    const r = matchMetricDefinitions(
+      [refund, pay],
+      1,
+      '支付金额趋势',
+      5,
+      () => undefined,
+      {
+        fuzzy: ['atomic:refund_amount'],
+      },
+    );
+    expect(r.matched).toBe(2);
+    expect(r.text.indexOf('支付金额')).toBeLessThan(r.text.indexOf('退款金额'));
+  });
+
+  it('never evicts a literal hit when the cap is reached', () => {
+    const r = matchMetricDefinitions(
+      [refund, pay],
+      1,
+      '支付金额',
+      1,
+      () => undefined,
+      {
+        fuzzy: ['atomic:refund_amount'],
+      },
+    );
+    expect(r.matched).toBe(1);
+    expect(r.text).toContain('pay_amount');
+    expect(r.text).not.toContain('refund_amount');
+  });
+
+  it('ignores fuzzy hits for derived/composite metrics', () => {
+    const derived = base({
+      id: 3,
+      kind: 'derived',
+      code: 'baby_pay',
+      name: '母婴支付金额',
+      definition: { atomic_code: 'pay_amount' },
+    });
+    const r = matchMetricDefinitions(
+      [pay, derived],
+      1,
+      '趋势',
+      5,
+      () => undefined,
+      {
+        fuzzy: ['derived:baby_pay'],
+      },
+    );
+    expect(r.matched).toBe(0);
+    expect(r.text).toBe('');
+  });
+
+  it('ignores fuzzy hits for modifiers/periods (WHERE constraints stay literal)', () => {
+    const modifier = base({
+      id: 4,
+      kind: 'modifier',
+      code: 'baby',
+      name: '母婴',
+      definition: {
+        datasource_id: 1,
+        table_name: 'orders',
+        field_name: 'category',
+        operator: 'IN',
+        values: ['母婴'],
+      },
+    });
+    const r = matchMetricDefinitions(
+      [pay, modifier],
+      1,
+      '支付金额',
+      5,
+      () => undefined,
+      {
+        fuzzy: ['modifier:baby'],
+      },
+    );
+    expect(r.text).toContain('支付金额');
+    expect(r.text).not.toContain('母婴');
+  });
+
+  it('drops a fuzzy atomic bound to another datasource', () => {
+    const foreign = atomic({
+      id: 5,
+      code: 'gmv',
+      name: '成交额',
+      definition: {
+        datasource_id: 2,
+        table_name: 'orders',
+        field_name: 'gmv',
+        aggregation: 'SUM',
+      },
+    });
+    const r = matchMetricDefinitions(
+      [foreign],
+      1,
+      '成交额趋势',
+      5,
+      () => undefined,
+      {
+        fuzzy: ['atomic:gmv'],
+      },
+    );
+    expect(r.matched).toBe(0);
+  });
+
+  it('stays literal-only when no fuzzy keys are supplied', () => {
+    const r = matchMetricDefinitions(
+      [pay, refund],
+      1,
+      '支付金额',
+      5,
+      () => undefined,
+    );
+    expect(r.matched).toBe(1);
+    expect(r.text).not.toContain('refund_amount');
+  });
+});

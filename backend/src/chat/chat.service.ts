@@ -1183,6 +1183,7 @@ export class ChatService {
             datasourceId,
             content,
             cfg.metricMaxDefinitions,
+            cfg,
           );
           if (matched.text) {
             metricText = matched.text;

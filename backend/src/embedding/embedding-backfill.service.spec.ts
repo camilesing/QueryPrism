@@ -16,6 +16,7 @@ type MockPrisma = {
   dataTraining: { findMany: jest.Mock; updateMany: jest.Mock };
   datasource: { findMany: jest.Mock; updateMany: jest.Mock };
   table: { findMany: jest.Mock; updateMany: jest.Mock };
+  metricDef: { findMany: jest.Mock; updateMany: jest.Mock };
   $transaction: jest.Mock;
 };
 
@@ -36,6 +37,7 @@ function makePrisma(rows: Record<string, Row[]> = {}): MockPrisma {
     dataTraining: delegate(rows.dataTraining ?? []),
     datasource: delegate(rows.datasource ?? []),
     table: delegate(rows.table ?? []),
+    metricDef: delegate(rows.metric ?? []),
     // interactive transactions run on the same mocked client
     $transaction: jest.fn(),
   };
@@ -111,6 +113,7 @@ describe('EmbeddingBackfillService', () => {
             customComment: '销售单',
           },
         ],
+        metric: [{ id: 5, name: '支付金额', aliases: null, description: null }],
       });
       embedding.embedBatch.mockImplementation((texts: string[]) =>
         texts.map(() => [0.5]),
@@ -121,6 +124,7 @@ describe('EmbeddingBackfillService', () => {
         dataTraining: 1,
         datasource: 1,
         table: 1,
+        metric: 1,
       });
       // table text uses the EFFECTIVE comment (custom wins)
       expect(embedding.embedBatch).toHaveBeenNthCalledWith(4, [
@@ -136,7 +140,7 @@ describe('EmbeddingBackfillService', () => {
         },
         data: { embedding: [0.5] },
       });
-      expect(vector.upsert).toHaveBeenCalledTimes(4);
+      expect(vector.upsert).toHaveBeenCalledTimes(5);
     });
 
     it('skips the knowledge half when embedding.enabled=false (saved param)', async () => {
@@ -171,6 +175,50 @@ describe('EmbeddingBackfillService', () => {
       expect(prisma.table.findMany).not.toHaveBeenCalled();
     });
 
+    it('skips the metric collection when metric.enabled=false', async () => {
+      const prisma = makePrisma({
+        metric: [{ id: 5, name: '支付金额', aliases: null, description: null }],
+      });
+      prisma.systemVariable.findMany.mockResolvedValue([
+        { name: 'metric.enabled', value: 'false' },
+      ]);
+      await makeService(prisma, vector, embedding).run();
+      expect(prisma.metricDef.findMany).not.toHaveBeenCalled();
+    });
+
+    it('fills metric rows with name + aliases + description text', async () => {
+      const prisma = makePrisma({
+        metric: [
+          {
+            id: 5,
+            name: '支付金额',
+            aliases: ['支付额'],
+            description: '订单支付总额',
+          },
+        ],
+      });
+      embedding.embedBatch.mockResolvedValue([[0.5]]);
+      await makeService(prisma, vector, embedding).runMetrics();
+      expect(embedding.embedBatch).toHaveBeenCalledWith([
+        '支付金额 支付额\n订单支付总额',
+      ]);
+      expect(prisma.metricDef.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 5,
+          embedding: DB_NULL,
+          name: '支付金额',
+          description: '订单支付总额',
+        },
+        data: { embedding: [0.5] },
+      });
+      expect(vector.upsert).toHaveBeenCalledWith(
+        'metric_def',
+        5,
+        [0.5],
+        expect.anything(),
+      );
+    });
+
     it('returns zeroed counts without querying when embedding is unavailable', async () => {
       embedding.available = false;
       const prisma = makePrisma();
@@ -180,6 +228,7 @@ describe('EmbeddingBackfillService', () => {
         dataTraining: 0,
         datasource: 0,
         table: 0,
+        metric: 0,
       });
       expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
     });
@@ -284,6 +333,7 @@ describe('EmbeddingBackfillService', () => {
         dataTraining: 1,
         datasource: 0,
         table: 0,
+        metric: 0,
       });
       expect(prisma.terminology.updateMany).not.toHaveBeenCalled();
       expect(prisma.dataTraining.updateMany).toHaveBeenCalledTimes(1);

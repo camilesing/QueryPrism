@@ -3,11 +3,13 @@
 // PERSONAL direct writes, version history, and the page visibility filter.
 // Real services + real Prisma (CRUD-block pattern from chat/terminology e2e).
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { BadRequestException, INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/database/prisma.service';
+import { requestContextStorage } from './../src/common/context/request-context';
+import { SemanticService } from './../src/semantic/semantic.service';
 
 const TOKEN_HEADER = 'X-QUERYPRISM-TOKEN';
 
@@ -177,6 +179,71 @@ describe('Semantic admin (e2e)', () => {
       .set(TOKEN_HEADER, memberToken)
       .send({ id: proposed.request_id + 1_000_000, approve: true });
     expect(denied.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('two concurrent approvals apply the proposal exactly once', async () => {
+    const tableName = `e2e_concurrent_${Date.now()}`;
+    const propose = await request(app.getHttpServer())
+      .put('/api/v1/system/semantic')
+      .set(TOKEN_HEADER, memberToken)
+      .send({
+        entity_type: 'table',
+        scope: 'WORKSPACE',
+        datasource_id: 1,
+        table_name: tableName,
+        meaning: '并发审批目标',
+      });
+    expect(propose.status).toBe(200);
+    const requestId = (propose.body as ApiEnvelope<{ request_id: number }>).data
+      .request_id;
+
+    // True concurrency: two HTTP requests mostly SERIALISE at review()'s
+    // pre-read (the second sees `approved` and never reaches the claim), which
+    // would not exercise the guard. Calling the service in one tick makes both
+    // pre-reads race, so the conditional updateMany(status='pending') decides.
+    const service = app.get(SemanticService);
+    const admin = {
+      id: 1,
+      account: 'admin',
+      oid: 1,
+      language: 'zh-CN',
+      weight: 1,
+    };
+    const races = await Promise.allSettled([
+      requestContextStorage.run({ user: admin }, () =>
+        service.review(requestId, true, '并发 A'),
+      ),
+      requestContextStorage.run({ user: admin }, () =>
+        service.review(requestId, true, '并发 B'),
+      ),
+    ]);
+    expect(races.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = races.find((r) => r.status === 'rejected');
+    expect(rejected?.status).toBe('rejected');
+    if (rejected?.status === 'rejected') {
+      expect(rejected.reason).toBeInstanceOf(BadRequestException);
+    }
+
+    const applied = await prisma.tableSemantic.findFirst({
+      where: { scope: 'WORKSPACE', tableName },
+    });
+    expect(applied).not.toBeNull();
+    // A double apply would have appended a second version snapshot.
+    const versions = await prisma.tableSemanticVersion.count({
+      where: { entityId: applied!.id },
+    });
+    expect(versions).toBe(1);
+    const closed = await prisma.semanticChangeRequest.findUnique({
+      where: { id: requestId },
+    });
+    expect(closed?.status).toBe('approved');
+
+    // A repeat click over HTTP reports "not pending" instead of re-applying.
+    const again = await request(app.getHttpServer())
+      .put('/api/v1/system/semantic/request/review')
+      .set(TOKEN_HEADER, adminToken)
+      .send({ id: requestId, approve: true });
+    expect(again.status).toBe(400);
   });
 
   it('member writes PERSONAL directly; page shows own rows only for PERSONAL', async () => {

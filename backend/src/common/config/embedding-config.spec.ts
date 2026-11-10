@@ -115,6 +115,7 @@ describe('resolveEmbeddingConfig', () => {
       semanticEnumCooldown: 60,
       metricEnabled: true,
       metricMaxDefinitions: 5,
+      metricSimilarityThreshold: 0.55,
       namingEnabled: true,
     } satisfies EmbeddingConfig);
   });
@@ -173,8 +174,8 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the twenty-two persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(22);
+  it('exposes exactly the twenty-three persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(23);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
     ).toHaveLength(10);
@@ -188,7 +189,25 @@ describe('resolveEmbeddingConfig', () => {
       EMBEDDING_PARAMETER_KEYS.filter(
         (k) => k.startsWith('metric.') || k.startsWith('naming.'),
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
+  });
+
+  it('metric.similarity_threshold defaults to 0.55 and parses strictly', async () => {
+    const defaults = await resolveEmbeddingConfig(makePrisma([]) as never);
+    expect(defaults.metricSimilarityThreshold).toBe(0.55);
+    const saved = await resolveEmbeddingConfig(
+      makePrisma([
+        { name: 'metric.similarity_threshold', value: '0.72' },
+      ]) as never,
+    );
+    expect(saved.metricSimilarityThreshold).toBe(0.72);
+    await expect(
+      resolveEmbeddingConfig(
+        makePrisma([
+          { name: 'metric.similarity_threshold', value: '1.5' },
+        ]) as never,
+      ),
+    ).rejects.toThrow('metric.similarity_threshold');
   });
 
   it('metric.*/naming.* rows override env with strict parsing', async () => {

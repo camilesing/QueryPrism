@@ -1,5 +1,5 @@
 // VectorService — pgvector-backed ANN store for RAG recall (terminology /
-// data-training / datasource + table selection).
+// data-training / datasource + table selection / metric definitions).
 //
 // Prisma's `embedding Json` columns remain the source of truth (portable,
 // rebuildable). The `vector_store` schema holds derived search indexes:
@@ -16,7 +16,7 @@ import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
 export type VectorCollection =
-  'terminology' | 'data_training' | 'datasource' | 'table';
+  'terminology' | 'data_training' | 'datasource' | 'table' | 'metric_def';
 
 export interface VectorHit {
   id: number;
@@ -29,6 +29,7 @@ const COLLECTIONS = [
   'data_training',
   'datasource',
   'table',
+  'metric_def',
 ] as const;
 
 /** Dedicated schema for derived vector tables (not managed by Prisma Migrate). */

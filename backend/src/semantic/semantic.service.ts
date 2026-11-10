@@ -461,8 +461,9 @@ export class SemanticService {
     };
   }
 
-  /** Approve / reject a request. Approval applies the payload at the target
-   *  layer in ONE transaction (upsert/remove + version history + close). */
+  /** Approve / reject a request. Approval claims the request and applies the
+   *  payload at the target layer in ONE transaction (claim + upsert/remove +
+   *  version history). */
   async review(
     id: number,
     approve: boolean,
@@ -488,31 +489,17 @@ export class SemanticService {
     ) {
       throw new ForbiddenException(tr('semantic.review_forbidden'));
     }
+    // Concurrency: the status read above is outside the transaction, so two
+    // reviewers can both see `pending`. The conditional claim below is the
+    // real guard — only one `updateMany` matches status='pending'; the loser
+    // waits on the row lock and then matches 0 rows (PostgreSQL re-checks the
+    // WHERE against the newest version), so the payload is applied exactly
+    // once and a repeat/parallel click gets "not pending".
     await withNaturalKeyRetry(
       () =>
         this.prisma.$transaction(async (tx) => {
-          if (approve) {
-            const info = this.infoFromPayload(request.payload);
-            const target =
-              request.targetType === 'WORKSPACE'
-                ? {
-                    scope: 'WORKSPACE' as const,
-                    oid: request.oid,
-                    ownerUid: null,
-                  }
-                : {
-                    scope: 'GLOBAL' as const,
-                    oid: null,
-                    ownerUid: null,
-                  };
-            if (request.action === 'upsert') {
-              await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
-            } else {
-              await this.applyRemoveTx(tx, info.entity_type, target, info);
-            }
-          }
-          await tx.semanticChangeRequest.update({
-            where: { id },
+          const claimed = await tx.semanticChangeRequest.updateMany({
+            where: { id, status: 'pending' },
             data: {
               status: approve ? 'approved' : 'rejected',
               reviewerUid: actor.id,
@@ -520,6 +507,28 @@ export class SemanticService {
               reviewedAt: new Date(),
             },
           });
+          if (claimed.count === 0) {
+            throw new BadRequestException(tr('semantic.request_not_pending'));
+          }
+          if (!approve) return;
+          const info = this.infoFromPayload(request.payload);
+          const target =
+            request.targetType === 'WORKSPACE'
+              ? {
+                  scope: 'WORKSPACE' as const,
+                  oid: request.oid,
+                  ownerUid: null,
+                }
+              : {
+                  scope: 'GLOBAL' as const,
+                  oid: null,
+                  ownerUid: null,
+                };
+          if (request.action === 'upsert') {
+            await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
+          } else {
+            await this.applyRemoveTx(tx, info.entity_type, target, info);
+          }
         }),
       () => new ConflictException(tr('semantic.write_conflict')),
     );
@@ -711,6 +720,11 @@ export class SemanticService {
     };
   }
 
+  /** Best-effort duplicate-proposal probe (same trade-off as the shared
+   *  governed-dictionary base): it inspects ONE pending request, so two truly
+   *  concurrent proposals can each miss the other. Accepted — approval applies
+   *  payloads in order and the per-layer natural key prevents a duplicate
+   *  entity. */
   private async assertNoPendingRequest(
     tx: PrismaTx,
     info: SemanticUpsertInfo,
