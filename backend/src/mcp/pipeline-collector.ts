@@ -30,6 +30,9 @@ export interface CollectedPipeline {
       comment: string;
     }>;
     max_select: number;
+    /** Present when the pause came from the LLM's need_clarify contract
+     *  (rule 2) — its one-liner about what the schema is missing. */
+    reason?: string;
   } | null;
 }
 

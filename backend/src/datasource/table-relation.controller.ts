@@ -44,4 +44,12 @@ export class TableRelationController {
     // Body is a bare JSON array of X6 cells; stored verbatim.
     return this.ds.saveTableRelation(+dsId, cells ?? []);
   }
+
+  /** Append-only history of saved relation graphs (MetaDataImprove M3). */
+  @Post('versions/:dsId')
+  @HttpCode(200)
+  @UseGuards(WsAdminGuard)
+  versions(@Param('dsId') dsId: string) {
+    return this.ds.getTableRelationVersions(+dsId);
+  }
 }

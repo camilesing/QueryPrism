@@ -19,6 +19,7 @@ import Professional from '@/views/system/professional/index.vue'
 import Training from '@/views/system/training/index.vue'
 import Semantic from '@/views/system/semantic/index.vue'
 import Metric from '@/views/system/metric/index.vue'
+import MetadataSync from '@/views/system/metadata-sync/index.vue'
 import Prompt from '@/views/system/prompt/index.vue'
 import Audit from '@/views/system/audit/index.vue'
 import Appearance from '@/views/system/appearance/index.vue'
@@ -144,6 +145,12 @@ export const routes = [
         name: 'metric',
         component: Metric,
         meta: { title: 'metric.menu_title' },
+      },
+      {
+        path: '/set/metadata-sync',
+        name: 'metadataSync',
+        component: MetadataSync,
+        meta: { title: 'metadata_sync.menu_title' },
       },
     ],
   },

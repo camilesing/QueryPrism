@@ -1,0 +1,19 @@
+{
+  "not_found": "元数据同步源 #{{id}} 不存在",
+  "missing_id": "缺少同步源 id",
+  "missing_name": "同步源名称不能为空",
+  "name_exists": "同名同步源已存在",
+  "invalid_endpoint": "接口地址必须是 http(s) URL",
+  "invalid_cron": "cron 表达式不合法",
+  "invalid_target": "不支持的同步目标",
+  "missing_tool": "MCP 同步源必须填写工具名",
+  "auth_invalid": "认证配置不合法",
+  "already_running": "该同步源正在运行中",
+  "run_as_invalid": "同步源创建者已不是空间管理员",
+  "http_status": "外部接口返回 HTTP {{status}}",
+  "invalid_payload": "外部数据必须是 JSON 数组或 {data: [...]}",
+  "mcp_empty": "MCP 工具没有返回文本内容",
+  "timeout": "外部接口 30 秒内没有响应",
+  "too_many_rows": "外部接口返回超过 {{max}} 行",
+  "all_rows_failed": "所有导入行都未通过校验"
+}

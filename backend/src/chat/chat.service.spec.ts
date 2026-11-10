@@ -184,6 +184,14 @@ function makeService() {
     }),
   };
 
+  // MetaDataImprove M2: no effective semantics by default (empty maps →
+  // rule 2 never narrows; individual tests override per-case).
+  const semanticService = {
+    effectiveAnnotations: jest
+      .fn()
+      .mockResolvedValue({ tableMeanings: {}, fieldNotes: {} }),
+  };
+
   const service = new ChatService(
     prisma as unknown as PrismaService,
     datasourceService as unknown as DatasourceService,
@@ -192,13 +200,7 @@ function makeService() {
     sqlSafety as unknown as SqlSafetyService,
     rowPermissionService as unknown as RowPermissionService,
     terminologyService as never,
-    // MetaDataImprove M2: no effective semantics by default (empty maps →
-    // rule 2 never narrows; individual tests override per-case).
-    {
-      effectiveAnnotations: jest
-        .fn()
-        .mockResolvedValue({ tableMeanings: {}, fieldNotes: {} }),
-    } as never,
+    semanticService as never,
     // MetaDataImprove M4: no metric/naming matches by default (empty text →
     // no injection; individual tests override per-case).
     {
@@ -221,6 +223,7 @@ function makeService() {
     sqlSafety,
     audit,
     config,
+    semanticService,
   };
 }
 
@@ -822,6 +825,65 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     expect(m.aiQuestionService.buildForResult).toHaveBeenCalledWith(
       expect.objectContaining({ tableIds: [7, 9] }),
     );
+  });
+
+  it('injects effective semantics even when the schema is not narrowed', async () => {
+    const m = makeService();
+    happyMocks(m);
+    // One recalled table → the rule-2 cap is not exceeded, so the old code
+    // skipped semantics entirely. The final decoration step must still load
+    // and pass them.
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+    ]);
+    const semantics = {
+      tableMeanings: { users: '用户主表' },
+      fieldNotes: {
+        'users.id': { role: 'dimension', meaning: '用户 ID' },
+      },
+    };
+    m.semanticService.effectiveAnnotations.mockResolvedValue(semantics);
+
+    await run(1, () => collect(m.service.runPipeline(1, '查询用户')));
+
+    expect(m.semanticService.effectiveAnnotations).toHaveBeenCalledWith(1, [
+      'users',
+    ]);
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
+      expect.objectContaining({ semantics }),
+    );
+  });
+
+  // MetaDataImprove M1: max_select is part of the clarify contract, not just
+  // a frontend hint — the resume endpoint rejects over-picks.
+  it('rejects a clarify answer exceeding the pending max_select', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue({
+      id: 100,
+      chatId: 1,
+      oid: 1,
+      createBy: 1,
+      question: '统计一下',
+      clarify: {
+        record_id: 100,
+        question: '统计一下',
+        max_select: 1,
+        candidates: [
+          { table_id: 1, table_name: 'users', comment: '' },
+          { table_id: 2, table_name: 'orders', comment: '' },
+        ],
+      },
+      clarifyStatus: 'pending',
+    });
+
+    await expect(
+      run(1, () =>
+        collect(m.service.resumeClarified(100, { tableIds: [1, 2] })),
+      ),
+    ).rejects.toThrow('最多只能选择 1 张表');
+    // The rejected answer is not persisted.
+    expect(m.prisma.chatRecord.update).not.toHaveBeenCalled();
   });
 
   // MetaDataImprove M3: the relation editor's X6 cells resolve into FK edges

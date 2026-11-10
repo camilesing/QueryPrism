@@ -446,6 +446,9 @@ export class McpService {
             question: collected.clarify.question,
             candidates: collected.clarify.candidates,
             max_select: collected.clarify.max_select,
+            // Rule 2 pauses carry the LLM's missing-schema reason; gate pauses
+            // have none (JSON.stringify drops the undefined field).
+            reason: collected.clarify.reason,
             hint: 'Re-call ask_question with clarify_record_id and either clarify_table_ids (ids from candidates), clarify_text, or clarify_skip=true.',
           }),
         );

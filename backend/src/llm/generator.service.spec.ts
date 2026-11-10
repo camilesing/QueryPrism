@@ -87,6 +87,28 @@ describe('GeneratorService', () => {
     });
   });
 
+  it('forwards the need_clarify contract instead of degrading to empty SQL', async () => {
+    const gen = new GeneratorService(
+      mockLlm([
+        {
+          content:
+            '{"need_clarify":true,"reason":"the question needs the orders table"}',
+        },
+      ]),
+      prompt,
+    );
+    const events = await collect(gen.generateSql(ctx()));
+    expect(result(events)).toEqual({
+      success: true,
+      sql: '',
+      tables: [],
+      chartType: '',
+      brief: '',
+      needClarify: true,
+      reason: 'the question needs the orders table',
+    });
+  });
+
   it('forwards reasoning deltas before the result', async () => {
     const gen = new GeneratorService(
       mockLlm([

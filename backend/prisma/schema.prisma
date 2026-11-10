@@ -19,6 +19,10 @@ model Datasource {
   status            String   @default("active") // active | error
   // User-edited table relationships (FK graph) feeding M-Schema foreign keys.
   tableRelation     Json?
+  // Append-only version counter for tableRelation (MetaDataImprove M3):
+  // every save increments it and writes a DatasourceRelationVersion snapshot.
+  // Runtime still reads only the current `tableRelation` (latest version).
+  relationVersion   Int      @default(0)
   // Cached embedding (text/vector) for datasource selection — populated in Phase 3.
   embedding         Json?
   // Recommended chart / problem config.
@@ -32,8 +36,26 @@ model Datasource {
   tables              Table[]
   chats               Chat[]
   recommendedProblems DsRecommendedProblem[]
+  relationVersions    DatasourceRelationVersion[]
 
   @@index([oid])
+}
+
+// append-only 关系版本历史（MetaDataImprove M3）：每次保存关系图写一份全量
+// X6 cells 快照，便于审阅/回溯；运行时永远只读 Datasource.tableRelation
+// （即最新版本）。删除数据源时历史级联删除。
+model DatasourceRelationVersion {
+  id           Int        @id @default(autoincrement())
+  datasource   Datasource @relation(fields: [datasourceId], references: [id], onDelete: Cascade)
+  datasourceId Int
+  version      Int
+  snapshot     Json // 全量 X6 cells（graph.toJSON().cells）或规范化 FK 边数组
+  changedBy    Int? // 操作者 uid
+  note         String?
+  createdAt    DateTime   @default(now())
+
+  @@unique([datasourceId, version])
+  @@index([datasourceId, createdAt])
 }
 
 // 表结构
@@ -748,4 +770,56 @@ model DataStandardVersion {
   createdAt DateTime        @default(now())
 
   @@unique([entityId, version])
+}
+
+// ============================== MetaDataImprove M5: 外部元数据同步 ==============================
+
+// 外部元数据源：定时/手动从外部 HTTP API 或 MCP server 拉取，复用 /meta/*
+// 导入行格式，落到当前工作空间的 WORKSPACE 语义/指标/标准层。
+// authJson 是 AES 加密的 { headers?: Record<string,string>, token?: string }；
+// 列表接口永不回传明文，只返回 hasAuth。createdBy 是运行身份（必须保持为空
+// 间管理员；失效时同步失败而不是降级）。
+// 调度器按单实例设计：多实例部署会重复触发（见 metadata-sync-scheduler.service.ts）。
+model MetadataSyncSource {
+  id         Int      @id @default(autoincrement())
+  oid        Int // 工作空间 id（无 FK，mirror Terminology.oid）
+  name       String
+  kind       String // HTTP_API | MCP
+  target     String // semantic | metric | standard
+  endpoint   String // http(s) URL
+  httpMethod String   @default("GET") // HTTP_API: GET | POST
+  httpBody   Json? // HTTP_API POST body（可选）
+  authJson   String? // AES 加密的 {headers?, token?}
+  mcpTool    String? // MCP: 工具名
+  mcpArgs    Json? // MCP: 工具参数
+  cron       String? // 5/6 段 cron；null = 仅手动
+  enabled    Boolean  @default(true)
+  createdBy  Int // 运行身份 uid（必须是空间管理员）
+  lastRunAt  DateTime?
+  lastStatus String? // success | failed | running
+  lastError  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  runs MetadataSyncRun[]
+
+  @@unique([oid, name])
+  @@index([oid])
+}
+
+// 每次拉取的运行记录；failed 只保留前 50 条逐行失败摘要。
+model MetadataSyncRun {
+  id          Int                @id @default(autoincrement())
+  source      MetadataSyncSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId    Int
+  trigger     String // manual | cron
+  status      String // success | failed
+  applied     Int                @default(0)
+  failedCount Int                @default(0)
+  failed      Json? // Array<{row, reason}>
+  error       String?
+  startedAt   DateTime           @default(now())
+  finishedAt  DateTime?
+
+  @@index([sourceId, startedAt])
 }

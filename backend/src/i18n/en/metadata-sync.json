@@ -1,0 +1,19 @@
+{
+  "not_found": "Metadata sync source #{{id}} not found",
+  "missing_id": "A source id is required",
+  "missing_name": "A source name is required",
+  "name_exists": "A sync source with this name already exists",
+  "invalid_endpoint": "Endpoint must be an http(s) URL",
+  "invalid_cron": "Invalid cron expression",
+  "invalid_target": "Unsupported sync target",
+  "missing_tool": "MCP sources require a tool name",
+  "auth_invalid": "Invalid authentication configuration",
+  "already_running": "This sync source is already running",
+  "run_as_invalid": "The sync source owner is no longer a workspace admin",
+  "http_status": "External API returned HTTP {{status}}",
+  "invalid_payload": "The external source must return a JSON array or {data: [...]}",
+  "mcp_empty": "The MCP tool returned no text content",
+  "timeout": "The external source did not respond within 30 seconds",
+  "too_many_rows": "The external source returned more than {{max}} rows",
+  "all_rows_failed": "Every imported row failed validation"
+}

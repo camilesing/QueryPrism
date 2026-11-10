@@ -20,6 +20,7 @@ export enum OperationModule {
   MCP = 'mcp',
   SEMANTIC = 'semantic',
   METRIC = 'metric',
+  METADATA_SYNC = 'metadata_sync',
 }
 
 export enum OperationType {

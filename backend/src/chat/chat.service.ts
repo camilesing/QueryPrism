@@ -126,6 +126,23 @@ function clarifyCandidateIds(clarify: Prisma.JsonValue | null): number[] {
   return clarifyCandidates(clarify).map((c) => c.table_id);
 }
 
+/** The advisory `max_select` stored on the pending payload; null when the
+ *  payload is corrupt/legacy. The frontend renders radio-style limits, but
+ *  the resume endpoint enforces the same cap server-side. */
+function clarifyMaxSelect(clarify: Prisma.JsonValue | null): number | null {
+  if (
+    clarify == null ||
+    typeof clarify !== 'object' ||
+    Array.isArray(clarify)
+  ) {
+    return null;
+  }
+  const raw = (clarify as { max_select?: unknown }).max_select;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : null;
+}
+
 function clarifyCandidateNames(
   clarify: Prisma.JsonValue | null,
 ): Map<number, string> {
@@ -456,6 +473,12 @@ export class ChatService {
     const wanted = (answer.tableIds ?? []).filter((id) =>
       candidateIds.includes(id),
     );
+    const maxSelect = clarifyMaxSelect(record.clarify);
+    if (maxSelect != null && wanted.length > maxSelect) {
+      throw new BadRequestException(
+        chatMessages(this.profileLang()).clarifyTooManyTables(maxSelect),
+      );
+    }
     const text = (answer.text ?? '').trim();
     if (!answer.skip && wanted.length === 0 && !text) {
       throw new BadRequestException(
@@ -992,6 +1015,10 @@ export class ChatService {
     // their explicit choice wins. Join paths to uncovered tables are covered
     // by the M3 bridge expansion below (join-path.ts).
     let semanticAnnotations: SemanticAnnotations | undefined;
+    /** Table names the current `semanticAnnotations` were resolved for. Lets
+     *  the final decoration step below reuse the candidate load instead of
+     *  hitting the semantic tables twice per run. */
+    let semanticAnnotatedNames: string[] | undefined;
     let semanticNarrowed = false;
     if (
       cfg.semanticEnabled &&
@@ -1004,12 +1031,15 @@ export class ChatService {
         datasourceId,
         candidateNames,
       );
+      // Keep the candidate load even when it does not narrow: the final
+      // decoration step reuses it whenever the stuffed set is a subset.
+      semanticAnnotations = annotations;
+      semanticAnnotatedNames = candidateNames;
       const coveredIds = tableIds.filter(
         (id) => annotations.tableMeanings[nameById.get(id) ?? ''] !== undefined,
       );
       if (coveredIds.length >= cfg.semanticMaxTables) {
         tableIds = coveredIds.slice(0, cfg.semanticMaxTables);
-        semanticAnnotations = annotations;
         semanticNarrowed = true;
       }
     }
@@ -1101,6 +1131,29 @@ export class ChatService {
         .map((n) => tableByName.get(n)?.id)
         .filter((id): id is number => id != null && !stuffed.includes(id));
       if (bridgeIds.length > 0) tableIds = [...stuffed, ...bridgeIds];
+    }
+
+    // --- always-on semantic decoration (MetaDataImprove M2) --------------
+    // Rule-2 narrowing is a gate, not the only reason to read semantics: a
+    // single recalled table, a user-picked subset, metric force-stuffing and
+    // bridge expansion all still benefit from table meanings, field notes and
+    // cached dimension enums. Resolve once for the FINAL stuffed set, reusing
+    // the pre-gate candidate load when it already covers every final table.
+    if (cfg.semanticEnabled) {
+      const finalNames = tableIds
+        ? tableIds.map((id) => nameById.get(id)).filter((n): n is string => !!n)
+        : [...checkedTableNames];
+      const loaded = new Set(semanticAnnotatedNames ?? []);
+      if (
+        finalNames.length > 0 &&
+        (!semanticAnnotations || finalNames.some((n) => !loaded.has(n)))
+      ) {
+        semanticAnnotations = await this.semanticService.effectiveAnnotations(
+          datasourceId,
+          finalNames,
+        );
+        semanticAnnotatedNames = finalNames;
+      }
     }
 
     const history = await this.getHistory(chatId, this.historyRounds());

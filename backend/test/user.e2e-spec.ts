@@ -243,7 +243,8 @@ describe('User mgmt + self-service (e2e)', () => {
     expect(userA.oid_list).toEqual([1]);
     expect(userA.status).toBe(1);
     expect(userA.origin).toBe(0);
-    expect(userA.language).toBe('zh-CN');
+    // New users default to English (migration 20261108050000_i18n_default_language).
+    expect(userA.language).toBe('en');
     expect(typeof userA.create_time).toBe('string');
   });
 

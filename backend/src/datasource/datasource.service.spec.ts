@@ -143,6 +143,67 @@ describe('DatasourceService', () => {
     expect(service).toBeDefined();
   });
 
+  // MetaDataImprove M3: every relation save is versioned in one transaction.
+  describe('saveTableRelation versioning', () => {
+    function mockTx(owned: boolean) {
+      const tx = {
+        datasource: {
+          findFirst: jest.fn().mockResolvedValue(owned ? { id: 1 } : null),
+          update: jest.fn().mockResolvedValue({ relationVersion: 3 }),
+        },
+        datasourceRelationVersion: {
+          create: jest.fn().mockResolvedValue({ id: 9 }),
+        },
+      };
+      jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation((arg: unknown) =>
+          typeof arg === 'function'
+            ? (arg as (client: unknown) => Promise<unknown>)(tx)
+            : Promise.all(arg as Promise<unknown>[]),
+        );
+      return tx;
+    }
+
+    it('increments the version and appends a snapshot', async () => {
+      const tx = mockTx(true);
+      const edges = [{ id: 'e1', shape: 'edge' }];
+
+      await expect(service.saveTableRelation(1, edges)).resolves.toEqual({
+        success: true,
+        edges,
+        version: 3,
+      });
+      expect(tx.datasource.findFirst).toHaveBeenCalledWith({
+        where: { id: 1, oid: 1 },
+        select: { id: true },
+      });
+      expect(tx.datasource.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: {
+          tableRelation: edges,
+          relationVersion: { increment: 1 },
+        },
+        select: { relationVersion: true },
+      });
+      expect(tx.datasourceRelationVersion.create).toHaveBeenCalledWith({
+        data: {
+          datasourceId: 1,
+          version: 3,
+          snapshot: edges,
+          changedBy: 1,
+        },
+      });
+    });
+
+    it('rejects a datasource outside the current workspace', async () => {
+      mockTx(false);
+      await expect(service.saveTableRelation(2, [])).rejects.toThrow(
+        '数据源 #2 不存在',
+      );
+    });
+  });
+
   describe('testConnection (integration via real better-sqlite3)', () => {
     beforeEach(() => setI18n(createTestI18n()));
     let testDbPath: string;

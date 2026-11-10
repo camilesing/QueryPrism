@@ -266,12 +266,21 @@ function parseSqlResult(text: string): SqlGenResult | null {
   const j = extractNestedJson(text);
   if (!j || typeof j !== 'object') return null;
   const o = j as Record<string, unknown>;
+  // MetaDataImprove rule 2: generate_sql may decline to write SQL and ask
+  // for more tables instead of guessing. The prompt contract uses snake_case;
+  // camelCase is accepted too so a model mirroring the result type works.
+  // Without this mapping a need_clarify response degrades to an empty SQL
+  // (the pipeline then fails with "SQL is empty" instead of pausing).
+  const needClarify = o.need_clarify === true || o.needClarify === true;
   return {
     success: typeof o.success === 'boolean' ? o.success : true,
     sql: asString(o.sql),
     tables: Array.isArray(o.tables) ? o.tables.map((t) => String(t)) : [],
     chartType: asString(o['chart-type'] ?? o.chartType),
     brief: asString(o.brief),
+    ...(needClarify
+      ? { needClarify: true, reason: asString(o.reason) || undefined }
+      : {}),
   };
 }
 

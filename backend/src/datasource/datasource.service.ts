@@ -518,14 +518,57 @@ export class DatasourceService {
     return ds.tableRelation ?? [];
   }
 
-  /** Replace the whole FK edge list (the relation editor saves atomically). */
+  /** Replace the whole FK edge list (the relation editor saves atomically).
+   *  MetaDataImprove M3 follow-up: each save appends an immutable snapshot in
+   *  the same transaction (version + 1), so the graph is reviewable later.
+   *  Runtime continues to read `Datasource.tableRelation` — the latest row. */
   async saveTableRelation(id: number, edges: unknown[]) {
-    await this.loadForConnector(id);
-    await this.prisma.datasource.update({
-      where: { id },
-      data: { tableRelation: edges as Prisma.InputJsonValue },
+    const oid = this.currentOid();
+    const changedBy = RequestContext.getUserId() ?? null;
+    const payload = (edges ?? []) as Prisma.InputJsonValue;
+    return this.prisma.$transaction(async (tx) => {
+      const owned = await tx.datasource.findFirst({
+        where: { id, oid },
+        select: { id: true },
+      });
+      if (!owned) {
+        throw new NotFoundException(tr('datasource.not_found', { id }));
+      }
+      const updated = await tx.datasource.update({
+        where: { id },
+        data: {
+          tableRelation: payload,
+          relationVersion: { increment: 1 },
+        },
+        select: { relationVersion: true },
+      });
+      await tx.datasourceRelationVersion.create({
+        data: {
+          datasourceId: id,
+          version: updated.relationVersion,
+          snapshot: payload,
+          changedBy,
+        },
+      });
+      return { success: true, edges, version: updated.relationVersion };
     });
-    return { success: true, edges };
+  }
+
+  /** Append-only relation-graph history (newest first). */
+  async getTableRelationVersions(id: number) {
+    await this.loadForConnector(id);
+    return this.prisma.datasourceRelationVersion.findMany({
+      where: { datasourceId: id },
+      orderBy: { version: 'desc' },
+      select: {
+        id: true,
+        version: true,
+        snapshot: true,
+        changedBy: true,
+        note: true,
+        createdAt: true,
+      },
+    });
   }
 
   // ─── action-style route service methods ────────────────────────────

@@ -110,11 +110,19 @@ describe('Chat semantic rule 2 (e2e)', () => {
   let token: string;
   let prisma: PrismaService;
   let capturedTableIds: number[] | undefined;
+  /** The semantics buildSqlContext received on the LAST call. */
+  let capturedSemantics:
+    | { tableMeanings?: Record<string, string>; fieldNotes?: unknown }
+    | undefined;
+  /** How many ranked tables recall returns (1 = no rule-2 narrowing). */
+  let recallSlice: number;
   /** Flip the faked generateSql between need_clarify and a normal result. */
   let sqlMode: 'sql' | 'need_clarify';
 
   beforeEach(async () => {
     capturedTableIds = undefined;
+    capturedSemantics = undefined;
+    recallSlice = 3;
     sqlMode = 'sql';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -176,8 +184,15 @@ describe('Chat semantic rule 2 (e2e)', () => {
       .overrideProvider(AiQuestionService)
       .useValue({
         buildForSelectDatasource: () => ({ engine: 'MySQL' }),
-        buildSqlContext: (ctx: { tableIds?: number[] }) => {
+        buildSqlContext: (ctx: {
+          tableIds?: number[];
+          semantics?: {
+            tableMeanings?: Record<string, string>;
+            fieldNotes?: unknown;
+          };
+        }) => {
           capturedTableIds = ctx.tableIds;
+          capturedSemantics = ctx.semantics;
           return { engine: 'SQLite' };
         },
         buildForResult: () => ({ engine: 'SQLite' }),
@@ -197,8 +212,9 @@ describe('Chat semantic rule 2 (e2e)', () => {
           }),
         execSql: () => Promise.resolve({ columns: ['id'], rows: [[1]] }),
         recallTables: () =>
-          // ranked recall: 3 candidates (ids 1-3) — semantic.max_tables = 1
-          Promise.resolve(FAKE_TABLES.slice(0, 3)),
+          // ranked recall: 3 candidates (ids 1-3) — semantic.max_tables = 1.
+          // Tests can shrink the slice to simulate a single-table hit.
+          Promise.resolve(FAKE_TABLES.slice(0, recallSlice)),
       })
       .overrideProvider(SqlSafetyService)
       .useValue({
@@ -304,6 +320,37 @@ describe('Chat semantic rule 2 (e2e)', () => {
     }
   });
 
+  it('injects table semantics when recall returns just one table', async () => {
+    // No rule-2 narrowing happens (1 candidate <= semantic.max_tables), but
+    // the curated meaning must still decorate the prompt.
+    recallSlice = 1;
+    await prisma.tableSemantic.create({
+      data: {
+        scope: 'WORKSPACE',
+        oid: 1,
+        datasourceId: 1,
+        tableName: 'sales_order',
+        meaning: '销售订单主表',
+        enabled: true,
+      },
+    });
+    const chatId = await startChat();
+    try {
+      const res = await ask(chatId, '查一下sales_order');
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"type":"sql"');
+      expect(capturedTableIds).toEqual([1]);
+      expect(capturedSemantics?.tableMeanings).toMatchObject({
+        sales_order: '销售订单主表',
+      });
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
   it('LLM need_clarify pauses with the reason; a table pick resumes', async () => {
     sqlMode = 'need_clarify';
     // The question names a table so the M1 gate stays closed; no semantics
@@ -338,6 +385,44 @@ describe('Chat semantic rule 2 (e2e)', () => {
       });
       expect(finished!.clarifyStatus).toBe('answered');
       expect(finished!.finish).toBe(true);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
+  it('injects semantics for a table picked on the clarify resume', async () => {
+    sqlMode = 'need_clarify';
+    await prisma.tableSemantic.create({
+      data: {
+        scope: 'WORKSPACE',
+        oid: 1,
+        datasourceId: 1,
+        tableName: 'crm_customer',
+        meaning: '客户主表',
+        enabled: true,
+      },
+    });
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId, '查一下sales_order的金额');
+      const rid = recordIdFromSse(q.text);
+
+      // Resume with the hand-picked customer table; forcedTableIds skips
+      // rule 2, but the semantics of the picked table still decorate it.
+      sqlMode = 'sql';
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [2] });
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"type":"sql"');
+      expect(capturedTableIds).toEqual([2]);
+      expect(capturedSemantics?.tableMeanings).toMatchObject({
+        crm_customer: '客户主表',
+      });
     } finally {
       await request(app.getHttpServer())
         .delete(`/api/v1/chat/${chatId}`)

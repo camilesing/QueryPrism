@@ -5,6 +5,7 @@ export const datasourceApi = {
   check_by_id: (id: any) => request.get(`/datasource/check/${id}`),
   relationGet: (id: any) => request.post(`/table_relation/get/${id}`),
   relationSave: (dsId: any, data: any) => request.post(`/table_relation/save/${dsId}`, data),
+  relationVersions: (dsId: number) => request.post(`/table_relation/versions/${dsId}`),
   add: (data: any) => request.post('/datasource/add', data),
   importToDb: (data: any) => request.post('/datasource/importToDb', data),
   list: () => request.get('/datasource/list'),

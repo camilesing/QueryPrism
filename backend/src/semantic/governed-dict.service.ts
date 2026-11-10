@@ -56,8 +56,7 @@ export interface GovernedInfo {
 }
 
 export type GovernedUpsertResult =
-  | { applied: true; id: number }
-  | { applied: false; request_id: number };
+  { applied: true; id: number } | { applied: false; request_id: number };
 
 @Injectable()
 export abstract class GovernedDictService<Info extends GovernedInfo> {

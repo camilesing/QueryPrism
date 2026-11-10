@@ -22,3 +22,4 @@ export {
   MetricUpsertDto,
   StandardUpsertDto,
 } from './metric.dto';
+export { MetadataSyncUpsertDto } from './metadata-sync.dto';

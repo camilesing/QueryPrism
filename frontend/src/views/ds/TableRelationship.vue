@@ -28,6 +28,24 @@ const tooltipY = ref('-999px')
 const tooltipX = ref('-999px')
 const tooltipContent = ref('')
 const nodeIds = ref<any[]>([])
+/** Relation-graph version history (MetaDataImprove M3): append-only snapshots
+ *  written by the backend on every save. */
+const versionDrawer = ref(false)
+const versionRows = ref<any[]>([])
+const versionLoading = ref(false)
+const expandedVersion = ref<number | null>(null)
+
+const openVersions = async () => {
+  versionLoading.value = true
+  try {
+    versionRows.value = await datasourceApi.relationVersions(props.id)
+    versionDrawer.value = true
+  } finally {
+    versionLoading.value = false
+  }
+}
+
+const fmtVersionTime = (value?: string) => (value ? new Date(value).toLocaleString() : '')
 
 const cells = ref<Cell[]>([])
 const edgeOPtion = {
@@ -451,10 +469,46 @@ const save = () => {
     @drop.prevent.stop="drop"
   ></div>
   <div class="save-btn">
+    <el-button @click="openVersions">
+      {{ t('ds.relation.history') }}
+    </el-button>
     <el-button type="primary" @click="save">
       {{ t('common.save') }}
     </el-button>
   </div>
+  <el-drawer v-model="versionDrawer" :title="t('ds.relation.history')" size="480px">
+    <div v-loading="versionLoading">
+      <el-empty v-if="!versionRows.length" :description="t('ds.relation.empty')" />
+      <el-timeline v-else>
+        <el-timeline-item
+          v-for="row in versionRows"
+          :key="row.id"
+          :timestamp="fmtVersionTime(row.createdAt)"
+        >
+          <div class="version-row">
+            <span>{{ t('ds.relation.version', { version: row.version }) }}</span>
+            <el-button
+              link
+              type="primary"
+              @click="expandedVersion = expandedVersion === row.version ? null : row.version"
+            >
+              {{
+                expandedVersion === row.version
+                  ? t('ds.relation.hide_snapshot')
+                  : t('ds.relation.snapshot')
+              }}
+            </el-button>
+          </div>
+          <div v-if="row.changedBy != null" class="version-meta">
+            {{ t('ds.relation.changed_by') }}: {{ row.changedBy }}
+          </div>
+          <pre v-if="expandedVersion === row.version" class="version-snapshot">{{
+            JSON.stringify(row.snapshot, null, 2)
+          }}</pre>
+        </el-timeline-item>
+      </el-timeline>
+    </div>
+  </el-drawer>
   <div class="tooltip-content" :style="{ top: tooltipY, left: tooltipX, position: 'absolute' }">
     {{ tooltipContent }}
   </div>
@@ -484,6 +538,30 @@ const save = () => {
   position: absolute;
   right: 16px;
   bottom: 16px;
+  display: flex;
+  gap: 8px;
+}
+.version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.version-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.version-snapshot {
+  max-height: 320px;
+  margin-top: 8px;
+  padding: 8px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
 }
 .drag-mask {
   width: 100%;
