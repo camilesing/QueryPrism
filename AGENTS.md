@@ -150,6 +150,7 @@ RESTful, prefix `/api/v1`:
 - Inspect `git status` and existing call sites/module patterns before editing; preserve unrelated dirty or untracked work.
 - Prefer extending the existing module/service over adding a parallel abstraction. A new layer must name what it replaces; otherwise edit the original.
 - Prefer the smallest change that preserves observable API/DB contracts. A rewrite needs a product reason, not a shortcut around reading existing code.
+- Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
 - Treat this file as durable guidance: derive versions, commands, ports, and paths from `package.json`, configs, and migrations — README/plan prose drifts (e.g. the stale TS 6 / Vite 8 claim).
 - Misconfiguration should fail loud at startup/load. Silent fallback is allowed only where explicitly designed (e.g. vector recall degrading to keyword-only).
 - Write down a feature's known limitations next to the code that owns it, so the next reader does not assume an unbuilt capability.
