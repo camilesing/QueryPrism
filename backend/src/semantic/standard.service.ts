@@ -111,8 +111,10 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
     };
   }
 
-  /** Version history of one entry (newest first). */
+  /** Version history of one entry (newest first). Visibility is checked first —
+   *  entity ids are global, so a bare id lookup would leak other workspaces'. */
   async versions(id: number): Promise<SemanticVersionSnake[]> {
+    await this.loadVisibleRow(id);
     const rows = await this.prisma.dataStandardVersion.findMany({
       where: { entityId: id },
       orderBy: { version: 'desc' },

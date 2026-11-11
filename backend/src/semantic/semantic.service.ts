@@ -275,11 +275,18 @@ export class SemanticService {
     };
   }
 
-  /** Version history of one entity (newest first). */
+  /** Version history of one entity (newest first). The entity id is global
+   *  (shared across workspaces), so visibility is checked BEFORE reading the
+   *  history — otherwise any authenticated user could enumerate snapshots. */
   async versions(
     entityType: EntityType,
     id: number,
   ): Promise<SemanticVersionSnake[]> {
+    const actor = this.actor();
+    const entity = await this.loadEntity(entityType, id);
+    if (!this.ownsRow(actor, entity)) {
+      throw new NotFoundException(tr('semantic.entity_not_found'));
+    }
     const rows = (await (entityType === 'table'
       ? this.prisma.tableSemanticVersion.findMany({
           where: { entityId: id },
@@ -340,19 +347,41 @@ export class SemanticService {
     ids: number[],
   ): Promise<{ removed: number; requested: number }> {
     const actor = this.actor();
+    // Same id-space rule as the governed dictionaries: only actor-visible rows
+    // may be addressed, and a partial hit rejects the whole batch before any
+    // delete/request so foreign ids never leak through the request payload or
+    // the removed/requested counts.
+    const requestedIds = [...new Set(ids.filter((n) => Number.isInteger(n)))];
     const rows = (await (entityType === 'table'
-      ? this.prisma.tableSemantic.findMany({ where: { id: { in: ids } } })
+      ? this.prisma.tableSemantic.findMany({
+          where: {
+            id: { in: requestedIds },
+            OR: [
+              { scope: 'GLOBAL' },
+              { scope: 'WORKSPACE', oid: actor.oid },
+              { scope: 'PERSONAL', oid: actor.oid, ownerUid: actor.id },
+            ],
+          },
+        })
       : this.prisma.fieldSemantic.findMany({
-          where: { id: { in: ids } },
+          where: {
+            id: { in: requestedIds },
+            OR: [
+              { scope: 'GLOBAL' },
+              { scope: 'WORKSPACE', oid: actor.oid },
+              { scope: 'PERSONAL', oid: actor.oid, ownerUid: actor.id },
+            ],
+          },
         }))) as Array<{
       id: number;
       scope: string;
       oid: number | null;
+      ownerUid: number | null;
       datasourceId: number;
       tableName: string;
       fieldName?: string;
     }>;
-    if (rows.length === 0) {
+    if (requestedIds.length === 0 || rows.length !== requestedIds.length) {
       throw new NotFoundException(tr('semantic.entity_not_found'));
     }
     let removed = 0;
@@ -478,6 +507,14 @@ export class SemanticService {
     });
     if (!request || request.status !== 'pending') {
       throw new BadRequestException(tr('semantic.request_not_pending'));
+    }
+    // targetType is the request's layer; anything outside WORKSPACE/GLOBAL is
+    // malformed (a PERSONAL-target request must never be coerced to GLOBAL).
+    if (
+      request.targetType !== 'WORKSPACE' &&
+      request.targetType !== 'GLOBAL'
+    ) {
+      throw new BadRequestException(tr('semantic.invalid_scope'));
     }
     if (!canReview(actor, request.targetType as SemanticScope)) {
       throw new ForbiddenException(tr('semantic.review_forbidden'));

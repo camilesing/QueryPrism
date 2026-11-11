@@ -155,6 +155,18 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
 
   protected abstract loadRow(id: number): Promise<GovernedRow | null>;
 
+  /** Load a row the actor may SEE (GLOBAL / own WORKSPACE / own PERSONAL).
+   *  Read endpoints (version history) must go through this: `loadRow` is a
+   *  bare id lookup and the id space is shared across workspaces. */
+  protected async loadVisibleRow(id: number): Promise<GovernedRow> {
+    const actor = this.actor();
+    const row = await this.loadRow(id);
+    if (!row || !this.ownsRow(actor, row)) {
+      throw new NotFoundException(this.t('entity_not_found'));
+    }
+    return row;
+  }
+
   protected abstract deleteRowTx(tx: PrismaTx, id: number): Promise<void>;
 
   /** Enable/disable + version snapshot, inside one tx (entity-specific data). */
@@ -219,8 +231,15 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
    *  `remove` requests. Returns both counts. */
   async remove(ids: number[]): Promise<{ removed: number; requested: number }> {
     const actor = this.actor();
-    const rows = await this.loadRows(ids.filter((n) => Number.isInteger(n)));
-    if (rows.length === 0) {
+    // Ids are global auto-increment values: never load rows the actor cannot
+    // see. A partial hit (some foreign ids) rejects the whole request before
+    // any write, so a caller cannot probe other tenants' ids through the
+    // returned counts or the approval inbox.
+    const requestedIds = [...new Set(ids.filter((n) => Number.isInteger(n)))];
+    const rows = (await this.loadRows(requestedIds)).filter((row) =>
+      this.ownsRow(actor, row),
+    );
+    if (requestedIds.length === 0 || rows.length !== requestedIds.length) {
       throw new NotFoundException(this.t('entity_not_found'));
     }
     let removed = 0;
@@ -335,6 +354,14 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     });
     if (!request || request.status !== 'pending') {
       throw new BadRequestException(this.t('request_not_pending'));
+    }
+    // targetType is the request's layer; anything outside WORKSPACE/GLOBAL is
+    // malformed (a PERSONAL-target request must never be coerced to GLOBAL).
+    if (
+      request.targetType !== 'WORKSPACE' &&
+      request.targetType !== 'GLOBAL'
+    ) {
+      throw new BadRequestException(this.t('invalid_scope'));
     }
     if (!canReview(actor, request.targetType as SemanticScope)) {
       throw new ForbiddenException(this.t('review_forbidden'));
