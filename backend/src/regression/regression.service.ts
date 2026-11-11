@@ -12,6 +12,10 @@
 // metadata-sync scheduler): a per-oid FIFO serializes runs, a 30s debounce
 // coalesces approval bursts, and approvals arriving while a run is in flight
 // simply schedule the next one after it.
+//
+// Known limitation: a process restart mid-run leaves that run `running`
+// forever (there is no startup sweeper); promote rejects it and its transient
+// `origin=2` chats can outlive the process.
 import {
   BadRequestException,
   ForbiddenException,
@@ -274,10 +278,16 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException(tr('regression.run_not_finished'));
     const rows = await this.prisma.regressionRunCase.findMany({
       where: { runId, status: { in: ['passed', 'flagged'] } },
+      include: { case: { select: { updatedAt: true } } },
     });
+    // A case edited after the run started no longer matches these aggregates;
+    // adopting them would pin a baseline from a different question/datasource.
+    const promotable = rows.filter(
+      (rc) => rc.case.updatedAt.getTime() <= run.startedAt.getTime(),
+    );
     const capturedAt = new Date().toISOString();
     await this.prisma.$transaction(
-      rows.map((rc) =>
+      promotable.map((rc) =>
         this.prisma.regressionCase.update({
           where: { id: rc.caseId },
           data: {
@@ -292,7 +302,10 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
         }),
       ),
     );
-    return { promoted: rows.length };
+    return {
+      promoted: promotable.length,
+      skipped: rows.length - promotable.length,
+    };
   }
 
   // --- internals ----------------------------------------------------------
