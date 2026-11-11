@@ -6,6 +6,8 @@
 // filter that widens a caliber are invisible in code review, only visible by
 // running the numbers.
 import type { QueryResult } from '../datasource/db-connector/db-connector.interface';
+import { stripOuterLimit } from '../datasource/db-connector/limit-clause';
+import { normalizeDatasourceType } from '../datasource/datasource-type';
 import { effectiveSqlHash } from '../quota/quota-policy';
 
 /** Baseline snapshot stored on RegressionCase.baseline / recomputed each run. */
@@ -72,17 +74,24 @@ export function compareCase(
 }
 
 /** Identifier quoting per engine family: MySQL takes backticks, the
- *  PostgreSQL/SQLite family takes double quotes. */
+ *  PostgreSQL/SQLite family takes double quotes. Escape the delimiter that is
+ *  actually used (and normalize aliases like `PG` / `MySQL`). */
 export function quoteIdentifier(name: string, engine: string): string {
-  const q = engine === 'mysql' ? '`' : '"';
-  return `${q}${name.replace(/"/g, '""')}${q}`;
+  const mysql = normalizeDatasourceType(engine) === 'mysql';
+  const q = mysql ? '`' : '"';
+  const escaped = mysql
+    ? name.replace(/`/g, '``')
+    : name.replace(/"/g, '""');
+  return `${q}${escaped}${q}`;
 }
 
 /** Wrap the LLM's SQL in a DB-side aggregate so the comparison sees TRUE row
  *  counts and TRUE sums — the pipeline's stored result is capped by
  *  quota.max_rows, and two truncated 1000-row samples cannot tell 5k rows
- *  from 100k (exactly the fan-out we hunt). Returns one row:
- *  [__cnt, __s0, __s1, ...] aligned with numericCols. */
+ *  from 100k (exactly the fan-out we hunt). The generated SQL's own outer
+ *  LIMIT is stripped first: the prompt asks for one, and aggregating over the
+ *  capped page would hide exactly the growth this suite exists to detect.
+ *  Returns one row: [__cnt, __s0, __s1, ...] aligned with numericCols. */
 export function buildVerifySql(
   sql: string,
   numericCols: string[],
@@ -91,7 +100,8 @@ export function buildVerifySql(
   const sums = numericCols
     .map((c, i) => `, SUM(${quoteIdentifier(c, engine)}) AS "__s${i}"`)
     .join('');
-  return `SELECT COUNT(*) AS "__cnt"${sums} FROM (${sql}) AS "__reg_sub"`;
+  const unwrapped = stripOuterLimit(sql, engine);
+  return `SELECT COUNT(*) AS "__cnt"${sums} FROM (${unwrapped}) AS "__reg_sub"`;
 }
 
 /** Numeric result columns, detected from the pipeline's stored sample rows:
@@ -102,17 +112,24 @@ export function detectNumericColumns(
   columns: string[],
   rows: unknown[][],
 ): string[] {
-  return columns.filter((_, idx) => {
+  // Duplicate result names (SELECT a.id, b.id) are ambiguous inside SUM and
+  // would make the verify query fail: keep the first occurrence only.
+  const seen = new Set<string>();
+  return columns.filter((name, idx) => {
+    if (!name || seen.has(name)) return false;
     const vals = rows
       .map((r) => r?.[idx])
       .filter((v) => v !== null && v !== undefined && v !== '');
     if (vals.length === 0) return false;
     if (vals.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+      seen.add(name);
       return true;
     }
-    return vals.every(
+    const numericText = vals.every(
       (v) => typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()),
     );
+    if (numericText) seen.add(name);
+    return numericText;
   });
 }
 

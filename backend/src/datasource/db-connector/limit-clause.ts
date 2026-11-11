@@ -45,6 +45,69 @@ export function stripTrailingSemicolon(sql: string): string {
   return sql.replace(/(?:\s*;\s*)+$/, '');
 }
 
+/** Parser dialect names (node-sql-parser's `database` option). */
+function parserDatabase(engine: string): string | undefined {
+  switch (engine.trim().toLowerCase()) {
+    case 'mysql':
+    case 'mariadb':
+      return 'MySQL';
+    case 'postgres':
+    case 'postgresql':
+    case 'pg':
+      return 'Postgresql';
+    case 'sqlite':
+      return 'Sqlite';
+    default:
+      return undefined;
+  }
+}
+
+/** Strip the OUTERMOST LIMIT (and OFFSET) from a statement, leaving any
+ *  subquery/CTE limits intact. Used when the statement is wrapped in an
+ *  aggregate (regression verify SQL): a top-level LIMIT would silently cap the
+ *  COUNT/SUM to one page. Falls back to a trailing-LIMIT regex when the
+ *  statement cannot be parsed. */
+export function stripOuterLimit(sql: string, engine = ''): string {
+  const stripped = stripTrailingSemicolon(sql);
+  const database = parserDatabase(engine);
+  const opt = database ? { database } : undefined;
+  try {
+    const ast = parser.astify(stripped, opt);
+    const first = (Array.isArray(ast) ? ast[0] : ast) as unknown as Record<
+      string,
+      unknown
+    >;
+    // The parser ALWAYS emits a `limit` node (`{value: []}`) even without a
+    // LIMIT clause — only a non-empty value list is a real outer limit.
+    const limitValue = (
+      first?.limit as { value?: unknown[] } | null | undefined
+    )?.value;
+    const offsetValue = (
+      first?.offset as { value?: unknown[] } | null | undefined
+    )?.value;
+    const hasLimit = Array.isArray(limitValue) && limitValue.length > 0;
+    const hasOffset = Array.isArray(offsetValue) && offsetValue.length > 0;
+    if (!first || (!hasLimit && !hasOffset)) {
+      return stripped;
+    }
+    const clone = { ...first };
+    delete clone.limit;
+    delete clone.offset;
+    const out = parser.sqlify(
+      (Array.isArray(ast) ? [clone] : clone) as never,
+      opt,
+    );
+    return stripTrailingSemicolon(out);
+  } catch {
+    // Unparseable (provider-specific syntax): the pipeline's prompt places
+    // LIMIT at the end of the outermost statement, so strip that shape.
+    return stripped.replace(
+      /\s+limit\s+\d+(?:\s*,\s*\d+)?(?:\s+offset\s+\d+)?\s*$/i,
+      '',
+    );
+  }
+}
+
 /** Append `LIMIT n` to the outermost statement unless it already limits rows. */
 export function appendLimit(sql: string, limit: number): string {
   const stripped = stripTrailingSemicolon(sql);

@@ -119,6 +119,35 @@ describe('buildVerifySql', () => {
     const sql = buildVerifySql('SELECT 1', ['we"ird'], 'postgres');
     expect(sql).toContain('SUM("we""ird")');
   });
+
+  it('escapes backticks for mysql and normalizes the engine alias', () => {
+    expect(buildVerifySql('SELECT 1', ['we`ird'], 'MySQL')).toContain(
+      'SUM(`we``ird`)',
+    );
+  });
+
+  it('strips the generated outer LIMIT before aggregating', () => {
+    const sql = buildVerifySql('SELECT a FROM t LIMIT 1000', [], 'postgres');
+    expect(sql).not.toContain('LIMIT');
+    expect(sql).toContain('SELECT COUNT(*) AS "__cnt"');
+    expect(sql).toContain('SELECT a FROM "t"');
+  });
+
+  it('keeps a LIMIT inside a subquery while stripping the outer one', () => {
+    const sql = buildVerifySql(
+      'SELECT a FROM (SELECT a FROM t LIMIT 5) s LIMIT 1000',
+      [],
+      'postgres',
+    );
+    expect(sql).toContain('LIMIT 5');
+    expect(sql).not.toContain('LIMIT 1000');
+  });
+
+  it('strips a trailing semicolon before wrapping', () => {
+    expect(buildVerifySql('SELECT a FROM t;', [], 'sqlite')).toBe(
+      'SELECT COUNT(*) AS "__cnt" FROM (SELECT a FROM t) AS "__reg_sub"',
+    );
+  });
 });
 
 describe('detectNumericColumns', () => {
@@ -147,6 +176,18 @@ describe('detectNumericColumns', () => {
 
   it('rejects mixed number/text columns', () => {
     expect(detectNumericColumns(['a'], [[1], ['x']])).toEqual([]);
+  });
+
+  it('keeps only the first of duplicated result column names', () => {
+    expect(
+      detectNumericColumns(
+        ['id', 'id'],
+        [
+          [1, 2],
+          [3, 4],
+        ],
+      ),
+    ).toEqual(['id']);
   });
 });
 
