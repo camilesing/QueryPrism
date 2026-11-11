@@ -306,6 +306,7 @@
     "form_required": "Please fill in the required fields",
     "def_summary": "Definition",
     "table_missing": "Table missing",
+    "status": "Status",
     "version": "Version",
     "content": "Content",
     "target_type": "Target layer",
@@ -447,6 +448,10 @@
     "refresh": "Refresh",
     "input_limit": "Length cannot exceed {0} characters",
     "file_size_limit_error": "File size exceeds the limit (maximum {limit})",
+    "edit": "Edit",
+    "delete": "Delete",
+    "operate": "Actions",
+    "enableSwitch": "Enabled",
     "rich_text": {
       "placeholder": "Double-click to edit"
     }

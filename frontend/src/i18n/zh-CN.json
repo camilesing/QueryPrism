@@ -306,6 +306,7 @@
     "form_required": "请完整填写必填项",
     "def_summary": "定义摘要",
     "table_missing": "表已不存在",
+    "status": "状态",
     "version": "版本",
     "content": "内容",
     "target_type": "目标层级",
@@ -447,6 +448,10 @@
     "refresh": "刷新",
     "input_limit": "长度在 {0} 到 {1} 个字符",
     "file_size_limit_error": "文件大小超出限制（最大{limit}）",
+    "edit": "编辑",
+    "delete": "删除",
+    "operate": "操作",
+    "enableSwitch": "启用",
     "rich_text": {
       "placeholder": "双击输入文字"
     }
