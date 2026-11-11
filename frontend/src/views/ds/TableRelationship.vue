@@ -64,11 +64,7 @@ const restoring = ref(false)
 const loadVersions = async (page = 1) => {
   versionLoading.value = true
   try {
-    const res: any = await datasourceApi.relationVersions(
-      props.id,
-      page,
-      versionPageSize.value
-    )
+    const res: any = await datasourceApi.relationVersions(props.id, page, versionPageSize.value)
     versionRows.value = res?.data ?? []
     versionPage.value = res?.current_page ?? page
     versionPageSize.value = res?.page_size ?? versionPageSize.value
