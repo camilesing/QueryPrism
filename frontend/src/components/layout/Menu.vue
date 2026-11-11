@@ -82,7 +82,10 @@ const routerList = computed(() => {
         (route.path.includes('set') && userStore.isSpaceAdmin) ||
         !route.redirect) &&
       route.path !== '/:pathMatch(.*)*' &&
-      !route.path.includes('dsTable')
+      !route.path.includes('dsTable') &&
+      // /set children render inside the /set submenu; without this every new
+      // admin page also appears as a top-level item.
+      !route.path.startsWith('/set/')
     )
   })
 
