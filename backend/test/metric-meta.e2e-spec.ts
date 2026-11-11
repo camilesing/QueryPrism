@@ -329,5 +329,15 @@ describe('Metric + standard ingestion (e2e)', () => {
         'metrics-roundtrip.xlsx',
       );
     expect(reupload.status).toBe(200);
+    // A 200 alone hides per-row rejections (the importer reports them in the
+    // body and still returns 200).
+    const roundtrip = (
+      reupload.body as ApiEnvelope<{
+        applied: number;
+        failed: Array<{ row: string }>;
+      }>
+    ).data;
+    expect(roundtrip.failed).toEqual([]);
+    expect(roundtrip.applied).toBeGreaterThanOrEqual(2);
   });
 });

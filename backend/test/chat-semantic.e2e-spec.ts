@@ -292,18 +292,18 @@ describe('Chat semantic rule 2 (e2e)', () => {
   });
 
   it('PERSONAL semantics beat WORKSPACE for the acting user', async () => {
+    // Same natural key on BOTH layers: only an actual priority inversion
+    // would make the WORKSPACE meaning win.
     await prisma.tableSemantic.create({
       data: {
         scope: 'WORKSPACE',
         oid: 1,
         datasourceId: 1,
-        tableName: 'crm_customer',
+        tableName: 'sales_order',
         meaning: '空间层含义',
         enabled: true,
       },
     });
-    // The seeded admin (uid 1) gets a personal override pointing elsewhere —
-    // personal wins, so the narrowed table is the personal one.
     await prisma.tableSemantic.create({
       data: {
         scope: 'PERSONAL',
@@ -319,7 +319,10 @@ describe('Chat semantic rule 2 (e2e)', () => {
     try {
       const res = await ask(chatId);
       expect(res.text).toContain('"type":"sql"');
-      expect(capturedTableIds).toEqual([1]); // personal sales_order, not ws crm_customer
+      expect(capturedTableIds).toEqual([1]);
+      expect(capturedSemantics?.tableMeanings).toMatchObject({
+        sales_order: '个人层含义',
+      });
     } finally {
       await request(app.getHttpServer())
         .delete(`/api/v1/chat/${chatId}`)

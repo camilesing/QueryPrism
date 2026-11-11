@@ -268,6 +268,26 @@ describe('Semantic ingestion (e2e)', () => {
       exportedWb.getWorksheet('field_semantics')!.getRow(1).values,
     ).toContain('scope');
 
+    // Re-import the EXPORTED workbook itself: a header check plus a hand-built
+    // file cannot catch export/import column drift.
+    const roundtrip = await request(app.getHttpServer())
+      .post('/api/v1/system/semantic/uploadExcel')
+      .set(TOKEN_HEADER, token)
+      .attach(
+        'file',
+        Buffer.from(exported.body as ArrayBuffer),
+        'semantics-roundtrip.xlsx',
+      );
+    expect(roundtrip.status).toBe(200);
+    const roundtripOut = (
+      roundtrip.body as ApiEnvelope<{
+        applied: number;
+        failed: Array<{ row: string; reason: string }>;
+      }>
+    ).data;
+    expect(roundtripOut.failed).toEqual([]);
+    expect(roundtripOut.applied).toBeGreaterThan(0);
+
     // Build a tiny import workbook (table sheet) and upload it.
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('table_semantics');
