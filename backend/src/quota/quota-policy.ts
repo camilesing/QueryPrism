@@ -71,11 +71,45 @@ export function dayKey(now: Date = new Date()): string {
   return `${now.getFullYear()}-${m}-${d}`;
 }
 
-/** Normalize SQL text for cache hashing: collapse all whitespace runs to a
- * single space and trim. Case is preserved on purpose — string literals are
- * case-sensitive and lowercasing risks colliding two different queries. */
+/** Normalize SQL text for cache hashing: collapse whitespace RUNS OUTSIDE
+ *  quoted literals/identifiers and trim. Case and in-quote whitespace are
+ *  preserved — `'a  b'` and `'a b'` are different executed statements and
+ *  must never share a cache key. Supports single-quoted strings, double-
+ *  quoted and backtick identifiers, with doubled-delimiter escapes. */
 export function normalizeSqlForHash(sql: string): string {
-  return sql.replace(/\s+/g, ' ').trim();
+  let out = '';
+  let quote: string | null = null;
+  let pendingSpace = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (quote) {
+      out += ch;
+      if (ch === quote) {
+        if (sql[i + 1] === quote) {
+          out += sql[i + 1]; // doubled delimiter stays inside the literal
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      if (pendingSpace && out) out += ' ';
+      pendingSpace = false;
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      pendingSpace = true;
+      continue;
+    }
+    if (pendingSpace && out) out += ' ';
+    pendingSpace = false;
+    out += ch;
+  }
+  return out.trim();
 }
 
 /** Cache key for the EFFECTIVE SQL (LIMIT already appended by appendLimit —

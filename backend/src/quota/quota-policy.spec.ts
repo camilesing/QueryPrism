@@ -105,4 +105,20 @@ describe('effectiveSqlHash', () => {
   it('normalizeSqlForHash strips nothing but whitespace', () => {
     expect(normalizeSqlForHash(' a\n b\t c ')).toBe('a b c');
   });
+
+  it('keeps whitespace inside quoted literals and identifiers distinct', () => {
+    expect(effectiveSqlHash("SELECT * FROM t WHERE name = 'a  b'")).not.toBe(
+      effectiveSqlHash("SELECT * FROM t WHERE name = 'a b'"),
+    );
+    expect(effectiveSqlHash('SELECT * FROM "a  b"')).not.toBe(
+      effectiveSqlHash('SELECT * FROM "a b"'),
+    );
+    expect(effectiveSqlHash('SELECT * FROM `a  b`')).not.toBe(
+      effectiveSqlHash('SELECT * FROM `a b`'),
+    );
+    // A doubled quote stays inside the literal (the following space is too).
+    expect(effectiveSqlHash("SELECT 'it''s  ok' FROM t")).not.toBe(
+      effectiveSqlHash("SELECT 'it''s ok' FROM t"),
+    );
+  });
 });
