@@ -348,15 +348,17 @@ export class DatasourceService {
           };
         },
       );
-      // M7: a schema change can reshape `SELECT *` results under identical
-      // SQL — invalidate the workspace's query cache.
-      await this.bumpCacheRevision(datasource.oid);
       return result;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       throw new InternalServerErrorException(
         tr('datasource.sync_failed', { msg }),
       );
+    } finally {
+      // M7: a schema change can reshape `SELECT *` results under identical
+      // SQL. Bump even when the connector throws after partially writing
+      // table/field rows — the metadata did change.
+      await this.bumpCacheRevision(datasource.oid);
     }
   }
 
@@ -920,79 +922,88 @@ export class DatasourceService {
   ): Promise<void> {
     const ds = await this.loadForConnector(id);
     const incomingNames = new Set(incoming.map((t) => t.table_name));
-    await this.connectorFactory.withConnector(ds, async (c) => {
-      const liveTables = await c.getTables();
-      const liveNames = new Set(liveTables.map((t) => t.tableName));
-      for (const item of incoming) {
-        if (!liveNames.has(item.table_name)) continue; // gone from source
-        const existing = await this.prisma.table.findFirst({
-          where: { datasourceId: id, tableName: item.table_name },
-        });
-        let tableId: number;
-        let effectiveComment: string | null;
-        if (existing) {
-          const row = await this.prisma.table.update({
-            where: { id: existing.id },
-            data: { tableComment: item.table_comment ?? null },
+    try {
+      await this.connectorFactory.withConnector(ds, async (c) => {
+        const liveTables = await c.getTables();
+        const liveNames = new Set(liveTables.map((t) => t.tableName));
+        for (const item of incoming) {
+          if (!liveNames.has(item.table_name)) continue; // gone from source
+          const existing = await this.prisma.table.findFirst({
+            where: { datasourceId: id, tableName: item.table_name },
           });
-          tableId = row.id;
-          effectiveComment =
-            existing.customComment || item.table_comment || null;
-        } else {
-          const created = await this.prisma.table.create({
-            data: {
-              datasourceId: id,
-              tableName: item.table_name,
-              tableComment: item.table_comment ?? null,
-              customComment: item.table_comment ?? null,
-              checked: true,
-            },
-          });
-          tableId = created.id;
-          effectiveComment = item.table_comment ?? null;
-        }
-        const fields = await c.getFields(item.table_name);
-        await this.syncFields(tableId, fields);
-        void this.embedTable(tableId, item.table_name, effectiveComment).catch(
-          (e) =>
+          let tableId: number;
+          let effectiveComment: string | null;
+          if (existing) {
+            const row = await this.prisma.table.update({
+              where: { id: existing.id },
+              data: { tableComment: item.table_comment ?? null },
+            });
+            tableId = row.id;
+            effectiveComment =
+              existing.customComment || item.table_comment || null;
+          } else {
+            const created = await this.prisma.table.create({
+              data: {
+                datasourceId: id,
+                tableName: item.table_name,
+                tableComment: item.table_comment ?? null,
+                customComment: item.table_comment ?? null,
+                checked: true,
+              },
+            });
+            tableId = created.id;
+            effectiveComment = item.table_comment ?? null;
+          }
+          const fields = await c.getFields(item.table_name);
+          await this.syncFields(tableId, fields);
+          void this.embedTable(
+            tableId,
+            item.table_name,
+            effectiveComment,
+          ).catch((e) =>
             this.logger.warn(
               `table #${tableId} embed failed: ${e instanceof Error ? e.message : String(e)}`,
             ),
+          );
+        }
+        // Persist the "selected/total" snapshot for the num badge.
+        // Fire-and-forget — a failed snapshot write must not break table sync.
+        const selected = incoming.filter((t) =>
+          liveNames.has(t.table_name),
+        ).length;
+        // Awaited (unlike embedTable): num is a user-visible field, so the
+        // "selected/total" snapshot must be committed before syncTable returns.
+        await this.persistNum(id, selected, liveTables.length).catch((e) =>
+          this.logger.warn(
+            `datasource #${id} num snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+          ),
         );
-      }
-      // Persist the "selected/total" snapshot for the num badge.
-      // Fire-and-forget — a failed snapshot write must not break table sync.
-      const selected = incoming.filter((t) =>
-        liveNames.has(t.table_name),
-      ).length;
-      // Awaited (unlike embedTable): num is a user-visible field, so the
-      // "selected/total" snapshot must be committed before syncTable returns.
-      await this.persistNum(id, selected, liveTables.length).catch((e) =>
-        this.logger.warn(
-          `datasource #${id} num snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
-        ),
-      );
-    });
-    // Delete unlisted tables + their orphan fields (by table_name reconcile).
-    if (incomingNames.size === 0) {
-      await this.prisma.field.deleteMany({
-        where: { table: { datasourceId: id } },
       });
-      await this.prisma.table.deleteMany({ where: { datasourceId: id } });
-    } else {
-      const unlisted = await this.prisma.table.findMany({
-        where: { datasourceId: id, tableName: { notIn: [...incomingNames] } },
-        select: { id: true },
-      });
-      if (unlisted.length > 0) {
-        const unlistedIds = unlisted.map((t) => t.id);
+      // Delete unlisted tables + their orphan fields (by table_name reconcile).
+      if (incomingNames.size === 0) {
         await this.prisma.field.deleteMany({
-          where: { tableId: { in: unlistedIds } },
+          where: { table: { datasourceId: id } },
         });
-        await this.prisma.table.deleteMany({
-          where: { id: { in: unlistedIds } },
+        await this.prisma.table.deleteMany({ where: { datasourceId: id } });
+      } else {
+        const unlisted = await this.prisma.table.findMany({
+          where: { datasourceId: id, tableName: { notIn: [...incomingNames] } },
+          select: { id: true },
         });
+        if (unlisted.length > 0) {
+          const unlistedIds = unlisted.map((t) => t.id);
+          await this.prisma.field.deleteMany({
+            where: { tableId: { in: unlistedIds } },
+          });
+          await this.prisma.table.deleteMany({
+            where: { id: { in: unlistedIds } },
+          });
+        }
       }
+    } finally {
+      // M7: chooseTables re-reads table/field structure in place; identical
+      // SQL (notably `SELECT *`) must not keep serving the pre-sync shape.
+      await this.bumpCacheRevision(ds.oid);
     }
   }
 
@@ -1103,17 +1114,22 @@ export class DatasourceService {
       );
     }
     const ds = await this.loadForConnector(table.datasourceId);
-    await this.connectorFactory.withConnector(ds, async (c) => {
-      const liveTables = await c.getTables();
-      const liveNames = new Set(liveTables.map((t) => t.tableName));
-      if (!liveNames.has(table.tableName)) {
-        throw new InternalServerErrorException(
-          `源数据库中已不存在表 ${table.tableName}`,
-        );
-      }
-      const fields = await c.getFields(table.tableName);
-      await this.syncFields(tableId, fields);
-    });
+    try {
+      await this.connectorFactory.withConnector(ds, async (c) => {
+        const liveTables = await c.getTables();
+        const liveNames = new Set(liveTables.map((t) => t.tableName));
+        if (!liveNames.has(table.tableName)) {
+          throw new InternalServerErrorException(
+            `源数据库中已不存在表 ${table.tableName}`,
+          );
+        }
+        const fields = await c.getFields(table.tableName);
+        await this.syncFields(tableId, fields);
+      });
+    } finally {
+      // M7: field re-sync changes column metadata under identical SQL.
+      await this.bumpCacheRevision(ds.oid);
+    }
     void this.embedTable(
       table.id,
       table.tableName,
