@@ -250,6 +250,19 @@ export function definitionProblem(
 /** A metric code token: letter first, then letters/digits/underscore. */
 const CODE_TOKEN = /^[A-Za-z][A-Za-z0-9_]*$/;
 
+/** Bounds on stored composite expressions (see expressionProblem). */
+const MAX_EXPRESSION_LENGTH = 4_000;
+const MAX_EXPRESSION_TOKENS = 200;
+/** Composite nesting bound — a chain of N composites renders recursively. */
+const MAX_COMPOSITE_DEPTH = 8;
+/** Per-operand display-name bound inside a rendered expression. */
+const MAX_RENDER_LABEL = 120;
+
+const clipLabel = (value: string): string =>
+  value.length > MAX_RENDER_LABEL
+    ? `${value.slice(0, MAX_RENDER_LABEL - 1)}…`
+    : value;
+
 /** Strict expression syntax check. Tokens may only be metric codes, decimal
  *  numbers, + - * / ( ) and whitespace; parens must balance; at least one
  *  code reference; self-reference rejected. Returns an i18n problem key. */
@@ -259,10 +272,16 @@ export function expressionProblem(
 ): string | null {
   const expr = expression.trim();
   if (!expr) return 'metric.expression_invalid';
+  // Hard caps: a stored PERSONAL metric is written by any member and rendered
+  // synchronously on every matching chat. Without a bound, one giant
+  // expression turns the token walk (and the O(n) display-name replacement
+  // below) into a multi-second event-loop block.
+  if (expr.length > MAX_EXPRESSION_LENGTH) return 'metric.expression_invalid';
   let depth = 0;
   let refs = 0;
   const toks =
     expr.match(/[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[+\-*/()]|\S/g) ?? [];
+  if (toks.length > MAX_EXPRESSION_TOKENS) return 'metric.expression_invalid';
   for (const tok of toks) {
     if (/^[+\-*/]$/.test(tok) || tok === '(') {
       if (tok === '(') depth += 1;
@@ -289,8 +308,11 @@ export function expressionProblem(
 /** The metric codes an expression references (deduped, order of appearance). */
 export function expressionCodes(expression: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const tok of expression.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
-    if (!out.includes(tok)) out.push(tok);
+    if (seen.has(tok)) continue;
+    seen.add(tok);
+    out.push(tok);
   }
   return out;
 }
@@ -441,6 +463,11 @@ export function periodText(def: PeriodDef): string {
  *  the per-table default time field (from FieldSemantic role=time). */
 export interface MetricRenderContext {
   rows: Map<string, MetricDefLike>;
+  /** The datasource the current question runs against. Derived/composite
+   *  definitions carry no datasourceId of their own, so their resolved atomics
+   *  (and modifiers) MUST bind to this id — otherwise a metric authored for
+   *  datasource A injects A's table/caliber into a B question. */
+  datasourceId: number;
   timeFieldOf: (tableName: string) => string | undefined;
 }
 
@@ -480,6 +507,9 @@ export function renderDerived(
       ) as AtomicDef | null)
     : null;
   if (!atomicRow || !atomic) return null;
+  // Derived definitions bind through their atomic; a derived metric authored
+  // for another datasource must not render on this question.
+  if (atomic.datasourceId !== ctx.datasourceId) return null;
 
   const modifierRows: Array<{ row: MetricDefLike; def: ModifierDef }> = [];
   for (const code of def.modifierCodes ?? []) {
@@ -487,7 +517,9 @@ export function renderDerived(
     const md = m
       ? (parseMetricDefinition('modifier', m.definition) as ModifierDef | null)
       : null;
-    if (!m || !md) return null; // dangling modifier → whole metric unusable
+    // A modifier is a WHERE constraint — it must bind to the same datasource
+    // (and table) as the atomic it composes with.
+    if (!m || !md || md.datasourceId !== atomic.datasourceId) return null;
     modifierRows.push({ row: m, def: md });
   }
   let period: PeriodDef | null = null;
@@ -521,19 +553,21 @@ function renderOperand(
   row: MetricDefLike,
   ctx: MetricRenderContext,
   seen: Set<string>,
+  depth: number,
 ): RenderedMetric | null {
+  if (depth > MAX_COMPOSITE_DEPTH) return null;
   if (seen.has(keyOf(row.kind, row.code))) return null; // cycle guard
   if (row.kind === 'atomic') {
     const def = parseMetricDefinition(
       'atomic',
       row.definition,
     ) as AtomicDef | null;
-    if (!def) return null;
+    if (!def || def.datasourceId !== ctx.datasourceId) return null;
     const line = `${row.name} (${row.code}): ${atomicLine(row, def)}`;
     return { line, block: line, tables: [def.tableName] };
   }
   if (row.kind === 'derived') return renderDerived(row, ctx);
-  if (row.kind === 'composite') return renderComposite(row, ctx, seen);
+  if (row.kind === 'composite') return renderComposite(row, ctx, seen, depth);
   return null; // modifier/period codes are not valid operands
 }
 
@@ -543,7 +577,9 @@ export function renderComposite(
   row: MetricDefLike,
   ctx: MetricRenderContext,
   seen = new Set<string>(),
+  depth = 0,
 ): RenderedMetric | null {
+  if (depth > MAX_COMPOSITE_DEPTH) return null;
   const def = parseMetricDefinition(
     'composite',
     row.definition,
@@ -551,35 +587,44 @@ export function renderComposite(
   if (!def) return null;
   const codes = expressionCodes(def.expression);
   if (codes.length === 0) return null;
-  seen.add(keyOf(row.kind, row.code));
-  const rendered: RenderedMetric[] = [];
-  const tables: string[] = [];
-  for (const code of codes) {
-    const target =
-      ctx.rows.get(keyOf('derived', code)) ??
-      ctx.rows.get(keyOf('composite', code)) ??
-      ctx.rows.get(keyOf('atomic', code));
-    const r = target ? renderOperand(target, ctx, seen) : null;
-    if (!r) return null;
-    rendered.push(r);
-    for (const t of r.tables) if (!tables.includes(t)) tables.push(t);
+  const key = keyOf(row.kind, row.code);
+  if (seen.has(key)) return null; // cycle guard
+  // Path-scoped visited set: add before descending and remove afterwards, so
+  // a DAG that reuses the same operand (A = B + C, C = B + 1) still renders —
+  // only a genuine cycle hits this check.
+  seen.add(key);
+  try {
+    const rendered: RenderedMetric[] = [];
+    const tables: string[] = [];
+    for (const code of codes) {
+      const target =
+        ctx.rows.get(keyOf('derived', code)) ??
+        ctx.rows.get(keyOf('composite', code)) ??
+        ctx.rows.get(keyOf('atomic', code));
+      const r = target ? renderOperand(target, ctx, seen, depth + 1) : null;
+      if (!r) return null;
+      rendered.push(r);
+      for (const t of r.tables) if (!tables.includes(t)) tables.push(t);
+    }
+    // Operand names inside the expression: swap each code for its display name
+    // so the LLM reads 客单价 = 支付金额 / 支付用户数, not raw codes.
+    let expr = def.expression;
+    codes.forEach((code) => {
+      const target =
+        ctx.rows.get(keyOf('derived', code)) ??
+        ctx.rows.get(keyOf('composite', code)) ??
+        ctx.rows.get(keyOf('atomic', code));
+      const display = target ? clipLabel(target.name) : code;
+      expr = expr.replace(new RegExp(`\\b${code}\\b`, 'g'), display);
+    });
+    const line = `${row.name} (${row.code}) = ${expr}`;
+    const subLines = rendered
+      .slice(0, COMPOSITE_SUBLINE_CAP)
+      .map((r) => `    - ${r.line}`);
+    return { line, block: [line, ...subLines].join('\n'), tables };
+  } finally {
+    seen.delete(key);
   }
-  // Operand names inside the expression: swap each code for its display name
-  // so the LLM reads 客单价 = 支付金额 / 支付用户数, not raw codes.
-  let expr = def.expression;
-  codes.forEach((code) => {
-    const target =
-      ctx.rows.get(keyOf('derived', code)) ??
-      ctx.rows.get(keyOf('composite', code)) ??
-      ctx.rows.get(keyOf('atomic', code));
-    const display = target ? target.name : code;
-    expr = expr.replace(new RegExp(`\\b${code}\\b`, 'g'), display);
-  });
-  const line = `${row.name} (${row.code}) = ${expr}`;
-  const subLines = rendered
-    .slice(0, COMPOSITE_SUBLINE_CAP)
-    .map((r) => `    - ${r.line}`);
-  return { line, block: [line, ...subLines].join('\n'), tables };
 }
 
 // ---- the whole-question matcher -------------------------------------------
@@ -633,7 +678,11 @@ export function matchMetricDefinitions(
   opts?: MetricMatchOptions,
 ): MetricMatchResult {
   const effective = effectiveByCode(rows);
-  const ctx: MetricRenderContext = { rows: effective, timeFieldOf };
+  const ctx: MetricRenderContext = {
+    rows: effective,
+    datasourceId,
+    timeFieldOf,
+  };
 
   const isDsBound = (row: MetricDefLike): boolean => {
     if (row.kind === 'atomic' || row.kind === 'modifier') {
