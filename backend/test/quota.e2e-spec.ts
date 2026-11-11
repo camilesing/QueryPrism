@@ -166,6 +166,11 @@ describe('Query quota (e2e)', () => {
     await prisma.queryUsageDaily
       .deleteMany({ where: { oid: 1, subjectId: quotaUid } })
       .catch(() => undefined);
+    // The workspace-default row is created inside a test; remove it even when
+    // that test failed midway, otherwise it changes every later suite.
+    await prisma.queryBudget
+      .deleteMany({ where: { oid: 1, subjectType: 'default' } })
+      .catch(() => undefined);
     await prisma.user
       .deleteMany({ where: { id: quotaUid } })
       .catch(() => undefined);
@@ -233,9 +238,12 @@ describe('Query quota (e2e)', () => {
       .get('/api/v1/system/quota')
       .set(TOKEN_HEADER, token);
     const withDefault = (
-      withDefaultRes.body as ApiEnvelope<Array<{ subject_type: string }>>
+      withDefaultRes.body as ApiEnvelope<
+        Array<{ subject_type: string; daily_limit: number }>
+      >
     ).data;
-    expect(withDefault.some((r) => r.subject_type === 'default')).toBe(true);
+    const defaultRow = withDefault.find((r) => r.subject_type === 'default');
+    expect(defaultRow?.daily_limit).toBe(50);
     const defRow = await prisma.queryBudget.findFirst({
       where: { oid: 1, subjectType: 'default' },
     });
@@ -256,6 +264,19 @@ describe('Query quota (e2e)', () => {
       .set(TOKEN_HEADER, token)
       .send({ subject_type: 'user', subject_id: quotaUid, daily_limit: 99 });
     expect(ok.status).toBe(200);
+    // The write path must actually persist daily_limit, not just accept it.
+    const afterPut = await request(app.getHttpServer())
+      .get('/api/v1/system/quota')
+      .set(TOKEN_HEADER, token);
+    const rowsAfter = (
+      afterPut.body as ApiEnvelope<
+        Array<{ subject_type: string; subject_id: number | null; daily_limit: number }>
+      >
+    ).data;
+    const ownAfter = rowsAfter.find(
+      (r) => r.subject_type === 'user' && r.subject_id === quotaUid,
+    );
+    expect(ownAfter?.daily_limit).toBe(99);
     // Restore the enforcement limit for... nothing further asks here; still
     // tidy the row back so afterAll state matches expectations.
     await prisma.queryBudget.update({
