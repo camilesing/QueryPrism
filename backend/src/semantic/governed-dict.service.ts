@@ -59,8 +59,7 @@ export interface GovernedInfo {
 }
 
 export type GovernedUpsertResult =
-  | { applied: true; id: number }
-  | { applied: false; request_id: number };
+  { applied: true; id: number } | { applied: false; request_id: number };
 
 @Injectable()
 export abstract class GovernedDictService<Info extends GovernedInfo> {
@@ -363,13 +362,10 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     }
     // targetType is the request's layer; anything outside WORKSPACE/GLOBAL is
     // malformed (a PERSONAL-target request must never be coerced to GLOBAL).
-    if (
-      request.targetType !== 'WORKSPACE' &&
-      request.targetType !== 'GLOBAL'
-    ) {
+    if (request.targetType !== 'WORKSPACE' && request.targetType !== 'GLOBAL') {
       throw new BadRequestException(this.t('invalid_scope'));
     }
-    if (!canReview(actor, request.targetType as SemanticScope)) {
+    if (!canReview(actor, request.targetType)) {
       throw new ForbiddenException(this.t('review_forbidden'));
     }
     // A WORKSPACE-target request is bound to the proposer's workspace; the

@@ -72,8 +72,7 @@ export interface SemanticUpsertInfo {
 }
 
 export type SemanticUpsertResult =
-  | { applied: true; id: number }
-  | { applied: false; request_id: number };
+  { applied: true; id: number } | { applied: false; request_id: number };
 
 /** One dimension field handled by an enum-collection run (snake wire). */
 export interface EnumCollectItem {
@@ -518,13 +517,10 @@ export class SemanticService {
     }
     // targetType is the request's layer; anything outside WORKSPACE/GLOBAL is
     // malformed (a PERSONAL-target request must never be coerced to GLOBAL).
-    if (
-      request.targetType !== 'WORKSPACE' &&
-      request.targetType !== 'GLOBAL'
-    ) {
+    if (request.targetType !== 'WORKSPACE' && request.targetType !== 'GLOBAL') {
       throw new BadRequestException(tr('semantic.invalid_scope'));
     }
-    if (!canReview(actor, request.targetType as SemanticScope)) {
+    if (!canReview(actor, request.targetType)) {
       throw new ForbiddenException(tr('semantic.review_forbidden'));
     }
     // A WORKSPACE-target request is bound to the proposer's workspace; the

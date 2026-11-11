@@ -270,7 +270,11 @@ describe('Query quota (e2e)', () => {
       .set(TOKEN_HEADER, token);
     const rowsAfter = (
       afterPut.body as ApiEnvelope<
-        Array<{ subject_type: string; subject_id: number | null; daily_limit: number }>
+        Array<{
+          subject_type: string;
+          subject_id: number | null;
+          daily_limit: number;
+        }>
       >
     ).data;
     const ownAfter = rowsAfter.find(

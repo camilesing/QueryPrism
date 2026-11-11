@@ -273,7 +273,11 @@ describe('Table relation versions (e2e)', () => {
       .send({});
     const page = (
       versions.body as ApiEnvelope<{
-        data: Array<{ version: number; snapshot: unknown; note: string | null }>;
+        data: Array<{
+          version: number;
+          snapshot: unknown;
+          note: string | null;
+        }>;
       }>
     ).data;
     const rows = page.data;

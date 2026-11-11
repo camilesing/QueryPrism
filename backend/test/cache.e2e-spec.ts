@@ -111,7 +111,7 @@ describe('SQL result cache (e2e)', () => {
   }
 
   // Each test starts from the same 2-row table + empty cache so it can run in
-// any order (jest --randomize).
+  // any order (jest --randomize).
   beforeEach(() => {
     const db = new Database(tempDbPath);
     db.exec('DELETE FROM orders');

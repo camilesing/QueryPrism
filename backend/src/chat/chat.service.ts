@@ -1462,7 +1462,11 @@ export class ChatService {
         messages: this.appendAiMessage(sqlMessages, sqlContent),
         tokenUsage: sqlTokenUsage,
       });
-      if (!cfg.clarifyEnabled || opts?.skipClarify || rounds >= cfg.clarifyMaxRounds) {
+      if (
+        !cfg.clarifyEnabled ||
+        opts?.skipClarify ||
+        rounds >= cfg.clarifyMaxRounds
+      ) {
         yield* this.fail(record.id, msgs.sqlSchemaInsufficient);
         return;
       }

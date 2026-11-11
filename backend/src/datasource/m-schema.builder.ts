@@ -114,7 +114,10 @@ const MAX_ENUM_VALUE_LENGTH = 80;
 const MAX_ENUM_SAMPLE_LENGTH = 1_000;
 
 const clipEnumText = (value: string): string =>
-  value.replace(/[\r\n]+/g, ' ').trim().slice(0, MAX_ENUM_VALUE_LENGTH);
+  value
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, MAX_ENUM_VALUE_LENGTH);
 
 /** Compose the field comment line: `[角色] 含义 (单位: x; 枚举: a(标签)/b)`.
  *  Enum entries render `value(label)` so the LLM sees both the exact value to
@@ -286,8 +289,7 @@ function edgesFromX6Cells(
       const portId = cellString(item, 'id');
       if (!portId) continue;
       const attrs = (item as Record<string, unknown>).attrs as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       const label = attrs?.portNameLabel as Record<string, unknown> | undefined;
       const text = typeof label?.text === 'string' ? label.text.trim() : '';
       const fromRow = names?.fieldByPort.get(`${id}:${portId}`);

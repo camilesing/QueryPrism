@@ -1162,7 +1162,7 @@ describe('DatasourceService', () => {
           fn(prismaService)) as never);
       jest
         .spyOn(prismaService.regressionCase, 'deleteMany')
-        .mockResolvedValue({ count: 0 } as never);
+        .mockResolvedValue({ count: 0 });
     });
 
     it('drops the physical sheets AFTER the row delete commits', async () => {
