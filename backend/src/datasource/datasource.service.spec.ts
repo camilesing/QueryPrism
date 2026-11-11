@@ -1153,6 +1153,17 @@ describe('DatasourceService', () => {
   describe('remove (Excel datasource)', () => {
     beforeEach(() => setI18n(createTestI18n()));
     beforeEach(() => excelStoreMock.dropTables.mockReset());
+    beforeEach(() => {
+      // remove now deletes regression cases + the datasource in one
+      // interactive transaction; run the callback against the same mocks.
+      jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation((async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn(prismaService)) as never);
+      jest
+        .spyOn(prismaService.regressionCase, 'deleteMany')
+        .mockResolvedValue({ count: 0 } as never);
+    });
 
     it('drops the physical sheets AFTER the row delete commits', async () => {
       const order: string[] = [];

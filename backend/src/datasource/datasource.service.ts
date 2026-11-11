@@ -219,7 +219,15 @@ export class DatasourceService {
   async remove(id: number) {
     const ds = await this.findOne(id);
     const sheets = ds.type === 'excel' ? this.excelSheetNames(ds) : [];
-    const row = await this.prisma.datasource.delete({ where: { id } });
+    // RegressionCase.datasourceId has no FK (case rows must survive chat/
+    // datasource churn by design), so remove them explicitly in the same
+    // transaction — otherwise every later run reports datasource_not_found.
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.regressionCase.deleteMany({
+        where: { oid: ds.oid, datasourceId: id },
+      });
+      return tx.datasource.delete({ where: { id } });
+    });
     await this.bumpCacheRevision(ds.oid);
     // Imported tables are dropped when an Excel datasource is deleted.
     // Done AFTER the row is gone (best effort): a failed drop leaves orphan
