@@ -623,7 +623,12 @@ export class SemanticService {
         where: visible,
       }),
     ]);
-    const tableMeanings: Record<string, string> = {};
+    // Null-prototype map: a table literally named `constructor` / `toString`
+    // must not resolve to Object.prototype members when looked up by name.
+    const tableMeanings: Record<string, string> = Object.create(null) as Record<
+      string,
+      string
+    >;
     // group per key then pick per priority
     const byTable = new Map<string, typeof tables>();
     for (const t of tables) {

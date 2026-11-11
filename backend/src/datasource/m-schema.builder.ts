@@ -107,6 +107,15 @@ const ROLE_TAGS: Record<string, string> = {
   time: '时间',
 };
 
+/** Per-value and total bounds for the enum sample appended to a field line.
+ *  Values come from the datasource (or a semantic import), so a long text
+ *  dimension must not blow up every M-Schema render. */
+const MAX_ENUM_VALUE_LENGTH = 80;
+const MAX_ENUM_SAMPLE_LENGTH = 1_000;
+
+const clipEnumText = (value: string): string =>
+  value.replace(/[\r\n]+/g, ' ').trim().slice(0, MAX_ENUM_VALUE_LENGTH);
+
 /** Compose the field comment line: `[角色] 含义 (单位: x; 枚举: a(标签)/b)`.
  *  Enum entries render `value(label)` so the LLM sees both the exact value to
  *  filter on and the business-facing label. */
@@ -120,11 +129,16 @@ function semanticFieldNote(
   if (note.unit?.trim()) tails.push(`单位: ${note.unit.trim()}`);
   if (note.enums?.length) {
     const sample = note.enums
-      .map((e) =>
-        e.label && e.label !== e.value ? `${e.value}(${e.label})` : e.value,
-      )
-      .join('/');
-    tails.push(`枚举: ${sample}`);
+      .map((e) => {
+        const value = clipEnumText(e.value ?? '');
+        if (!value) return '';
+        const label = e.label ? clipEnumText(e.label) : '';
+        return label && label !== value ? `${value}(${label})` : value;
+      })
+      .filter(Boolean)
+      .join('/')
+      .slice(0, MAX_ENUM_SAMPLE_LENGTH);
+    if (sample) tails.push(`枚举: ${sample}`);
   }
   const tail = tails.length ? ` (${tails.join('; ')})` : '';
   return `${head}${tail}`;
@@ -351,8 +365,14 @@ export function buildMSchema(input: MSchemaInput): string {
 
   for (const table of tables) {
     // A curated semantic meaning is the authoritative table comment; fall
-    // back to customComment, then the synced DB comment.
-    const semanticMeaning = input.semantics?.tableMeanings?.[table.tableName];
+    // back to customComment, then the synced DB comment. Guard the lookup:
+    // tableNames like `constructor` hit Object.prototype on a plain record.
+    const tableMeanings = input.semantics?.tableMeanings;
+    const semanticMeaning =
+      tableMeanings &&
+      Object.prototype.hasOwnProperty.call(tableMeanings, table.tableName)
+        ? tableMeanings[table.tableName]
+        : undefined;
     const tableComment =
       semanticMeaning?.trim() ||
       commentFor(table.tableComment, table.customComment) ||

@@ -405,6 +405,49 @@ describe('buildMSchema semantics injection (MetaDataImprove M2)', () => {
     expect(out).toContain('# Table: sales_order # 自定义备注');
     expect(out).toContain('order_status varchar # status');
   });
+
+  it('does not resolve Object.prototype keys as table meanings', () => {
+    const protoTable = {
+      ...table,
+      tableName: 'constructor',
+      customComment: '构造表',
+    };
+    expect(() =>
+      buildMSchema({
+        datasourceName: 'ds',
+        tables: [protoTable],
+        semantics: { tableMeanings: {}, fieldNotes: {} },
+      }),
+    ).not.toThrow();
+    expect(
+      buildMSchema({
+        datasourceName: 'ds',
+        tables: [protoTable],
+        semantics: { tableMeanings: {}, fieldNotes: {} },
+      }),
+    ).toContain('# Table: constructor # 构造表');
+  });
+
+  it('clips and flattens long enum values in the note', () => {
+    const long = 'x'.repeat(200);
+    const out = buildMSchema({
+      datasourceName: 'ds',
+      tables: [table],
+      semantics: {
+        tableMeanings: {},
+        fieldNotes: {
+          'sales_order.order_status': {
+            role: 'dimension',
+            meaning: '订单状态',
+            enums: [{ value: `a\nb${long}`, label: `标\n${long}` }],
+          },
+        },
+      },
+    });
+    expect(out).toContain('枚举: a b');
+    expect(out).not.toContain(long);
+    expect(out.split('\n').every((line) => line.length < 500)).toBe(true);
+  });
 });
 
 describe('diffRelationEdges (relation version compare)', () => {
