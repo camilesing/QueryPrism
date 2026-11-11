@@ -9,5 +9,6 @@
   "case_needs_clarify": "The case question triggers a clarification pause — make the question more specific",
   "sql_missing": "The pipeline produced no SQL",
   "baseline_captured": "First run — baseline captured, comparison starts next run",
+  "sums_unavailable": "Numeric SUM probe failed — this case is compared by row count only",
   "api_run_forbidden": "Only workspace admins may trigger regression runs via API"
 }

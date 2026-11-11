@@ -9,5 +9,6 @@
   "case_needs_clarify": "该用例问题触发了反问澄清,请把问题写得更具体",
   "sql_missing": "流水线未生成 SQL",
   "baseline_captured": "首次运行,已捕获基准,下次运行开始对比",
+  "sums_unavailable": "数值求和探测失败,该用例仅按行数对比",
   "api_run_forbidden": "仅空间管理员可通过 API 触发回归运行"
 }

@@ -21,7 +21,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import type { Prisma, RegressionCase } from '@prisma/client';
+import { Prisma, type RegressionCase } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { DatasourceService } from '../datasource/datasource.service';
 import type { QueryResult } from '../datasource/db-connector/db-connector.interface';
@@ -148,6 +148,12 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
       });
       if (!existing)
         throw new NotFoundException(tr('regression.case_not_found'));
+      // The stored baseline belongs to the OLD question/datasource. Keeping it
+      // would compare a different query's aggregates against this snapshot and
+      // produce false passes/flags; the next run captures a fresh reference.
+      const resetBaseline =
+        dto.question.trim() !== existing.question ||
+        dto.datasourceId !== existing.datasourceId;
       const row = await this.prisma.regressionCase.update({
         where: { id: dto.id },
         data: {
@@ -157,6 +163,7 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
           metricCode: dto.metricCode?.trim() || null,
           tolerancePct: dto.tolerancePct ?? existing.tolerancePct,
           enabled: dto.enabled ?? existing.enabled,
+          ...(resetBaseline ? { baseline: Prisma.DbNull } : {}),
         },
       });
       return { id: row.id };
@@ -348,54 +355,81 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
       where: { id: runId },
     });
     if (!run || run.status !== 'running') return;
-    const actor = await this.resolveActor(oid);
-    const cases = await this.prisma.regressionCase.findMany({
-      where: { oid, enabled: true },
-      orderBy: { id: 'asc' },
-    });
-    if (!actor) {
-      // No run-as identity — fail every case loudly instead of skipping the
-      // run silently (misconfiguration must be visible on the runs page).
-      await this.prisma.$transaction(
-        cases.map((c) =>
-          this.prisma.regressionRunCase.create({
-            data: {
-              runId,
-              caseId: c.id,
-              status: 'error',
-              message: tr('regression.no_run_as_admin'),
-            },
-          }),
+    try {
+      const actor = await this.resolveActor(oid);
+      const cases = await this.prisma.regressionCase.findMany({
+        where: { oid, enabled: true },
+        orderBy: { id: 'asc' },
+      });
+      if (!actor) {
+        // No run-as identity — fail every case loudly instead of skipping the
+        // run silently (misconfiguration must be visible on the runs page).
+        await this.prisma.$transaction(
+          cases.map((c) =>
+            this.prisma.regressionRunCase.create({
+              data: {
+                runId,
+                caseId: c.id,
+                status: 'error',
+                message: tr('regression.no_run_as_admin'),
+              },
+            }),
+          ),
+        );
+        return;
+      }
+      // ONE ALS scope for the whole run: runPipeline (chat/record ownership),
+      // execSql (currentOid) and the audit row all see the run-as actor, and
+      // agent=regression exempts the run from the M7 query budgets.
+      await requestContextStorage.run(
+        {
+          user: actor,
+          agent: { type: 'regression' },
+          acceptLanguage: actor.language,
+        },
+        async () => {
+          for (const c of cases) {
+            try {
+              await this.runCase(actor, runId, c);
+            } catch (e) {
+              // A crash OUTSIDE runCase's own try (e.g. chat.create) must not
+              // abort the remaining cases; record it and keep going.
+              const msg = e instanceof Error ? e.message : String(e);
+              this.logger.error(`regression case #${c.id} crashed: ${msg}`);
+              await this.writeRunCase(runId, c.id, {
+                status: 'error',
+                message: msg,
+              }).catch(() => undefined);
+            }
+          }
+          void this.audit
+            .record({
+              module: OperationModule.REGRESSION,
+              type: OperationType.SYNC,
+              status: 'success',
+              detail: `回归运行 #${runId}（${run.trigger}）`,
+              resources: [{ name: 'regression_run', originId: runId }],
+            })
+            .catch(() => undefined);
+        },
+      );
+    } catch (e) {
+      // Aborted before/during the loop (resolveActor, cases query, ALS):
+      // the finally below still marks the run terminal.
+      this.logger.error(
+        `regression run #${runId} aborted: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    } finally {
+      await this.finishRun(runId).catch((e) =>
+        this.logger.error(
+          `regression run #${runId} finish failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
         ),
       );
-      await this.finishRun(runId);
-      return;
     }
-    // ONE ALS scope for the whole run: runPipeline (chat/record ownership),
-    // execSql (currentOid) and the audit row all see the run-as actor, and
-    // agent=regression exempts the run from the M7 query budgets.
-    await requestContextStorage.run(
-      {
-        user: actor,
-        agent: { type: 'regression' },
-        acceptLanguage: actor.language,
-      },
-      async () => {
-        for (const c of cases) {
-          await this.runCase(actor, runId, c);
-        }
-        await this.finishRun(runId);
-        void this.audit
-          .record({
-            module: OperationModule.REGRESSION,
-            type: OperationType.SYNC,
-            status: 'success',
-            detail: `回归运行 #${runId}（${run.trigger}）`,
-            resources: [{ name: 'regression_run', originId: runId }],
-          })
-          .catch(() => undefined);
-      },
-    );
   }
 
   /** Run ONE case end-to-end. Never throws — every failure lands on the
@@ -426,6 +460,11 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
         engineType: engineFromDatasourceType(ds.type),
         title: `回归 · ${c.name}`.slice(0, 100),
         origin: CHAT_ORIGIN_REGRESSION,
+        // Sentinel: generateAndCacheGuessQuestions skips any chat whose
+        // recommendedQuestion is non-null. Without it every case would fire
+        // an extra LLM recommendation call on a budget-exempt path (and race
+        // the chat deletion below).
+        recommendedQuestion: [],
       },
     });
     try {
@@ -458,14 +497,33 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
           })
         : null;
       const sample = (record?.sqlExecResult ?? null) as QueryResult | null;
-      const numericCols = sample
+      let numericCols = sample
         ? detectNumericColumns(sample.columns, sample.rows)
         : [];
-      const verifySql = buildVerifySql(collected.sql, numericCols, ds.type);
-      const verify = await this.datasourceService.execSql(
-        c.datasourceId,
-        verifySql,
-      );
+      let sumsUnavailable = false;
+      let verify: QueryResult;
+      try {
+        verify = await this.datasourceService.execSql(
+          c.datasourceId,
+          buildVerifySql(collected.sql, numericCols, ds.type),
+        );
+      } catch (e) {
+        // Sample-based detection can classify a numeric-looking TEXT column
+        // as numeric (bigint-as-string included), which the DB rejects in
+        // SUM. Degrade to row-count comparison instead of erroring the case.
+        if (numericCols.length === 0) throw e;
+        this.logger.warn(
+          `regression case #${c.id}: SUM probe failed, falling back to row count: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        sumsUnavailable = true;
+        numericCols = [];
+        verify = await this.datasourceService.execSql(
+          c.datasourceId,
+          buildVerifySql(collected.sql, [], ds.type),
+        );
+      }
       const agg = parseVerifyResult(numericCols, verify);
       const baseline = (c.baseline ??
         null) as unknown as RegressionBaseline | null;
@@ -481,7 +539,9 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
               rowCount: agg.rowCount,
               sums: agg.sums,
               recordId: collected.recordId,
-              message: tr('regression.baseline_captured'),
+              message: sumsUnavailable
+                ? tr('regression.sums_unavailable')
+                : tr('regression.baseline_captured'),
             },
           }),
           this.prisma.regressionCase.update({
@@ -490,6 +550,7 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
               baseline: {
                 rowCount: agg.rowCount,
                 sums: agg.sums,
+                ...(sumsUnavailable ? { sumsUnavailable: true } : {}),
                 sqlHash: sqlTextHash(collected.sql),
                 capturedAt: new Date().toISOString(),
                 runId,
@@ -507,12 +568,15 @@ export class RegressionService implements OnModuleInit, OnModuleDestroy {
         sums: agg.sums,
         delta,
         recordId: collected.recordId,
+        message: sumsUnavailable
+          ? tr('regression.sums_unavailable')
+          : undefined,
       });
     } catch (e) {
       await this.writeRunCase(runId, c.id, {
         status: 'error',
         message: e instanceof Error ? e.message : String(e),
-      });
+      }).catch(() => undefined);
     } finally {
       // Everything worth keeping is snapshotted on the run-case row; the
       // transient chat (and its cascading records/logs) goes away.

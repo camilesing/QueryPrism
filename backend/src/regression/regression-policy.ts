@@ -15,6 +15,9 @@ export interface CaseAggregate {
   rowCount: number;
   /** DB-side SUM per numeric result column (empty when none). */
   sums: Record<string, number>;
+  /** Set when the SUM probe failed and this baseline only carries the row
+   *  count (e.g. a numeric-looking text column rejected by SUM). */
+  sumsUnavailable?: boolean;
 }
 
 export interface RegressionBaseline extends CaseAggregate {
@@ -56,6 +59,11 @@ export function compareCase(
   else if (rowCountPct < -tolerancePct) reasons.push('row_count_shrunk');
 
   const sums: Record<string, number> = {};
+  if (baseline.sumsUnavailable) {
+    // Captured rowCount-only: comparing against an empty sum map would report
+    // every current column as new. Row-count drift still flags normally.
+    return { rowCountPct, sums, newColumns: [], missingColumns: [], reasons };
+  }
   const baseCols = Object.keys(baseline.sums);
   const curCols = Object.keys(current.sums);
   const newColumns = curCols.filter((c) => !(c in baseline.sums));
@@ -79,9 +87,7 @@ export function compareCase(
 export function quoteIdentifier(name: string, engine: string): string {
   const mysql = normalizeDatasourceType(engine) === 'mysql';
   const q = mysql ? '`' : '"';
-  const escaped = mysql
-    ? name.replace(/`/g, '``')
-    : name.replace(/"/g, '""');
+  const escaped = mysql ? name.replace(/`/g, '``') : name.replace(/"/g, '""');
   return `${q}${escaped}${q}`;
 }
 
