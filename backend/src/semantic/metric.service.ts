@@ -51,6 +51,7 @@ import { EmbeddingService } from '../embedding/embedding.service';
 import { metricDefEmbedText } from '../embedding/embed-text';
 import { VectorService } from '../vector/vector.service';
 import type { EmbeddingConfig } from '../common/config/embedding-config';
+import { RegressionTriggerService } from '../regression/regression-trigger.service';
 
 /** Codes are identifier tokens — they must survive the composite-expression
  *  tokenizer (metric-policy CODE_TOKEN). */
@@ -91,11 +92,12 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
 
   constructor(
     prisma: PrismaService,
+    regressionTrigger: RegressionTriggerService,
     private readonly standards: DataStandardService,
     private readonly embedding: EmbeddingService,
     private readonly vector: VectorService,
   ) {
-    super(prisma);
+    super(prisma, regressionTrigger);
   }
 
   /** The shared M4 inbox review (`system/metric/request/review`): dispatches

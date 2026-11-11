@@ -1,0 +1,13 @@
+{
+  "case_fields_required": "用例名称与标准问题均不能为空",
+  "tolerance_invalid": "容差必须是 0-100 的整数(百分比)",
+  "datasource_not_found": "该数据源不存在于当前工作空间",
+  "case_not_found": "回归用例不存在",
+  "run_not_found": "回归运行不存在",
+  "run_not_finished": "只有已完成的运行才能采纳为基准",
+  "no_run_as_admin": "找不到可用的空间管理员作为运行身份,请先指定后重试",
+  "case_needs_clarify": "该用例问题触发了反问澄清,请把问题写得更具体",
+  "sql_missing": "流水线未生成 SQL",
+  "baseline_captured": "首次运行,已捕获基准,下次运行开始对比",
+  "api_run_forbidden": "仅空间管理员可通过 API 触发回归运行"
+}

@@ -25,6 +25,7 @@ import { PrismaService } from '../database/prisma.service';
 import { RequestContext } from '../common/context/request-context';
 import { tr } from '../common/i18n/translate';
 import { DatasourceService } from '../datasource/datasource.service';
+import { RegressionTriggerService } from '../regression/regression-trigger.service';
 import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
@@ -71,7 +72,8 @@ export interface SemanticUpsertInfo {
 }
 
 export type SemanticUpsertResult =
-  { applied: true; id: number } | { applied: false; request_id: number };
+  | { applied: true; id: number }
+  | { applied: false; request_id: number };
 
 /** One dimension field handled by an enum-collection run (snake wire). */
 export interface EnumCollectItem {
@@ -167,6 +169,7 @@ export class SemanticService {
     private readonly prisma: PrismaService,
     // Connector access for the M3.3 enum collector (bounded DISTINCT probes).
     private readonly datasourceService: DatasourceService,
+    private readonly regressionTrigger: RegressionTriggerService,
   ) {}
 
   private actor(): SemanticActor & { account: string } {
@@ -532,6 +535,14 @@ export class SemanticService {
         }),
       () => new ConflictException(tr('semantic.write_conflict')),
     );
+    // MetaDataImprove M6: an approved semantic change schedules a debounced
+    // regression run (fire-and-forget, never blocks the approval).
+    if (approve) {
+      this.regressionTrigger.onApproval(request.oid ?? actor.oid, 'semantic', {
+        request_id: id,
+        action: request.action,
+      });
+    }
   }
 
   // ---- effective resolution (prompt integration) ------------------------

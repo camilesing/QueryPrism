@@ -33,6 +33,7 @@ import {
   type SemanticPage,
   type SemanticVersionSnake,
 } from './semantic-snake-mapper';
+import { RegressionTriggerService } from '../regression/regression-trigger.service';
 
 export interface StandardUpsertInfo {
   kind: StandardKind;
@@ -57,8 +58,11 @@ type StandardTarget = {
 export class DataStandardService extends GovernedDictService<StandardUpsertInfo> {
   protected readonly entityType = 'standard' as const;
 
-  constructor(prisma: PrismaService) {
-    super(prisma);
+  constructor(
+    prisma: PrismaService,
+    regressionTrigger: RegressionTriggerService,
+  ) {
+    super(prisma, regressionTrigger);
   }
 
   // ---- read: admin page ---------------------------------------------------

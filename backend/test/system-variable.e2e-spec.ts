@@ -10,6 +10,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { PrismaService } from './../src/database/prisma.service';
 
 interface ApiEnvelope<T = unknown> {
   success: boolean;
@@ -53,6 +54,13 @@ describe('SystemVariable /sys_variable (e2e)', () => {
     app.setGlobalPrefix('api/v1');
     await app.init();
     token = await login(app);
+
+    // MetaDataImprove M7: the query-cache revision rows (SystemVariable
+    // type='cache_rev', written when earlier suites touch datasources) are a
+    // foreign contract on the same table — clear them so this suite's page
+    // totals pin ONLY the sys_variable contract.
+    const prisma = app.get(PrismaService);
+    await prisma.systemVariable.deleteMany({ where: { type: 'cache_rev' } });
 
     // Clean up any custom vars left from prior runs (system vars stay).
     const res = await request(app.getHttpServer())

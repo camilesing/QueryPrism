@@ -133,7 +133,11 @@ function makeService(
   datasourceService = makeDatasourceService(jest.fn().mockResolvedValue([])),
 ) {
   return {
-    service: new SemanticService(prisma as never, datasourceService as never),
+    service: new SemanticService(
+      prisma as never,
+      datasourceService as never,
+      { onApproval: jest.fn() } as never,
+    ),
     prisma,
     datasourceService,
   };

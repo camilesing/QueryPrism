@@ -128,6 +128,7 @@ function makeServices(prisma: MetricPrismaMock = makePrisma()) {
   return {
     metric: new MetricService(
       prisma as never,
+      { onApproval: jest.fn() } as never,
       standard,
       embedding as never,
       vector as never,

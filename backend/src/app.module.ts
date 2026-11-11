@@ -26,6 +26,7 @@ import { SemanticModule } from './semantic/semantic.module';
 import { MetaModule } from './meta/meta.module';
 import { MetadataSyncModule } from './metadata-sync/metadata-sync.module';
 import { QuotaModule } from './quota/quota.module';
+import { RegressionModule } from './regression/regression.module';
 import { AssistantModule } from './assistant/assistant.module';
 import { EmbeddedModule } from './embedded/embedded.module';
 import { CustomPromptModule } from './custom-prompt/custom-prompt.module';
@@ -91,6 +92,9 @@ import configuration from './common/config/configuration';
     MetaModule,
     // MetaDataImprove M5: manual/cron pull from external HTTP API or MCP.
     MetadataSyncModule,
+    // MetaDataImprove M6: semantic regression suite (standard questions vs
+    // baselines; auto-runs after governance approvals).
+    RegressionModule,
     // MetaDataImprove M7: query budgets/quotas + the SQL result cache.
     QuotaModule,
     // Phase 8 — embedded Assistant (type 0/2/4; CRUD + public appId lookup +

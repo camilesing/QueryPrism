@@ -30,6 +30,7 @@ import {
   type SemanticScope,
 } from './semantic-policy';
 import { withNaturalKeyRetry } from './natural-key';
+import { RegressionTriggerService } from '../regression/regression-trigger.service';
 import {
   toRequestSnake,
   type SemanticPage,
@@ -58,11 +59,15 @@ export interface GovernedInfo {
 }
 
 export type GovernedUpsertResult =
-  { applied: true; id: number } | { applied: false; request_id: number };
+  | { applied: true; id: number }
+  | { applied: false; request_id: number };
 
 @Injectable()
 export abstract class GovernedDictService<Info extends GovernedInfo> {
-  protected constructor(protected readonly prisma: PrismaService) {}
+  protected constructor(
+    protected readonly prisma: PrismaService,
+    private readonly regressionTrigger: RegressionTriggerService,
+  ) {}
 
   /** SemanticChangeRequest entityType + i18n namespace of this dictionary. */
   protected abstract readonly entityType: 'metric' | 'standard';
@@ -382,6 +387,18 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
       () => new ConflictException(this.t('write_conflict')),
     );
     this.afterCommit(affected);
+    // MetaDataImprove M6: an approved change just moved the semantic layer —
+    // schedule a debounced regression run (fire-and-forget; the approval
+    // transaction must never depend on the suite). A GLOBAL change runs in
+    // the proposer's workspace (request.oid), the only one whose cases can
+    // reference it so far.
+    if (approve) {
+      this.regressionTrigger.onApproval(
+        request.oid ?? actor.oid,
+        this.entityType,
+        { request_id: id, action: request.action },
+      );
+    }
   }
 
   // ---- internals ---------------------------------------------------------

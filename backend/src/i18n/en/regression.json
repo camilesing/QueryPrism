@@ -1,0 +1,13 @@
+{
+  "case_fields_required": "Case name and question are both required",
+  "tolerance_invalid": "Tolerance must be an integer between 0 and 100 (percent)",
+  "datasource_not_found": "The datasource does not exist in this workspace",
+  "case_not_found": "Regression case not found",
+  "run_not_found": "Regression run not found",
+  "run_not_finished": "Only finished runs can be promoted",
+  "no_run_as_admin": "No enabled workspace admin to run the regression as — assign one and retry",
+  "case_needs_clarify": "The case question triggers a clarification pause — make the question more specific",
+  "sql_missing": "The pipeline produced no SQL",
+  "baseline_captured": "First run — baseline captured, comparison starts next run",
+  "api_run_forbidden": "Only workspace admins may trigger regression runs via API"
+}

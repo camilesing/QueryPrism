@@ -28,6 +28,9 @@ import {
   type MetricImportRow,
   type StandardImportRow,
 } from '../semantic/metric-import.service';
+import { RegressionService } from '../regression/regression.service';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { CurrentUserInfo } from '../common/context/request-context';
 
 @Controller('meta')
 @UseGuards(ApiKeyGuard)
@@ -35,6 +38,7 @@ export class MetaController {
   constructor(
     private readonly importService: SemanticImportService,
     private readonly metricImportService: MetricImportService,
+    private readonly regressionService: RegressionService,
   ) {}
 
   /** Batch semantic import: array of rows, per-row `scope` (default WORKSPACE).
@@ -92,5 +96,20 @@ export class MetaController {
       throw new BadRequestException('batch limit is 5000 rows');
     }
     return this.metricImportService.importJsonStandards(rows);
+  }
+
+  /** Trigger a regression run for the key owner's workspace (MetaDataImprove
+   *  M6): the hook future CI pipelines call after applying metadata changes.
+   *  Returns the run id immediately — poll GET /system/regression/runs for
+   *  the outcome (admin JWT) or reuse the run id in later tooling. */
+  @Post('regression/run')
+  @HttpCode(200)
+  @SystemLog({
+    module: OperationModule.REGRESSION,
+    type: OperationType.SYNC,
+    detail: 'API 触发回归运行',
+  })
+  runRegression(@CurrentUser() user: CurrentUserInfo) {
+    return this.regressionService.startApiRun(user);
   }
 }
