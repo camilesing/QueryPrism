@@ -48,6 +48,8 @@ describe('Metadata sync (e2e)', () => {
   let endpoint = '';
   let rows: unknown[] = [];
   let lastHeaders: Record<string, unknown> = {};
+  let memberToken = '';
+  let memberAccount = '';
   const suffix = Date.now();
 
   beforeAll(async () => {
@@ -71,6 +73,26 @@ describe('Metadata sync (e2e)', () => {
     await app.init();
     prisma = app.get(PrismaService);
     token = await login(app);
+    // A plain member of workspace 1: WsAdminGuard must reject them even
+    // though JwtAuthGuard authenticates successfully.
+    memberAccount = `e2e-sync-member-${suffix}`;
+    await request(app.getHttpServer())
+      .post('/api/v1/user')
+      .set(TOKEN_HEADER, token)
+      .send({
+        account: memberAccount,
+        password: 'Init1234!',
+        email: `${memberAccount}@e2e.test`,
+        name: 'Metadata Sync Member',
+        oid: 1,
+        oid_list: [1],
+        status: 1,
+      });
+    const loginRes = await request(app.getHttpServer())
+      .post('/api/v1/login/access-token')
+      .send({ username: memberAccount, password: 'Init1234!' });
+    memberToken = (loginRes.body as ApiEnvelope<{ access_token: string }>).data
+      .access_token;
     await prisma.metadataSyncSource.deleteMany({
       where: { oid: 1, name: { startsWith: 'e2e-sync-' } },
     });
@@ -88,6 +110,11 @@ describe('Metadata sync (e2e)', () => {
         where: { datasourceId: 1, tableName: { startsWith: 'sync_' } },
       })
       .catch(() => undefined);
+    if (memberAccount) {
+      await prisma.user
+        .deleteMany({ where: { account: memberAccount } })
+        .catch(() => undefined);
+    }
     await app.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
@@ -99,10 +126,27 @@ describe('Metadata sync (e2e)', () => {
       .send(body);
 
   it('requires an admin token', async () => {
-    const res = await request(app.getHttpServer()).get(
+    const unauthenticated = await request(app.getHttpServer()).get(
       '/api/v1/system/metadata-sync',
     );
-    expect(res.status).toBe(401);
+    expect(unauthenticated.status).toBe(401);
+
+    // Authenticated weight-0 member: JwtAuthGuard passes, WsAdminGuard 403s.
+    const member = await request(app.getHttpServer())
+      .get('/api/v1/system/metadata-sync')
+      .set(TOKEN_HEADER, memberToken);
+    expect(member.status).toBe(403);
+
+    const memberCreate = await request(app.getHttpServer())
+      .post('/api/v1/system/metadata-sync')
+      .set(TOKEN_HEADER, memberToken)
+      .send({
+        name: `e2e-sync-${suffix}-member`,
+        kind: 'HTTP_API',
+        target: 'semantic',
+        endpoint,
+      });
+    expect(memberCreate.status).toBe(403);
   });
 
   it('creates a source, runs it, imports rows and records history', async () => {
