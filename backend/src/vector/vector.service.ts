@@ -16,11 +16,7 @@ import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
 export type VectorCollection =
-  | 'terminology'
-  | 'data_training'
-  | 'datasource'
-  | 'table'
-  | 'metric_def';
+  'terminology' | 'data_training' | 'datasource' | 'table' | 'metric_def';
 
 export interface VectorHit {
   id: number;

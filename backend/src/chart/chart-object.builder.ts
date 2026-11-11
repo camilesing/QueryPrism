@@ -96,8 +96,7 @@ export function chartObjectToFieldMapping(
   const x = axis?.x as { value?: unknown } | undefined;
   const yAxis = axis?.y;
   const y = (Array.isArray(yAxis) ? (yAxis as unknown[])[0] : yAxis) as
-    | { value?: unknown }
-    | undefined;
+    { value?: unknown } | undefined;
   const series = axis?.series as { value?: unknown } | undefined;
 
   return {
