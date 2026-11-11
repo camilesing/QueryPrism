@@ -284,7 +284,9 @@ function submitForm() {
       name: form.standard_name.trim(),
       note: form.note.trim() || undefined,
     }
-    if (form.aliasesText.trim()) payload.aliases = splitAliases(form.aliasesText)
+    // Always send aliases (including []) so clearing the field clears the
+    // stored list instead of leaving the old aliases matching questions.
+    payload.aliases = splitAliases(form.aliasesText)
     if (form.category.trim()) payload.category = form.category.trim()
     if (form.description.trim()) payload.description = form.description.trim()
     saving.value = true
@@ -302,7 +304,9 @@ function submitForm() {
     name: form.name.trim(),
     note: form.note.trim() || undefined,
   }
-  if (aliases.length > 0) payload.aliases = aliases
+  // Always send aliases (including []) so clearing the field clears the stored
+  // list instead of leaving the old aliases matching questions.
+  payload.aliases = aliases
   if (form.description.trim()) payload.description = form.description.trim()
   switch (metricKind.value) {
     case 'atomic':
@@ -423,12 +427,18 @@ function exportExcel() {
       requestOptions: { customError: true },
     } as never)
     .then((blob: unknown) => {
+      const url = URL.createObjectURL(blob as Blob)
       const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob as Blob)
+      link.href = url
       link.download = 'metrics.xlsx'
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    })
+    .catch((e: unknown) => {
+      // customError suppressed the global toast; surface the failure here.
+      ElMessage.error(e instanceof Error ? e.message : String(e))
     })
 }
 
@@ -490,26 +500,30 @@ function openVersions(row: MetricRow | StandardRow) {
 const approvalBox = ref<'pending' | 'mine'>('pending')
 const approvalRows = ref<ChangeRequestRow[]>([])
 const approvalLoading = ref(false)
+const approvalPage = reactive({ currentPage: 1, pageSize: 20, total: 0 })
 
-function searchRequests() {
+function searchRequests(page = 1) {
   approvalLoading.value = true
   metricApi
-    .requests(approvalBox.value, 1, 50)
+    .requests(approvalBox.value, page, approvalPage.pageSize)
     .then((res) => {
       approvalRows.value = res.data ?? []
+      approvalPage.currentPage = res.current_page
+      approvalPage.total = res.total_count
     })
     .finally(() => (approvalLoading.value = false))
 }
 
 function switchApprovalBox(box: 'pending' | 'mine') {
   approvalBox.value = box
-  searchRequests()
+  approvalPage.currentPage = 1
+  searchRequests(1)
 }
 
 function review(row: ChangeRequestRow, approve: boolean) {
   const done = () => {
     ElMessage.success(approve ? t('metric.review_approved') : t('metric.review_rejected'))
-    searchRequests()
+    searchRequests(approvalPage.currentPage)
   }
   if (!approve) {
     ElMessageBox.prompt(t('metric.review_note_placeholder'), {
@@ -737,6 +751,13 @@ function payloadSummary(row: ChangeRequestRow): string {
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        v-model:current-page="approvalPage.currentPage"
+        :page-size="approvalPage.pageSize"
+        :total="approvalPage.total"
+        layout="total, prev, pager, next"
+        @current-change="(p: number) => searchRequests(p)"
+      />
     </template>
 
     <!-- create / edit dialog -->
