@@ -159,7 +159,9 @@ function submitForm() {
         const [value, label] = line.split('|')
         return label ? { value: value.trim(), label: label.trim() } : { value }
       })
-    if (enum_values.length > 0) payload.enum_values = enum_values
+    // Always send the array (including []) so clearing the textarea clears the
+    // stored enum cache instead of leaving the old values in place.
+    payload.enum_values = enum_values
   }
   saving.value = true
   semanticApi
@@ -213,12 +215,18 @@ function exportExcel() {
       requestOptions: { customError: true },
     } as never)
     .then((blob: unknown) => {
+      const url = URL.createObjectURL(blob as Blob)
       const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob as Blob)
+      link.href = url
       link.download = 'semantics.xlsx'
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    })
+    .catch((e: unknown) => {
+      // customError suppressed the global toast; surface the failure here.
+      ElMessage.error(e instanceof Error ? e.message : String(e))
     })
 }
 
@@ -322,13 +330,16 @@ function openVersions(row: SemanticRow) {
 const approvalBox = ref<'pending' | 'mine'>('pending')
 const approvalRows = ref<SemanticChangeRequestRow[]>([])
 const approvalLoading = ref(false)
+const approvalPage = reactive({ currentPage: 1, pageSize: 20, total: 0 })
 
-function searchRequests() {
+function searchRequests(page = 1) {
   approvalLoading.value = true
   semanticApi
-    .requests(approvalBox.value, 1, 50)
+    .requests(approvalBox.value, page, approvalPage.pageSize)
     .then((res) => {
       approvalRows.value = res.data ?? []
+      approvalPage.currentPage = res.current_page
+      approvalPage.total = res.total_count
     })
     .finally(() => {
       approvalLoading.value = false
@@ -337,7 +348,8 @@ function searchRequests() {
 
 function switchApprovalBox(box: 'pending' | 'mine') {
   approvalBox.value = box
-  searchRequests()
+  approvalPage.currentPage = 1
+  searchRequests(1)
 }
 
 function switchTab(tab: string | number) {
@@ -348,7 +360,7 @@ function switchTab(tab: string | number) {
 function review(row: SemanticChangeRequestRow, approve: boolean) {
   const done = () => {
     ElMessage.success(approve ? t('semantic.review_approved') : t('semantic.review_rejected'))
-    searchRequests()
+    searchRequests(approvalPage.currentPage)
   }
   if (!approve) {
     ElMessageBox.prompt(t('semantic.review_note_placeholder'), {
@@ -563,6 +575,13 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        v-model:current-page="approvalPage.currentPage"
+        :page-size="approvalPage.pageSize"
+        :total="approvalPage.total"
+        layout="total, prev, pager, next"
+        @current-change="(p: number) => searchRequests(p)"
+      />
     </template>
 
     <!-- create / edit dialog -->
