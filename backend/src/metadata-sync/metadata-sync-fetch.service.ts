@@ -53,6 +53,8 @@ export class MetadataSyncFetchService {
       method,
       headers,
       body,
+      // Never replay stored auth headers on a cross-origin redirect.
+      redirect: 'error',
       signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
     }).catch((e: unknown) => {
       // AbortSignal.timeout rejects with a DOMException named TimeoutError —
@@ -86,17 +88,20 @@ export class MetadataSyncFetchService {
       name: 'queryprism-metadata-sync',
       version: '1.0.0',
     });
+    // ONE deadline for connect + call: two independent 30s budgets let one
+    // pull hold the per-source FIFO queue for ~60s.
+    const deadline = Date.now() + SYNC_TIMEOUT_MS;
     try {
-      await this.withTimeout(client.connect(transport));
+      await this.withTimeout(client.connect(transport), deadline);
       const result = await this.withTimeout(
         client.callTool({
           name: tool,
           arguments: (source.mcpArgs as Record<string, unknown> | null) ?? {},
         }),
+        deadline,
       );
       const content = result.content as
-        | Array<{ type?: string; text?: string }>
-        | undefined;
+        Array<{ type?: string; text?: string }> | undefined;
       const text = content?.find(
         (c) => c.type === 'text' && typeof c.text === 'string',
       )?.text;
@@ -107,7 +112,12 @@ export class MetadataSyncFetchService {
         throw new Error(tr('metadata-sync.invalid_payload'));
       }
     } finally {
-      await client.close().catch(() => undefined);
+      // Best effort: a timed-out transport may never settle, so do not let
+      // close() extend the pull past the deadline.
+      await this.withTimeout(
+        client.close().catch(() => undefined),
+        Date.now() + 1_000,
+      ).catch(() => undefined);
     }
   }
 
@@ -122,7 +132,12 @@ export class MetadataSyncFetchService {
     }
   }
 
-  private async withTimeout<T>(promise: Promise<T>): Promise<T> {
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    deadline: number,
+  ): Promise<T> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(tr('metadata-sync.timeout'));
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
@@ -130,7 +145,7 @@ export class MetadataSyncFetchService {
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(tr('metadata-sync.timeout'))),
-            SYNC_TIMEOUT_MS,
+            remaining,
           );
         }),
       ]);
