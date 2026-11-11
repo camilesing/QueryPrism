@@ -38,6 +38,7 @@ describe('Semantic admin (e2e)', () => {
   let memberToken: string;
   let prisma: PrismaService;
   let memberAccount: string;
+  let memberUid = 0;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -64,16 +65,23 @@ describe('Semantic admin (e2e)', () => {
         status: 1,
       });
     memberToken = await login(app, memberAccount, 'Init1234!');
+    memberUid = (
+      await prisma.user.findUniqueOrThrow({
+        where: { account: memberAccount },
+        select: { id: true },
+      })
+    ).id;
 
     await prisma.tableSemantic.deleteMany({ where: { datasourceId: 1 } });
-    await prisma.semanticChangeRequest.deleteMany({
-      where: { proposerUid: undefined },
-    });
   });
 
   afterAll(async () => {
     await prisma.tableSemantic
       .deleteMany({ where: { datasourceId: 1 } })
+      .catch(() => undefined);
+    // Requests have no FK to the user; clean up only this suite's proposals.
+    await prisma.semanticChangeRequest
+      .deleteMany({ where: { proposerUid: memberUid } })
       .catch(() => undefined);
     if (memberAccount) {
       await prisma.user
@@ -173,12 +181,25 @@ describe('Semantic admin (e2e)', () => {
     });
     expect(applied?.meaning).toBe('客户主数据');
 
-    // A member may not review.
+    // A member may not review: create a FRESH pending WORKSPACE proposal (the
+    // approved one above would fail the status check first and prove nothing).
+    const pending = await request(app.getHttpServer())
+      .put('/api/v1/system/semantic')
+      .set(TOKEN_HEADER, memberToken)
+      .send({
+        entity_type: 'table',
+        scope: 'WORKSPACE',
+        datasource_id: 1,
+        table_name: 'crm_customer_denied',
+        meaning: '待审批的客户表',
+      });
+    const pendingId = (pending.body as ApiEnvelope<{ request_id: number }>).data
+      .request_id;
     const denied = await request(app.getHttpServer())
       .put('/api/v1/system/semantic/request/review')
       .set(TOKEN_HEADER, memberToken)
-      .send({ id: proposed.request_id + 1_000_000, approve: true });
-    expect(denied.status).toBeGreaterThanOrEqual(400);
+      .send({ id: pendingId, approve: true });
+    expect(denied.status).toBe(403);
   });
 
   it('two concurrent approvals apply the proposal exactly once', async () => {
@@ -262,18 +283,36 @@ describe('Semantic admin (e2e)', () => {
       true,
     );
 
+    // A different user's PERSONAL row must be invisible to the member.
+    await prisma.tableSemantic.create({
+      data: {
+        scope: 'PERSONAL',
+        oid: 1,
+        ownerUid: 1,
+        datasourceId: 1,
+        tableName: 'admin_private',
+        meaning: '管理员私有语义',
+        enabled: true,
+      },
+    });
+
     const memberPage = await request(app.getHttpServer())
       .get('/api/v1/system/semantic/page/table/1/50')
       .set(TOKEN_HEADER, memberToken);
     expect(memberPage.status).toBe(200);
     const rows = (
       memberPage.body as ApiEnvelope<{
-        data: Array<{ scope: string; owner_uid: number | null }>;
+        data: Array<{
+          scope: string;
+          owner_uid: number | null;
+          table_name: string;
+        }>;
       }>
     ).data.data;
+    expect(rows.some((r) => r.table_name === 'admin_private')).toBe(false);
     for (const row of rows) {
       if (row.scope === 'PERSONAL') {
-        expect(row.owner_uid).not.toBeNull();
+        expect(row.owner_uid).toBe(memberUid);
       }
     }
     // The member sees the WORKSPACE rows + their own PERSONAL row.

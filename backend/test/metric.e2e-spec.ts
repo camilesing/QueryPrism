@@ -37,6 +37,7 @@ describe('Metric system + data standards admin (e2e)', () => {
   let memberToken: string;
   let prisma: PrismaService;
   let memberAccount: string;
+  let memberUid = 0;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -63,6 +64,12 @@ describe('Metric system + data standards admin (e2e)', () => {
         status: 1,
       });
     memberToken = await login(app, memberAccount, 'Init1234!');
+    memberUid = (
+      await prisma.user.findUniqueOrThrow({
+        where: { account: memberAccount },
+        select: { id: true },
+      })
+    ).id;
 
     await prisma.metricDef.deleteMany({});
     await prisma.dataStandard.deleteMany({});
@@ -148,7 +155,7 @@ describe('Metric system + data standards admin (e2e)', () => {
         name: '客单价',
         definition: { expression: 'atv / pay_amount' },
       });
-    expect(badExpr.status).toBeGreaterThanOrEqual(400);
+    expect(badExpr.status).toBe(400);
 
     const badDef = await request(app.getHttpServer())
       .put('/api/v1/system/metric')
@@ -166,7 +173,7 @@ describe('Metric system + data standards admin (e2e)', () => {
           values: ['a'],
         },
       });
-    expect(badDef.status).toBeGreaterThanOrEqual(400);
+    expect(badDef.status).toBe(400);
   });
 
   it('member proposal → ws admin approval applies at the WORKSPACE layer (metric)', async () => {
@@ -217,12 +224,25 @@ describe('Metric system + data standards admin (e2e)', () => {
     });
     expect(applied).not.toBeNull();
 
-    // A member may not review.
+    // A member may not review: create a FRESH pending WORKSPACE proposal (the
+    // approved one above would fail the status check first and prove nothing).
+    const pending = await request(app.getHttpServer())
+      .put('/api/v1/system/metric')
+      .set(TOKEN_HEADER, memberToken)
+      .send({
+        kind: 'period',
+        scope: 'WORKSPACE',
+        code: 'last_30d',
+        name: '最近30天',
+        definition: { mode: 'recent', time_unit: 'day', count: 30 },
+      });
+    const pendingId = (pending.body as ApiEnvelope<{ request_id: number }>).data
+      .request_id;
     const denied = await request(app.getHttpServer())
       .put('/api/v1/system/metric/request/review')
       .set(TOKEN_HEADER, memberToken)
-      .send({ id: proposed.request_id + 1_000_000, approve: true });
-    expect(denied.status).toBeGreaterThanOrEqual(400);
+      .send({ id: pendingId, approve: true });
+    expect(denied.status).toBe(403);
   });
 
   it('member writes PERSONAL metrics directly; page shows visible layers only', async () => {
@@ -246,18 +266,38 @@ describe('Metric system + data standards admin (e2e)', () => {
       true,
     );
 
+    // A different user's PERSONAL metric must be invisible to the member.
+    await prisma.metricDef.create({
+      data: {
+        kind: 'atomic',
+        scope: 'PERSONAL',
+        oid: 1,
+        ownerUid: 1,
+        code: 'admin_private_metric',
+        name: '管理员私有指标',
+        definition: {
+          datasource_id: 1,
+          table_name: 'sales_order',
+          field_name: 'amount',
+          aggregation: 'MIN',
+        },
+        enabled: true,
+      },
+    });
+
     const memberPage = await request(app.getHttpServer())
       .get('/api/v1/system/metric/page/atomic/1/50')
       .set(TOKEN_HEADER, memberToken);
     expect(memberPage.status).toBe(200);
     const rows = (
       memberPage.body as ApiEnvelope<{
-        data: Array<{ scope: string; owner_uid: number | null }>;
+        data: Array<{ scope: string; owner_uid: number | null; code: string }>;
       }>
     ).data.data;
+    expect(rows.some((r) => r.code === 'admin_private_metric')).toBe(false);
     for (const row of rows) {
       if (row.scope === 'PERSONAL') {
-        expect(row.owner_uid).not.toBeNull();
+        expect(row.owner_uid).toBe(memberUid);
       }
     }
     expect(rows.some((r) => r.scope === 'WORKSPACE')).toBe(true);
