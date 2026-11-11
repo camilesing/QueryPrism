@@ -2,10 +2,10 @@
 // calls assertWithinBudget once per accepted question, BEFORE the LLM runs —
 // that is the only reliable chokepoint for agent traffic.
 //
-// Counting is check-then-increment inside a transaction: a REJECTED request
-// does not consume budget (it never reached the LLM); two concurrent requests
-// racing past the read can overshoot by a hair, which is fine — this is cost
-// control, not precise metering.
+// Counting is one atomic check-and-increment statement: a REJECTED request
+// does not consume budget (it never reached the LLM), and concurrent requests
+// cannot all pass the read — the conditional upsert only increments while the
+// stored count is below the limit, so a parallel burst cannot overshoot.
 import {
   BadRequestException,
   Injectable,
@@ -57,39 +57,23 @@ export class QuotaService {
     const limit = pickDailyLimit(rows, subject);
     if (limit == null) return; // no budget configured → unlimited
     const day = dayKey();
-    await this.prisma.$transaction(async (tx) => {
-      const existing = await tx.queryUsageDaily.findUnique({
-        where: {
-          oid_day_subjectType_subjectId: {
-            oid,
-            day,
-            subjectType: subject.type,
-            subjectId: subject.id ?? 0,
-          },
-        },
-      });
-      if (existing && existing.queries >= limit) {
-        throw new QuotaExceededError(limit);
-      }
-      await tx.queryUsageDaily.upsert({
-        where: {
-          oid_day_subjectType_subjectId: {
-            oid,
-            day,
-            subjectType: subject.type,
-            subjectId: subject.id ?? 0,
-          },
-        },
-        create: {
-          oid,
-          day,
-          subjectType: subject.type,
-          subjectId: subject.id ?? 0,
-          queries: 1,
-        },
-        update: { queries: { increment: 1 } },
-      });
-    });
+    // Atomic check-and-increment: the conditional DO UPDATE only increments
+    // while the stored count is below the limit (the previous SELECT-then-
+    // upsert let every racer read the same pre-increment count). No returned
+    // row means the budget was already spent, and nothing was consumed.
+    const charged = await this.prisma.$queryRaw<Array<{ queries: number }>>`
+      INSERT INTO "QueryUsageDaily"
+        ("oid", "day", "subjectType", "subjectId", "queries", "updatedAt")
+      VALUES
+        (${oid}, ${day}, ${subject.type}, ${subject.id ?? 0}, 1, NOW())
+      ON CONFLICT ("oid", "day", "subjectType", "subjectId")
+      DO UPDATE SET
+        "queries" = "QueryUsageDaily"."queries" + 1,
+        "updatedAt" = NOW()
+      WHERE "QueryUsageDaily"."queries" < ${limit}
+      RETURNING "queries"
+    `;
+    if (charged.length === 0) throw new QuotaExceededError(limit);
   }
 
   /** Budget rows + today's usage for the admin page. The default row's
