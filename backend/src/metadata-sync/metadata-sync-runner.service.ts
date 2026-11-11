@@ -69,13 +69,17 @@ export class MetadataSyncRunnerService {
     private readonly audit: AuditService,
   ) {}
 
-  run(sourceId: number, trigger: SyncTrigger): Promise<SyncRunResult> {
+  run(
+    sourceId: number,
+    trigger: SyncTrigger,
+    expectedOid?: number,
+  ): Promise<SyncRunResult> {
     const previous = this.tails.get(sourceId) ?? Promise.resolve();
     const job = previous
       // A failed run rejects only its own caller: swallowing the previous
       // outcome here keeps the queue alive for the triggers behind it.
       .catch(() => undefined)
-      .then(() => this.execute(sourceId, trigger));
+      .then(() => this.execute(sourceId, trigger, expectedOid));
     this.tails.set(sourceId, job);
     const clear = (): void => {
       if (this.tails.get(sourceId) === job) this.tails.delete(sourceId);
@@ -88,11 +92,14 @@ export class MetadataSyncRunnerService {
   private async execute(
     sourceId: number,
     trigger: SyncTrigger,
+    expectedOid?: number,
   ): Promise<SyncRunResult> {
     const source = await this.prisma.metadataSyncSource.findUnique({
       where: { id: sourceId },
     });
-    if (!source) {
+    // A manual trigger passes the caller's workspace; foreign ids 404 exactly
+    // like missing ones (no cross-tenant existence oracle). Cron calls omit it.
+    if (!source || (expectedOid != null && source.oid !== expectedOid)) {
       throw new NotFoundException(
         tr('metadata-sync.not_found', { id: sourceId }),
       );

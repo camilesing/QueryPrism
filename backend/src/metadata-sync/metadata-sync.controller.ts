@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { WsAdminGuard } from '../auth/ws-admin.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { SystemLog } from '../audit/system-log.decorator';
 import { OperationModule, OperationType } from '../audit/operation.enum';
 import { MetadataSyncUpsertDto } from '../common/dtos/metadata-sync.dto';
@@ -74,10 +75,15 @@ export class MetadataSyncController {
     return this.sync.remove(id);
   }
 
-  /** Manual trigger. The runner writes its own audit row (manual + cron). */
+  /** Manual trigger. The runner writes its own audit row (manual + cron).
+   *  `oid` is the caller's current workspace: the runner rejects a source id
+   *  from another tenant (a workspace admin must not run foreign sources). */
   @Post(':id/run')
   @HttpCode(200)
-  run(@Param('id', ParseIntPipe) id: number) {
-    return this.runner.run(id, 'manual');
+  run(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('oid') oid: number,
+  ) {
+    return this.runner.run(id, 'manual', oid);
   }
 }
