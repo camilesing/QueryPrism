@@ -153,6 +153,11 @@ const searchRuns = (page = 1) => {
     })
 }
 
+const refreshAll = () => {
+  searchCases(casePage.currentPage)
+  searchRuns(runPage.currentPage)
+}
+
 const runNow = () => {
   running.value = true
   regressionApi
@@ -235,13 +240,7 @@ onMounted(() => {
         <el-button type="warning" :loading="running" @click="runNow">
           {{ t('regression.run_now') }}
         </el-button>
-        <el-button
-          :loading="loading"
-          @click="
-            searchCases()
-            searchRuns()
-          "
-        >
+        <el-button :loading="loading" @click="refreshAll">
           {{ t('regression.refresh') }}
         </el-button>
       </div>
