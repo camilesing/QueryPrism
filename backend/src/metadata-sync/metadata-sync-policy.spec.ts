@@ -17,6 +17,19 @@ describe('metadata-sync policy', () => {
     expect(isValidEndpoint('not a url')).toBe(false);
   });
 
+  it('rejects link-local and cloud-metadata endpoints', () => {
+    expect(isValidEndpoint('http://169.254.169.254/latest/meta-data')).toBe(
+      false,
+    );
+    expect(isValidEndpoint('http://169.254.1.1/rows')).toBe(false);
+    expect(isValidEndpoint('http://[fe80::1]/rows')).toBe(false);
+    expect(isValidEndpoint('http://[fd00:ec2::254]/latest')).toBe(false);
+    expect(
+      isValidEndpoint('http://metadata.google.internal/computeMetadata'),
+    ).toBe(false);
+    expect(isValidEndpoint('http://0.0.0.0:9000/rows')).toBe(false);
+  });
+
   it('validates cron expressions', () => {
     expect(isValidCron('0 3 * * *')).toBe(true);
     expect(isValidCron('*/5 * * * *')).toBe(true);

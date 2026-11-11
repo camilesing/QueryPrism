@@ -27,11 +27,27 @@ export interface SyncAuth {
   token?: string;
 }
 
-/** Only http(s) endpoints are allowed (admin-configured; no file/other). */
+/** Only http(s) endpoints are allowed (admin-configured; no file/other).
+ *  Loopback/private hosts stay allowed on purpose — internal APIs are a
+ *  supported sync target and workspace admins already configure datasource
+ *  connections. Link-local / cloud-metadata addresses are rejected: reaching
+ *  them is never a legitimate metadata pull and can expose instance
+ *  credentials. Redirects are refused by the fetch service (header replay). */
 export function isValidEndpoint(endpoint: string): boolean {
   try {
     const url = new URL(endpoint);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === '0.0.0.0' || host === '::' || host === '169.254.169.254') {
+      return false;
+    }
+    if (host.startsWith('169.254.') || host.startsWith('fe80:')) return false;
+    // AWS IMDS over IPv6 + common metadata hostnames.
+    if (host === 'fd00:ec2::254') return false;
+    if (host === 'metadata.google.internal' || host === 'metadata.goog') {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
