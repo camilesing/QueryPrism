@@ -830,3 +830,124 @@ model MetadataSyncRun {
 
   @@index([sourceId, startedAt])
 }
+
+// ============================== MetaDataImprove M6: 语义回归测试 ==============================
+
+// 回归测试用例：一条标准问题 + 对比基准。语义模型（表/字段语义、指标、数据
+// 标准）变更后重跑，重点检测 join 扇出导致的行数膨胀、过滤器减少导致的口径
+// 放宽（数值莫名变大）——这类问题 code review 看不出来，只有跑数能发现。
+// baseline 是当前生效的基准快照 {rowCount, sums, sqlHash, capturedAt, runId}，
+// 由首跑捕获或管理员 promote 某次 run 采纳。
+model RegressionCase {
+  id           Int      @id @default(autoincrement())
+  oid          Int // 工作空间 id（无 FK，mirror Terminology.oid）
+  datasourceId Int // 被测数据源
+  name         String // 如 "支付金额-母婴类-近7天"
+  question     String // 标准问题（自然语言，走完整 NL2SQL 流水线）
+  metricCode   String? // 关联指标 code（组织性关联，可空）
+  tolerancePct Int      @default(10) // 行数/数值允许的相对变化百分比
+  enabled      Boolean  @default(true)
+  baseline     Json? // 当前基准快照 {rowCount, sums, sqlHash, capturedAt, runId}
+  createBy     Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  runCases RegressionRunCase[]
+
+  @@index([oid, datasourceId])
+}
+
+// 一次回归运行（触发：approval 审批通过自动 | manual 管理页 | api 外部调用）。
+// 队列与防抖均为进程内单实例假设（同 metadata-sync 调度器）。
+model RegressionRun {
+  id            Int      @id @default(autoincrement())
+  oid           Int
+  trigger       String // approval | manual | api
+  triggerDetail Json? // {entityType, requestId, actorUid} / {actorUid}
+  status        String // running | done
+  passed        Int      @default(0)
+  flagged       Int      @default(0)
+  errored       Int      @default(0)
+  startedAt     DateTime @default(now())
+  finishedAt    DateTime?
+
+  runCases RegressionRunCase[]
+
+  @@index([oid, startedAt])
+}
+
+// 单用例运行结果。rowCount/sums 来自 DB 端 COUNT/SUM 聚合（包一层子查询），
+// 不受 CHAT_LIMIT_ROWS 截断影响——这是扇出/口径检测的关键。recordId 是追溯
+// 用的裸 int（无 FK；回归 chat 在 run 结束后被清理）。
+model RegressionRunCase {
+  id       Int     @id @default(autoincrement())
+  run      RegressionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId    Int
+  case     RegressionCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId   Int
+  status   String // passed | flagged | baseline_captured | needs_clarify | error
+  sql      String?
+  rowCount Int?
+  sums     Json? // {col: sum}
+  delta    Json? // {rowCountPct, sums:{col:pct}, reasons:[...]}
+  message  String?
+  recordId Int?
+
+  @@index([runId])
+  @@index([caseId])
+}
+
+// ============================== MetaDataImprove M7: 查询预算与配额 ==============================
+
+// 查询预算：按主体的每日查询上限。解析顺序 subject 行 > 'default' 行 > 不限。
+// agent（MCP 集成 / embedded 助手）在查询层统一管控——下游 agent 管不住，
+// 所以预算检查收敛在 chat 流水线入口。
+model QueryBudget {
+  id          Int      @id @default(autoincrement())
+  oid         Int
+  subjectType String // default | user | mcp_integration | assistant
+  subjectId   Int? // 仅 default 为 null
+  dailyLimit  Int // 每日查询上限
+  createBy    Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([oid, subjectType, subjectId])
+  @@index([oid])
+}
+
+// 每主体每日查询计数（自然日，服务器本地时区）。check-then-increment 在事务
+// 内执行，并发下轻微超计可接受（成本管控目的，非精确计量）。
+model QueryUsageDaily {
+  id          Int      @id @default(autoincrement())
+  oid         Int
+  day         String // 'YYYY-MM-DD'
+  subjectType String
+  subjectId   Int
+  queries     Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([oid, day, subjectType, subjectId])
+  @@index([oid, subjectType, subjectId])
+}
+
+// SQL 结果缓存（cache.enabled，默认关闭）。sqlHash 是"已注入 LIMIT 的最终
+// SQL"规范化后的 sha256——不同 limit / 不同行权限 SQL 天然隔离。revision 是
+// 写入时的语义版本号（SystemVariable type='cache_rev'，任何语义/指标/标准/
+// 关系/表结构写入都会 bump）：查不到当前 revision 的条目即失效。
+// 已知限制：v1 不做预聚合表路由（后续可在原子指标 definition 加 rollup_table）。
+model QueryCacheEntry {
+  id           Int      @id @default(autoincrement())
+  oid          Int
+  datasourceId Int
+  sqlHash      String
+  sql          String
+  result       Json // QueryResult {columns, rows}
+  rowCount     Int
+  revision     Int
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  @@unique([oid, datasourceId, sqlHash])
+  @@index([oid, expiresAt])
+}
