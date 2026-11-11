@@ -334,8 +334,14 @@ describe('Regression suite (e2e)', () => {
   });
 
   it('cleans up its transient regression chats (origin=2)', async () => {
-    // The runner deletes each case's chat in finally — none survive.
-    const leftovers = await prisma.chat.count({ where: { origin: 2 } });
+    // Scope to THIS suite's case title: other suites (embedded assistant) also
+    // create origin=2 chats and must not decide this assertion.
+    const leftovers = await prisma.chat.count({
+      where: {
+        origin: 2,
+        title: { startsWith: '回归 · A类订单金额' },
+      },
+    });
     expect(leftovers).toBe(0);
   });
 });
