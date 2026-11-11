@@ -93,6 +93,13 @@ async function consumeChatStream(
   currentRecord: ChatRecord,
   controller: AbortController
 ) {
+  // Pre-stream failures (stale clarify round, quota, 401) are plain-text
+  // non-2xx bodies — without this check they are read as a stream, discarded
+  // and the card silently disappears.
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `HTTP ${response.status}`)
+  }
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
 
@@ -304,6 +311,9 @@ const answerClarify = async (body: {
     const response = await chatApi.answerClarify(currentRecord.id, body, controller)
     await consumeChatStream(response, currentRecord, controller)
   } catch (error) {
+    // The optimistic settle was wrong (the server rejected the answer before
+    // claiming it) — restore the card so the user can retry.
+    currentRecord.clarify_status = 'pending'
     if (!currentRecord.error) {
       currentRecord.error = ''
     }

@@ -113,7 +113,7 @@ const summary = computed<string>(() => {
 </script>
 
 <template>
-  <div v-if="record.clarify" class="clarify-block">
+  <div v-if="record.clarify && (pending || summary)" class="clarify-block">
     <template v-if="pending">
       <div class="clarify-title">{{ t('chat.clarify_title') }}</div>
       <div class="clarify-hint">

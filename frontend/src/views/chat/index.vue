@@ -231,6 +231,7 @@
                     :message="message"
                     :reasoning-name="['sql_answer', 'chart_answer']"
                     @scroll-bottom="scrollToBottom"
+                    @update:loading="onChartAnswerLoading"
                     @finish="onChartAnswerFinish"
                     @error="onChartAnswerError"
                     @stop="onChatStop"
@@ -770,6 +771,11 @@ function quickAsk(question: string) {
 
 const chartAnswerRef = ref()
 const getRecommendQuestionsLoading = ref(false)
+/** Clarify resumes live inside ChartAnswer; its `update:loading` events keep
+ *  the shared typing state (input disabled, thinking indicator) in sync. */
+function onChartAnswerLoading(value: boolean) {
+  isTyping.value = value
+}
 async function onChartAnswerFinish(id: number) {
   getRecommendQuestionsLoading.value = true
   loading.value = false
