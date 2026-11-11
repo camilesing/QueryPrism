@@ -146,6 +146,16 @@ function detectExplicitMentions<T extends TableRecallCandidate>(
   };
 }
 
+/** The explicitly mentioned table names/comments (lowercased) of a candidate
+ *  pool — exposed so callers that reorder/narrow the pool can retain what the
+ *  user actually named. */
+export function explicitMentions<T extends TableRecallCandidate>(
+  ranked: T[],
+  question: string,
+): { names: Set<string>; comments: Set<string> } {
+  return detectExplicitMentions(ranked, question);
+}
+
 /** Keep explicitly mentioned candidates, then fill remaining slots by the
  *  caller's rank order (port of _select_tables, applyLimit always true here).
  *  Overlapping names and comments resolve to the longest mention separately. */

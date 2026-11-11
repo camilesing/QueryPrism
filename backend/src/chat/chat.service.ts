@@ -79,6 +79,7 @@ import {
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
 import {
+  explicitMentions,
   matchSuggestedTableIds,
   needsClarify,
   type TableRecallCandidate,
@@ -571,6 +572,21 @@ export class ChatService {
       throw new NotFoundException(
         chatMessages(this.profileLang()).chatNotFound(record.chatId),
       );
+    }
+    // The pause payload is a snapshot: a table may have been unselected or
+    // removed by a sync in the meantime. Reject the stale pick BEFORE claiming
+    // so the record stays pending and the user can re-answer the card.
+    if (wanted.length > 0) {
+      if (chat.datasourceId == null) {
+        throw new BadRequestException(msgs.datasourceRequired);
+      }
+      const current = await this.datasourceService.findOne(chat.datasourceId);
+      const checkedIds = new Set(
+        current.tables.filter((t) => t.checked).map((t) => t.id),
+      );
+      if (wanted.some((id) => !checkedIds.has(id))) {
+        throw new BadRequestException(msgs.clarifyTablesInvalid);
+      }
     }
     // A resume is a second full NL2SQL run (keyword extraction, generate_sql,
     // chart/filter calls), so it charges the daily budget like a fresh
@@ -1194,7 +1210,30 @@ export class ChatService {
         (id) => annotations.tableMeanings[nameById.get(id) ?? ''] !== undefined,
       );
       if (coveredIds.length >= cfg.semanticMaxTables) {
-        tableIds = coveredIds.slice(0, cfg.semanticMaxTables);
+        // Explicitly named tables always survive the cut: recall deliberately
+        // ranks them first, and dropping the table the user actually named
+        // makes the LLM either guess or ask for it back.
+        const explicit = explicitMentions(clarifyPool, content);
+        const requiredIds = tableIds.filter((id) => {
+          const t = tableById.get(id);
+          if (!t) return false;
+          const name = (t.tableName || '').trim().toLowerCase();
+          const comment = (t.customComment || t.tableComment || '')
+            .trim()
+            .toLowerCase();
+          return (
+            explicit.names.has(name) ||
+            (comment !== '' && explicit.comments.has(comment))
+          );
+        });
+        const keep = [
+          ...requiredIds,
+          ...coveredIds.filter((id) => !requiredIds.includes(id)),
+        ];
+        tableIds = keep.slice(
+          0,
+          Math.max(cfg.semanticMaxTables, requiredIds.length),
+        );
         semanticNarrowed = true;
       }
     }
