@@ -23,6 +23,9 @@ const EMBEDDING_NUMBER_KEYS = [
   'semantic.max_tables',
   'metric.max_definitions',
   'metric.similarity_threshold',
+  // MetaDataImprove M7: query-cost keys
+  'quota.max_rows',
+  'cache.ttl_seconds',
 ]
 
 const state = reactive({
@@ -54,6 +57,10 @@ const state = reactive({
     'metric.max_definitions': 5,
     'metric.similarity_threshold': 0.55,
     'naming.enabled': true,
+    // MetaDataImprove M7: query-cost keys (defaults mirror the backend).
+    'quota.max_rows': 1000,
+    'cache.enabled': false,
+    'cache.ttl_seconds': 300,
     'login.initial_pwd_disabled': false,
     'login.initial_pwd_hidden': false,
   }),
@@ -76,7 +83,9 @@ const loadData = () => {
             item.pkey?.startsWith('clarify') ||
             item.pkey?.startsWith('semantic') ||
             item.pkey?.startsWith('metric') ||
-            item.pkey?.startsWith('naming')
+            item.pkey?.startsWith('naming') ||
+            item.pkey?.startsWith('quota') ||
+            item.pkey?.startsWith('cache')
           ) {
             if (item.pkey === 'chat.queryprism_name') {
               if (item.pval && item.pval.trim().length > 0) {
@@ -663,6 +672,73 @@ onMounted(() => {
             </div>
             <div class="value">
               <el-switch v-model="state.parameterForm['naming.enabled']" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">{{ t('parameter.query_cost_settings') }}</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr">
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.quota_max_rows') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.quota_max_rows_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['quota.max_rows']"
+                :min="1"
+                :max="100000"
+                controls-position="right"
+              />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.cache_enabled') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.cache_enabled_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-switch v-model="state.parameterForm['cache.enabled']" />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.cache_ttl_seconds') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.cache_ttl_seconds_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['cache.ttl_seconds']"
+                :min="1"
+                :max="86400"
+                controls-position="right"
+              />
             </div>
           </div>
         </div>
