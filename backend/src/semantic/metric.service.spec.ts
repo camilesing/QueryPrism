@@ -125,6 +125,7 @@ function makeServices(prisma: MetricPrismaMock = makePrisma()) {
     upsert: jest.fn(),
     search: jest.fn(),
   };
+  const datasources = { findOne: jest.fn().mockResolvedValue({ id: 1 }) };
   return {
     metric: new MetricService(
       prisma as never,
@@ -132,6 +133,7 @@ function makeServices(prisma: MetricPrismaMock = makePrisma()) {
       standard,
       embedding as never,
       vector as never,
+      datasources as never,
     ),
     standard,
     prisma,

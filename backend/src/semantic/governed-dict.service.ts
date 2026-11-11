@@ -109,6 +109,11 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
 
   protected abstract validateInfo(info: Info): void;
 
+  /** Entity-specific write guard run before direct/proposal routing. Metric
+   *  overrides it to reject a datasource binding the actor's workspace does
+   *  not own; the default has nothing to check. */
+  protected async assertWriteAllowed(_info: Info): Promise<void> {}
+
   /** The natural-key + content payload persisted on a change request
    *  (scope-free — the target scope lives on the request row). */
   protected abstract payloadOf(info: Info): Record<string, unknown>;
@@ -195,6 +200,7 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     const actor = this.actor();
     this.assertScope(info.scope);
     this.validateInfo(info);
+    await this.assertWriteAllowed(info);
     const target = scopeOwnership(actor, info.scope);
     if (!target) throw new BadRequestException(this.t('invalid_scope'));
 

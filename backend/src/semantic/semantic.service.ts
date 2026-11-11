@@ -251,8 +251,11 @@ export class SemanticService {
     const dsIds = [...new Set(pageRows.map((r) => r.datasourceId as number))];
     const nameByDs = new Map<number, Set<string>>();
     for (const dsId of dsIds) {
+      // Scope the existence probe to the actor's workspace: a semantic row may
+      // only reference a datasource we own (writes enforce it), but legacy or
+      // imported rows could carry a foreign id — never probe those.
       const tables = await this.prisma.table.findMany({
-        where: { datasourceId: dsId },
+        where: { datasourceId: dsId, datasource: { oid: actor.oid } },
         select: { tableName: true },
       });
       nameByDs.set(dsId, new Set(tables.map((t) => t.tableName)));
@@ -308,6 +311,11 @@ export class SemanticService {
   async upsert(info: SemanticUpsertInfo): Promise<SemanticUpsertResult> {
     const actor = this.actor();
     this.validateInfo(info);
+    // The natural key embeds a datasource row id. Reject ids the actor cannot
+    // reach (findOne is oid-scoped): otherwise a member could bind a PERSONAL
+    // row to a guessed foreign datasource id and read table_exists back from
+    // the admin page — a cross-workspace existence oracle.
+    await this.datasourceService.findOne(info.datasource_id);
     const target = scopeOwnership(actor, info.scope);
     if (!target) throw new BadRequestException(tr('semantic.invalid_scope'));
 

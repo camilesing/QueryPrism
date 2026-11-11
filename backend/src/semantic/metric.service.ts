@@ -52,6 +52,7 @@ import { metricDefEmbedText } from '../embedding/embed-text';
 import { VectorService } from '../vector/vector.service';
 import type { EmbeddingConfig } from '../common/config/embedding-config';
 import { RegressionTriggerService } from '../regression/regression-trigger.service';
+import { DatasourceService } from '../datasource/datasource.service';
 
 /** Codes are identifier tokens — they must survive the composite-expression
  *  tokenizer (metric-policy CODE_TOKEN). */
@@ -96,6 +97,7 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
     private readonly standards: DataStandardService,
     private readonly embedding: EmbeddingService,
     private readonly vector: VectorService,
+    private readonly datasources: DatasourceService,
   ) {
     super(prisma, regressionTrigger);
   }
@@ -182,7 +184,11 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
     for (const key of bindings.keys()) {
       const [dsId, tableName] = key.split(':');
       const table = await this.prisma.table.findFirst({
-        where: { datasourceId: Number(dsId), tableName },
+        where: {
+          datasourceId: Number(dsId),
+          tableName,
+          datasource: { oid: actor.oid },
+        },
         select: { id: true },
       });
       if (table) bindings.set(key, true);
@@ -429,6 +435,16 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
         info.code.trim(),
       );
       if (expr) throw new BadRequestException(tr(expr));
+    }
+  }
+
+  protected async assertWriteAllowed(info: MetricUpsertInfo): Promise<void> {
+    // Atomic/modifier definitions bind to a datasource row id. findOne is
+    // oid-scoped, so a guessed foreign id fails here instead of becoming a
+    // cross-workspace table_exists oracle on the admin page.
+    const def = parseMetricDefinition(info.kind, info.definition);
+    if (def && 'datasourceId' in def) {
+      await this.datasources.findOne(def.datasourceId);
     }
   }
 
