@@ -5,7 +5,10 @@ export const datasourceApi = {
   check_by_id: (id: any) => request.get(`/datasource/check/${id}`),
   relationGet: (id: any) => request.post(`/table_relation/get/${id}`),
   relationSave: (dsId: any, data: any) => request.post(`/table_relation/save/${dsId}`, data),
-  relationVersions: (dsId: number) => request.post(`/table_relation/versions/${dsId}`),
+  relationVersions: (dsId: number, currentPage = 1, pageSize = 20) =>
+    request.post(
+      `/table_relation/versions/${dsId}?current_page=${currentPage}&page_size=${pageSize}`
+    ),
   relationRestore: (dsId: number, version: number) =>
     request.post(`/table_relation/restore/${dsId}/${version}`),
   relationCompare: (dsId: number, fromVersion: number, toVersion?: number) =>

@@ -618,21 +618,37 @@ export class DatasourceService {
     });
   }
 
-  /** Append-only relation-graph history (newest first). */
-  async getTableRelationVersions(id: number) {
+  /** Append-only relation-graph history (newest first), paginated. Every save
+   *  stores a FULL graph snapshot, so returning all of them grows with every
+   *  save; the drawer loads one page at a time. */
+  async getTableRelationVersions(id: number, currentPage = 1, pageSize = 20) {
     await this.loadForConnector(id);
-    return this.prisma.datasourceRelationVersion.findMany({
-      where: { datasourceId: id },
-      orderBy: { version: 'desc' },
-      select: {
-        id: true,
-        version: true,
-        snapshot: true,
-        changedBy: true,
-        note: true,
-        createdAt: true,
-      },
-    });
+    const page = Math.max(1, Math.floor(currentPage) || 1);
+    const size = Math.min(100, Math.max(1, Math.floor(pageSize) || 20));
+    const where = { datasourceId: id };
+    const [data, totalCount] = await this.prisma.$transaction([
+      this.prisma.datasourceRelationVersion.findMany({
+        where,
+        orderBy: { version: 'desc' },
+        skip: (page - 1) * size,
+        take: size,
+        select: {
+          id: true,
+          version: true,
+          snapshot: true,
+          changedBy: true,
+          note: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.datasourceRelationVersion.count({ where }),
+    ]);
+    return {
+      data,
+      current_page: page,
+      page_size: size,
+      total_count: totalCount,
+    };
   }
 
   /** Restore one saved relation snapshot (MetaDataImprove M3 follow-up).

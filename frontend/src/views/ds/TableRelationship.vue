@@ -34,8 +34,14 @@ const versionDrawer = ref(false)
 const versionRows = ref<any[]>([])
 const versionLoading = ref(false)
 const expandedVersion = ref<number | null>(null)
-/** Newest saved version (the graph the runtime reads). */
-const currentVersion = computed(() => versionRows.value[0]?.version ?? 0)
+/** Pagination: every save appends a FULL graph snapshot, so the drawer loads
+ *  one page at a time instead of the unbounded history. */
+const versionPage = ref(1)
+const versionPageSize = ref(20)
+const versionTotal = ref(0)
+/** Newest saved version (the graph the runtime reads), from page 1. */
+const latestVersion = ref(0)
+const currentVersion = computed(() => latestVersion.value)
 /** One FK edge in a compare result (already normalized by the backend). */
 interface RelationEdge {
   fromTable: string
@@ -55,14 +61,29 @@ const compareFrom = ref(0)
 const compareResult = ref<RelationCompareResult | null>(null)
 const restoring = ref(false)
 
-const openVersions = async () => {
+const loadVersions = async (page = 1) => {
   versionLoading.value = true
   try {
-    versionRows.value = await datasourceApi.relationVersions(props.id)
-    versionDrawer.value = true
+    const res: any = await datasourceApi.relationVersions(
+      props.id,
+      page,
+      versionPageSize.value
+    )
+    versionRows.value = res?.data ?? []
+    versionPage.value = res?.current_page ?? page
+    versionPageSize.value = res?.page_size ?? versionPageSize.value
+    versionTotal.value = res?.total_count ?? versionRows.value.length
+    if (versionPage.value === 1) {
+      latestVersion.value = versionRows.value[0]?.version ?? 0
+    }
   } finally {
     versionLoading.value = false
   }
+}
+
+const openVersions = async () => {
+  versionDrawer.value = true
+  await loadVersions(1)
 }
 
 const fmtVersionTime = (value?: string) => (value ? new Date(value).toLocaleString() : '')
@@ -615,6 +636,16 @@ const save = () => {
           }}</pre>
         </el-timeline-item>
       </el-timeline>
+      <el-pagination
+        v-if="versionTotal > versionPageSize"
+        :current-page="versionPage"
+        :page-size="versionPageSize"
+        :total="versionTotal"
+        layout="total, prev, pager, next"
+        small
+        class="version-pager"
+        @current-change="loadVersions"
+      />
     </div>
   </el-drawer>
   <el-dialog

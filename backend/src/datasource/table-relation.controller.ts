@@ -13,6 +13,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -51,8 +52,16 @@ export class TableRelationController {
   @Post('versions/:dsId')
   @HttpCode(200)
   @UseGuards(WsAdminGuard)
-  versions(@Param('dsId') dsId: string) {
-    return this.ds.getTableRelationVersions(+dsId);
+  versions(
+    @Param('dsId') dsId: string,
+    @Query('current_page') currentPage = '1',
+    @Query('page_size') pageSize = '20',
+  ) {
+    return this.ds.getTableRelationVersions(
+      +dsId,
+      Number(currentPage) || 1,
+      Number(pageSize) || 20,
+    );
   }
 
   /** Restore one saved relation version. Appends a NEW version (history is
