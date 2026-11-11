@@ -166,9 +166,13 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
       code: info.code.trim(),
       term: info.term.trim(),
       name: info.name.trim(),
-      enabled: info.enabled ?? true,
     };
-    if (info.aliases?.length) {
+    // Only carry `enabled` when the caller set it: an edit that omits the flag
+    // must preserve a deliberately disabled row instead of re-enabling it.
+    if (info.enabled !== undefined) payload.enabled = info.enabled;
+    // An explicitly cleared alias list must be part of the proposal payload —
+    // omitting it would leave the old aliases in place on approval.
+    if (info.aliases !== undefined) {
       payload.aliases = info.aliases.map((a) => a.trim()).filter(Boolean);
     }
     if (info.category?.trim()) payload.category = info.category.trim();
@@ -198,7 +202,7 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
       category: typeof p.category === 'string' ? p.category : undefined,
       description:
         typeof p.description === 'string' ? p.description : undefined,
-      enabled: typeof p.enabled === 'boolean' ? p.enabled : true,
+      enabled: typeof p.enabled === 'boolean' ? p.enabled : undefined,
     };
   }
 
@@ -228,15 +232,6 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
     changedBy: number,
     note?: string,
   ): Promise<number> {
-    const data = {
-      term: info.term.trim(),
-      name: info.name.trim(),
-      aliases: (info.aliases?.map((a) => a.trim()).filter(Boolean) ??
-        undefined) as Prisma.InputJsonValue,
-      category: info.category?.trim() || null,
-      description: info.description?.trim() || null,
-      enabled: info.enabled ?? true,
-    };
     const existing = await tx.dataStandard.findFirst({
       where: {
         scope: target.scope,
@@ -246,6 +241,16 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
         code: info.code.trim(),
       },
     });
+    const data = {
+      term: info.term.trim(),
+      name: info.name.trim(),
+      aliases: (info.aliases?.map((a) => a.trim()).filter(Boolean) ??
+        undefined) as Prisma.InputJsonValue,
+      category: info.category?.trim() || null,
+      description: info.description?.trim() || null,
+      // Preserve the stored flag on a content edit that omits `enabled`.
+      enabled: info.enabled ?? existing?.enabled ?? true,
+    };
     if (existing) {
       const updated = await tx.dataStandard.update({
         where: { id: existing.id },

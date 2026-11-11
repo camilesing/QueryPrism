@@ -454,9 +454,13 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
       code: info.code.trim(),
       name: info.name.trim(),
       definition: info.definition,
-      enabled: info.enabled ?? true,
     };
-    if (info.aliases?.length) {
+    // Only carry `enabled` when the caller set it: an edit that omits the flag
+    // must preserve a deliberately disabled row instead of re-enabling it.
+    if (info.enabled !== undefined) payload.enabled = info.enabled;
+    // An explicitly cleared alias list must be part of the proposal payload —
+    // omitting it would leave the old aliases in place on approval.
+    if (info.aliases !== undefined) {
       payload.aliases = info.aliases.map((a) => a.trim()).filter(Boolean);
     }
     if (info.description?.trim()) payload.description = info.description.trim();
@@ -489,7 +493,7 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
         p.definition && typeof p.definition === 'object'
           ? (p.definition as Record<string, unknown>)
           : {},
-      enabled: typeof p.enabled === 'boolean' ? p.enabled : true,
+      enabled: typeof p.enabled === 'boolean' ? p.enabled : undefined,
     };
   }
 
@@ -517,15 +521,6 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
     changedBy: number,
     note?: string,
   ): Promise<number> {
-    const data = {
-      name: info.name.trim(),
-      aliases: (info.aliases?.map((a) => a.trim()).filter(Boolean) ??
-        undefined) as Prisma.InputJsonValue,
-      description: info.description?.trim() || null,
-      unit: info.unit?.trim() || null,
-      definition: info.definition as Prisma.InputJsonValue,
-      enabled: info.enabled ?? true,
-    };
     const existing = await tx.metricDef.findFirst({
       where: {
         scope: target.scope,
@@ -535,6 +530,16 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
         code: info.code.trim(),
       },
     });
+    const data = {
+      name: info.name.trim(),
+      aliases: (info.aliases?.map((a) => a.trim()).filter(Boolean) ??
+        undefined) as Prisma.InputJsonValue,
+      description: info.description?.trim() || null,
+      unit: info.unit?.trim() || null,
+      definition: info.definition as Prisma.InputJsonValue,
+      // Preserve the stored flag on a content edit that omits `enabled`.
+      enabled: info.enabled ?? existing?.enabled ?? true,
+    };
     if (existing) {
       const updated = await tx.metricDef.update({
         where: { id: existing.id },

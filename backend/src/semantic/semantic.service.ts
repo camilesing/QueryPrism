@@ -718,8 +718,10 @@ export class SemanticService {
       datasource_id: info.datasource_id,
       table_name: info.table_name.trim(),
       meaning: info.meaning.trim(),
-      enabled: info.enabled ?? true,
     };
+    // Only carry `enabled` when the caller set it: an edit that omits the flag
+    // must preserve a deliberately disabled row instead of re-enabling it.
+    if (info.enabled !== undefined) payload.enabled = info.enabled;
     if (info.entity_type === 'field') {
       payload.field_name = info.field_name!.trim();
       payload.role = info.role ?? 'other';
@@ -751,7 +753,7 @@ export class SemanticService {
       enum_values: Array.isArray(p.enum_values)
         ? (p.enum_values as SemanticUpsertInfo['enum_values'])
         : undefined,
-      enabled: typeof p.enabled === 'boolean' ? p.enabled : true,
+      enabled: typeof p.enabled === 'boolean' ? p.enabled : undefined,
     };
   }
 
@@ -829,7 +831,8 @@ export class SemanticService {
       });
       const data = {
         meaning: info.meaning.trim(),
-        enabled: info.enabled ?? true,
+        // Preserve the stored flag on a content edit that omits `enabled`.
+        enabled: info.enabled ?? existing?.enabled ?? true,
       };
       if (existing) {
         const updated = await tx.tableSemantic.update({
@@ -889,7 +892,8 @@ export class SemanticService {
       meaning: info.meaning.trim(),
       unit: info.unit?.trim() || null,
       enumValues: (info.enum_values ?? undefined) as Prisma.InputJsonValue,
-      enabled: info.enabled ?? true,
+      // Preserve the stored flag on a content edit that omits `enabled`.
+      enabled: info.enabled ?? existing?.enabled ?? true,
     };
     if (existing) {
       const updated = await tx.fieldSemantic.update({
