@@ -3,7 +3,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus-secondary'
 import { quotaApi, type BudgetSubjectType, type QueryBudgetRow } from '@/api/quota'
-import { userApi } from '@/api/user'
 import { mcpApi } from '@/api/mcp'
 import { request } from '@/utils/request'
 
@@ -43,10 +42,12 @@ const mcpOptions = ref<SubjectOption[]>([])
 const assistantOptions = ref<SubjectOption[]>([])
 
 const loadSubjects = () => {
-  userApi
-    .pager('', 1, 200)
+  // Workspace admins (WsAdminGuard) cannot read /user/pager (system admin
+  // only), but they can list their own workspace members here.
+  request
+    .get<any>('/system/workspace/uws/pager/1/200')
     .then((res: any) => {
-      const rows = res?.data ?? res ?? []
+      const rows = res?.items ?? []
       userOptions.value = rows.map((u: any) => ({
         value: u.id,
         label: `${u.account}(${u.name ?? u.id})`,
@@ -65,7 +66,7 @@ const loadSubjects = () => {
   request
     .get<any>('/system/embedded/1/200', {})
     .then((res: any) => {
-      const rows = res?.data ?? res ?? []
+      const rows = res?.items ?? []
       assistantOptions.value = rows.map((a: any) => ({
         value: a.id,
         label: a.name,
@@ -214,7 +215,6 @@ const remove = (row: QueryBudgetRow) => {
           <el-select
             v-model="form.subject_id"
             filterable
-            allow-create
             :placeholder="t('quota.subject_required')"
             style="width: 100%"
           >
