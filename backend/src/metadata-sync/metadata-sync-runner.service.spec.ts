@@ -42,6 +42,14 @@ function makeRunner() {
       create: jest.fn().mockResolvedValue({ id: 77 }),
     },
     user: { findUnique: jest.fn() },
+    workspace: {
+      findUnique: jest.fn().mockResolvedValue({ archivedAt: null }),
+    },
+    $transaction: jest
+      .fn()
+      .mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
+        fn(prisma),
+      ),
   };
   const fetchService = { fetchRows: jest.fn() };
   const semanticImport = { importJson: jest.fn() };

@@ -10,6 +10,10 @@ function makeScheduler() {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
     },
+    workspace: {
+      findMany: jest.fn().mockResolvedValue([{ id: 1 }]),
+      findUnique: jest.fn().mockResolvedValue({ archivedAt: null }),
+    },
   };
   const runner = { run: jest.fn().mockResolvedValue({}) };
   const scheduler = new MetadataSyncSchedulerService(
@@ -25,8 +29,8 @@ describe('MetadataSyncSchedulerService', () => {
   it('registers enabled sources and skips invalid crons', async () => {
     const m = makeScheduler();
     m.prisma.metadataSyncSource.findMany.mockResolvedValue([
-      { id: 1, cron: '0 3 * * *' },
-      { id: 2, cron: 'not-a-cron' },
+      { id: 1, oid: 1, cron: '0 3 * * *' },
+      { id: 2, oid: 1, cron: 'not-a-cron' },
     ]);
 
     await m.scheduler.onApplicationBootstrap();
@@ -43,6 +47,7 @@ describe('MetadataSyncSchedulerService', () => {
       m.prisma.metadataSyncSource.findUnique.mockResolvedValue({
         enabled: true,
         cron: '*/5 * * * *',
+        oid: 1,
       });
       await m.scheduler.refresh(7);
       expect(m.scheduler.hasJob(7)).toBe(true);
@@ -50,6 +55,7 @@ describe('MetadataSyncSchedulerService', () => {
       m.prisma.metadataSyncSource.findUnique.mockResolvedValue({
         enabled: false,
         cron: '*/5 * * * *',
+        oid: 1,
       });
       await m.scheduler.refresh(7);
       expect(m.scheduler.hasJob(7)).toBe(false);
@@ -64,6 +70,7 @@ describe('MetadataSyncSchedulerService', () => {
       m.prisma.metadataSyncSource.findUnique.mockResolvedValue({
         enabled: true,
         cron: '0 * * * *',
+        oid: 1,
       });
       await m.scheduler.refresh(3);
       expect(m.scheduler.hasJob(3)).toBe(true);

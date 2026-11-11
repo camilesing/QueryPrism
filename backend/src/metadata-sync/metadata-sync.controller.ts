@@ -80,10 +80,7 @@ export class MetadataSyncController {
    *  from another tenant (a workspace admin must not run foreign sources). */
   @Post(':id/run')
   @HttpCode(200)
-  run(
-    @Param('id', ParseIntPipe) id: number,
-    @CurrentUser('oid') oid: number,
-  ) {
+  run(@Param('id', ParseIntPipe) id: number, @CurrentUser('oid') oid: number) {
     return this.runner.run(id, 'manual', oid);
   }
 }

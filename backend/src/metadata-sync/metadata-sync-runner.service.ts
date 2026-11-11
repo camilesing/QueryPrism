@@ -138,22 +138,27 @@ export class MetadataSyncRunnerService {
               : 'success';
           const allFailedMsg =
             status === 'failed' ? tr('metadata-sync.all_rows_failed') : null;
-          const run = await this.prisma.metadataSyncRun.create({
-            data: {
-              sourceId,
-              trigger,
-              status,
-              applied: result.applied,
-              failedCount: result.failed.length,
-              failed: result.failed.slice(0, SYNC_MAX_FAILURES),
-              error: allFailedMsg,
-              startedAt,
-              finishedAt: new Date(),
-            },
-          });
-          await this.prisma.metadataSyncSource.update({
-            where: { id: sourceId },
-            data: { lastStatus: status, lastError: allFailedMsg },
+          const run = await this.prisma.$transaction(async (tx) => {
+            const created = await tx.metadataSyncRun.create({
+              data: {
+                sourceId,
+                trigger,
+                status,
+                applied: result.applied,
+                failedCount: result.failed.length,
+                failed: result.failed.slice(0, SYNC_MAX_FAILURES),
+                error: allFailedMsg,
+                startedAt,
+                finishedAt: new Date(),
+              },
+            });
+            // Run row + source status must move together: a mid-sequence
+            // failure must not leave a success run beside a `running` source.
+            await tx.metadataSyncSource.update({
+              where: { id: sourceId },
+              data: { lastStatus: status, lastError: allFailedMsg },
+            });
+            return created;
           });
           await this.audit.record({
             module: OperationModule.METADATA_SYNC,
@@ -175,28 +180,42 @@ export class MetadataSyncRunnerService {
       const msg = syncErrorText(e);
       this.logger.error(`metadata sync #${sourceId} failed: ${msg}`);
       const recordFailure = async (): Promise<void> => {
-        await this.prisma.metadataSyncRun.create({
-          data: {
-            sourceId,
-            trigger,
+        try {
+          await this.prisma.$transaction(async (tx) => {
+            await tx.metadataSyncRun.create({
+              data: {
+                sourceId,
+                trigger,
+                status: 'failed',
+                error: msg,
+                startedAt,
+                finishedAt: new Date(),
+              },
+            });
+            await tx.metadataSyncSource.update({
+              where: { id: sourceId },
+              data: { lastStatus: 'failed', lastError: msg },
+            });
+          });
+          await this.audit.record({
+            module: OperationModule.METADATA_SYNC,
+            type: OperationType.SYNC,
             status: 'failed',
-            error: msg,
-            startedAt,
-            finishedAt: new Date(),
-          },
-        });
-        await this.prisma.metadataSyncSource.update({
-          where: { id: sourceId },
-          data: { lastStatus: 'failed', lastError: msg },
-        });
-        await this.audit.record({
-          module: OperationModule.METADATA_SYNC,
-          type: OperationType.SYNC,
-          status: 'failed',
-          detail: `metadata sync #${sourceId} (${trigger})`,
-          oid: source.oid,
-          errorMessage: msg,
-        });
+            detail: `metadata sync #${sourceId} (${trigger})`,
+            oid: source.oid,
+            errorMessage: msg,
+          });
+        } catch (recordError) {
+          // Best effort: a deleted source (FK cascade) must not replace the
+          // original failure with a Prisma error.
+          this.logger.error(
+            `metadata sync #${sourceId} failure persistence failed: ${
+              recordError instanceof Error
+                ? recordError.message
+                : String(recordError)
+            }`,
+          );
+        }
       };
       if (runAs) {
         await requestContextStorage.run(
@@ -219,6 +238,15 @@ export class MetadataSyncRunnerService {
   private async resolveActor(
     source: MetadataSyncSource,
   ): Promise<CurrentUserInfo> {
+    // Archived/deleted workspaces must stop syncing: archive keeps UserWs
+    // rows, so a run-as admin would otherwise still pass.
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: source.oid },
+      select: { archivedAt: true },
+    });
+    if (!workspace || workspace.archivedAt != null) {
+      throw new BadRequestException(tr('metadata-sync.run_as_invalid'));
+    }
     const user = await this.prisma.user.findUnique({
       where: { id: source.createdBy },
       select: {

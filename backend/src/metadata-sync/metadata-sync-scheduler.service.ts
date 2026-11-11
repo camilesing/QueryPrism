@@ -33,8 +33,20 @@ export class MetadataSyncSchedulerService
 
   async onApplicationBootstrap(): Promise<void> {
     try {
+      // Archived workspaces are inert: do not register their sources, and
+      // reject renewal in refresh() below.
+      const workspaces = await this.prisma.workspace.findMany({
+        where: { archivedAt: null },
+        select: { id: true },
+      });
+      const activeOids = workspaces.map((w) => w.id);
+      if (activeOids.length === 0) return;
       const sources = await this.prisma.metadataSyncSource.findMany({
-        where: { enabled: true, cron: { not: null } },
+        where: {
+          enabled: true,
+          cron: { not: null },
+          oid: { in: activeOids },
+        },
         select: { id: true, cron: true },
       });
       for (const source of sources) {
@@ -59,9 +71,15 @@ export class MetadataSyncSchedulerService
     this.remove(id);
     const source = await this.prisma.metadataSyncSource.findUnique({
       where: { id },
-      select: { enabled: true, cron: true },
+      select: { enabled: true, cron: true, oid: true },
     });
-    if (source?.enabled && source.cron) this.add(id, source.cron);
+    if (!source?.enabled || !source.cron) return;
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: source.oid },
+      select: { archivedAt: true },
+    });
+    if (!workspace || workspace.archivedAt != null) return;
+    this.add(id, source.cron);
   }
 
   remove(id: number): void {
