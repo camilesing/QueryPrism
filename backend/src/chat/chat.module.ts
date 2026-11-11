@@ -20,6 +20,7 @@ import { AuditModule } from '../audit/audit.module';
 import { PermissionModule } from '../permission/permission.module';
 import { TerminologyModule } from '../terminology/terminology.module';
 import { SemanticModule } from '../semantic/semantic.module';
+import { QuotaModule } from '../quota/quota.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { SemanticModule } from '../semantic/semantic.module';
     PermissionModule,
     TerminologyModule, // 3fd6fa86: keyword → synonym expansion in runCore
     SemanticModule, // MetaDataImprove M2: effective semantics in runCore
+    QuotaModule, // MetaDataImprove M7: daily query budget at pipeline entry
   ],
   controllers: [ChatController],
   providers: [ChatService, SqlSafetyService],

@@ -49,6 +49,7 @@ import {
   type SqlGenResult,
 } from '../llm/ai-question';
 import { SqlSafetyService } from './sql-safety.service';
+import { QuotaExceededError, QuotaService } from '../quota/quota.service';
 import { RowPermissionService } from '../permission/row-permission.service';
 import type { ChatSseEvent } from './chat-sse-event';
 import {
@@ -195,6 +196,7 @@ export class ChatService {
     private readonly standardService: DataStandardService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly quota: QuotaService,
   ) {}
 
   // --- pipeline ----------------------------------------------------------
@@ -261,6 +263,24 @@ export class ChatService {
     yield { type: 'question', data: { question: content } };
 
     try {
+      // M7: charge the daily query budget BEFORE any LLM work — the only
+      // reliable chokepoint for agent traffic (page user / MCP integration /
+      // embedded assistant, resolved from the request context; regression
+      // runs pass free). A spent budget fails the record like any other
+      // pre-LLM failure; the MCP path surfaces the same text via the
+      // collector.
+      const subject = this.quota.currentSubject();
+      if (subject) {
+        try {
+          await this.quota.assertWithinBudget(oid, subject);
+        } catch (e) {
+          if (e instanceof QuotaExceededError) {
+            yield* this.fail(record.id, msgs.quotaExceeded(e.dailyLimit));
+            return;
+          }
+          throw e;
+        }
+      }
       let datasourceId: number | null = chat.datasourceId;
 
       // select_datasource only when the chat has no bound datasource yet.

@@ -46,8 +46,13 @@ export interface RequestContextData {
   // index signature already permitted it at runtime; declaring it explicitly
   // gives `currentAssistant()` a typed accessor.
   assistant?: AssistantHeader;
+  /** Query-cost attribution (MetaDataImprove M7): the MCP transport sets
+   * {type:'mcp_integration', id} so per-agent query budgets can be enforced
+   * at the chat pipeline entry; the regression runner sets {type:'regression'}
+   * to opt out of budget counting. Absent = plain page user. */
+  agent?: { type: 'mcp_integration' | 'regression'; id?: number };
   /** Raw Accept-Language header — i18n fallback when no user is attached
-   *  (e.g. login-page requests rejected by guards). */
+   * (e.g. login-page requests rejected by guards). */
   acceptLanguage?: string;
   [key: string]: unknown;
 }

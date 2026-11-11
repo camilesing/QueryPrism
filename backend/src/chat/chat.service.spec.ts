@@ -212,6 +212,11 @@ function makeService() {
     { namingTemplateFor: jest.fn().mockResolvedValue('') } as never,
     audit as unknown as AuditService,
     config as unknown as ConfigService,
+    // MetaDataImprove M7: no subject in unit context → budget check skipped.
+    {
+      currentSubject: jest.fn().mockReturnValue(null),
+      assertWithinBudget: jest.fn().mockResolvedValue(undefined),
+    } as never,
   );
   return {
     service,

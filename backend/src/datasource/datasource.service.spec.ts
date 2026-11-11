@@ -9,6 +9,7 @@ import { DbConnectorFactory } from './db-connector/db-connector.factory';
 import { ExcelStoreService } from './excel-store.service';
 import { EmbeddingService } from '../embedding/embedding.service';
 import { VectorService } from '../vector/vector.service';
+import { QueryCacheService } from '../quota/query-cache.service';
 import { encryptFrontendConfig } from './frontend-config-crypto';
 import { requestContextStorage } from '../common/context/request-context';
 import { setI18n } from '../common/i18n/translate';
@@ -103,6 +104,17 @@ describe('DatasourceService', () => {
         {
           provide: ExcelStoreService,
           useValue: excelStoreMock,
+        },
+        // M7: the execSql funnel's query cache — off by default; the lookup
+        // stub returns a miss so every exec goes through the connector.
+        {
+          provide: QueryCacheService,
+          useValue: {
+            currentRevision: jest.fn().mockResolvedValue(0),
+            bumpRevision: jest.fn().mockResolvedValue(undefined),
+            lookup: jest.fn().mockResolvedValue(null),
+            store: jest.fn().mockResolvedValue(undefined),
+          },
         },
       ],
     }).compile();

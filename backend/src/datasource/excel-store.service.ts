@@ -33,6 +33,8 @@ import {
   type ParsedSheet,
 } from './excel-parser';
 import { tr } from '../common/i18n/translate';
+import { RequestContext } from '../common/context/request-context';
+import { QueryCacheService } from '../quota/query-cache.service';
 
 export interface ImportSheetRequest {
   sheetName: string;
@@ -66,7 +68,10 @@ export class ExcelStoreService {
   private readonly uploadDir: string;
   private readonly schema: string;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly queryCache: QueryCacheService,
+  ) {
     this.uploadDir = resolve(
       config.get<string>('excel.uploadDir') ?? 'uploads/excel',
     );
@@ -114,6 +119,20 @@ export class ExcelStoreService {
     }
     const parsed = await this.parseFile(filePath);
     const results = await this.importParsed(filePath, parsed, sheets);
+    // M7: a re-import can replace data under table names other datasources
+    // query — invalidate this workspace's query cache. Awaited so the bump
+    // lands before the caller proceeds (no cross-request drift); a failure
+    // only means entries live until their TTL.
+    const oid = RequestContext.getUser()?.oid;
+    if (oid !== undefined) {
+      try {
+        await this.queryCache.bumpRevision(oid);
+      } catch (e) {
+        this.logger.warn(
+          `cache revision bump failed (oid=${oid}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
     return { filename: filePath, sheets: results };
   }
 

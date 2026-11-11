@@ -33,6 +33,7 @@ export interface ChatMessages {
   clarifyTablesInvalid: string;
   clarifyTooManyTables: (max: number) => string;
   sqlSchemaInsufficient: string;
+  quotaExceeded: (limit: number) => string;
 }
 
 const ZH_CN: ChatMessages = {
@@ -64,6 +65,8 @@ const ZH_CN: ChatMessages = {
   clarifyTablesInvalid: '所选表不在澄清候选列表中',
   clarifyTooManyTables: (max) => `最多只能选择 ${max} 张表`,
   sqlSchemaInsufficient: '当前选定的表不足以回答该问题，请调整所选表后重试',
+  quotaExceeded: (limit) =>
+    `今日查询预算（${limit} 次）已用完，请明天再试或联系管理员调整`,
 };
 
 const EN: ChatMessages = {
@@ -97,6 +100,8 @@ const EN: ChatMessages = {
   clarifyTooManyTables: (max) => `Pick at most ${max} tables`,
   sqlSchemaInsufficient:
     'The selected tables cannot answer this question; adjust the selection and retry',
+  quotaExceeded: (limit) =>
+    `Daily query budget (${limit}) exhausted — try again tomorrow or ask an admin to raise it`,
 };
 
 /** Resolve the message set for a language tag: 'zh-CN' → Chinese, anything

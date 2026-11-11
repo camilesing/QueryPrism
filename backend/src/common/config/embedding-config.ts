@@ -1,7 +1,7 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 23 retrieval-strategy parameters resolve with the priority
+// 26 runtime parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
@@ -12,6 +12,10 @@
 //   dimension-enum collector); the 4 metric.*/naming.* keys drive the M4
 //   metric-definition and naming-rule prompt injection (metric.enabled /
 //   metric.max_definitions / metric.similarity_threshold / naming.enabled).
+// MetaDataImprove M7 adds 3 query-cost keys: quota.max_rows caps the rows
+//   of ONE execSql call (the funnel every chat/dashboard/MCP query goes
+//   through); cache.enabled + cache.ttl_seconds drive the SQL result cache
+//   (off by default — stale-rollout safe).
 //
 // Parsing is STRICT on saved values:
 // booleans only accept real booleans or "true"/"false" (never 0/1), counts
@@ -75,8 +79,18 @@ export interface EmbeddingConfig {
    *  index or the embedding provider is unavailable). */
   metricSimilarityThreshold: number;
   /** Data standards (M4): inject naming-dictionary standard translations
-   *  matched by the question text into the generate_sql prompt. */
+   * matched by the question text into the generate_sql prompt. */
   namingEnabled: boolean;
+  /** Query quota (MetaDataImprove M7): row cap for ONE execSql call. The
+   * funnel-level guard for agent cost — downstream agents cannot be trusted
+   * to self-limit. Callers passing a smaller limit keep it; a larger one is
+   * clamped to this cap. */
+  quotaMaxRows: number;
+  /** SQL result cache (M7): serve repeated identical effective SQL from
+   * Postgres instead of re-executing. Default OFF. */
+  cacheEnabled: boolean;
+  /** Cache entry lifetime in seconds (M7). */
+  cacheTtlSeconds: number;
 }
 
 /** camelCase field → persisted parameter key. */
@@ -104,6 +118,9 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   metricMaxDefinitions: 'metric.max_definitions',
   metricSimilarityThreshold: 'metric.similarity_threshold',
   namingEnabled: 'naming.enabled',
+  quotaMaxRows: 'quota.max_rows',
+  cacheEnabled: 'cache.enabled',
+  cacheTtlSeconds: 'cache.ttl_seconds',
 };
 
 export const EMBEDDING_PARAMETER_KEYS = Object.values(PARAMETER_KEYS);
@@ -128,6 +145,7 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'semanticEnabled',
   'metricEnabled',
   'namingEnabled',
+  'cacheEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'terminologyTopCount',
@@ -142,6 +160,8 @@ const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'semanticEnumScanRows',
   'semanticEnumCooldown',
   'metricMaxDefinitions',
+  'quotaMaxRows',
+  'cacheTtlSeconds',
 ]);
 
 /** Object-safe display of an invalid value for error messages. */
@@ -305,6 +325,17 @@ function envDefaults(): EmbeddingConfig {
       0.55,
     ),
     namingEnabled: envBool('NAMING_ENABLED', true),
+    // M7: QUOTA_MAX_ROWS wins, legacy CHAT_LIMIT_ROWS (the pre-parameter env
+    // cap DatasourceService used to read directly) feeds the default.
+    quotaMaxRows: Math.max(
+      1,
+      Math.floor(envNumber('QUOTA_MAX_ROWS', 'CHAT_LIMIT_ROWS', 1000)),
+    ),
+    cacheEnabled: envBool('CACHE_ENABLED', false),
+    cacheTtlSeconds: Math.max(
+      1,
+      Math.floor(envNumber('CACHE_TTL_SECONDS', undefined, 300)),
+    ),
   };
 }
 

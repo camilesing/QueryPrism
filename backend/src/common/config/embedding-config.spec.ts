@@ -117,6 +117,9 @@ describe('resolveEmbeddingConfig', () => {
       metricMaxDefinitions: 5,
       metricSimilarityThreshold: 0.55,
       namingEnabled: true,
+      quotaMaxRows: 1000,
+      cacheEnabled: false,
+      cacheTtlSeconds: 300,
     } satisfies EmbeddingConfig);
   });
 
@@ -174,8 +177,8 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the twenty-three persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(23);
+  it('exposes exactly the twenty-six persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(26);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
     ).toHaveLength(10);
@@ -190,6 +193,12 @@ describe('resolveEmbeddingConfig', () => {
         (k) => k.startsWith('metric.') || k.startsWith('naming.'),
       ),
     ).toHaveLength(4);
+    // MetaDataImprove M7 query-cost keys
+    expect(
+      EMBEDDING_PARAMETER_KEYS.filter(
+        (k) => k.startsWith('quota.') || k.startsWith('cache.'),
+      ),
+    ).toHaveLength(3);
   });
 
   it('metric.similarity_threshold defaults to 0.55 and parses strictly', async () => {

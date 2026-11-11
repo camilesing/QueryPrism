@@ -115,10 +115,18 @@ export class McpService {
 
     // Run the transport inside the ALS context so every tool handler (and the
     // services it calls) sees the integration's workspace as currentOid().
-    await requestContextStorage.run({ user: ctx.user }, async () => {
-      await mcp.connect(transport);
-      await transport.handleRequest(req, res, body);
-    });
+    // `agent` stamps the query-cost attribution (M7): ask_question traffic is
+    // charged to the MCP integration's own budget, not the integration user's.
+    await requestContextStorage.run(
+      {
+        user: ctx.user,
+        agent: { type: 'mcp_integration', id: ctx.integration.id },
+      },
+      async () => {
+        await mcp.connect(transport);
+        await transport.handleRequest(req, res, body);
+      },
+    );
   }
 
   private registerTools(mcp: McpServer, ctx: McpToolContext): void {

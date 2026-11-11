@@ -21,6 +21,8 @@ export enum OperationModule {
   SEMANTIC = 'semantic',
   METRIC = 'metric',
   METADATA_SYNC = 'metadata_sync',
+  REGRESSION = 'regression',
+  QUOTA = 'quota',
 }
 
 export enum OperationType {

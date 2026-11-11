@@ -31,6 +31,9 @@ import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
+import { appendLimit } from './db-connector/limit-clause';
+import { effectiveSqlHash } from '../quota/quota-policy';
+import { QueryCacheService } from '../quota/query-cache.service';
 import { EmbeddingService } from '../embedding/embedding.service';
 import { embedRowText } from '../embedding/embed-text';
 import { VectorService } from '../vector/vector.service';
@@ -86,6 +89,7 @@ export class DatasourceService {
     private readonly embedding: EmbeddingService,
     private readonly vector: VectorService,
     private readonly excelStore: ExcelStoreService,
+    private readonly queryCache: QueryCacheService,
   ) {}
 
   async create(dto: DatasourceMutateInput) {
@@ -189,6 +193,14 @@ export class DatasourceService {
       data.status = updateDatasourceDto.status;
 
     const row = await this.prisma.datasource.update({ where: { id }, data });
+    // M7: a rebind (configuration/type change) can serve different data under
+    // identical SQL — invalidate the workspace's query cache.
+    if (
+      updateDatasourceDto.configuration !== undefined ||
+      updateDatasourceDto.type !== undefined
+    ) {
+      await this.bumpCacheRevision(row.oid);
+    }
     // Re-embed when the user-facing text (name/description) changed — those
     // are the only fields the select_datasource prompt matches against.
     if (
@@ -208,6 +220,7 @@ export class DatasourceService {
     const ds = await this.findOne(id);
     const sheets = ds.type === 'excel' ? this.excelSheetNames(ds) : [];
     const row = await this.prisma.datasource.delete({ where: { id } });
+    await this.bumpCacheRevision(ds.oid);
     // Imported tables are dropped when an Excel datasource is deleted.
     // Done AFTER the row is gone (best effort): a failed drop leaves orphan
     // tables, never a live datasource pointing at dropped ones.
@@ -284,7 +297,7 @@ export class DatasourceService {
   async syncTables(id: number) {
     const datasource = await this.loadForConnector(id);
     try {
-      return await this.connectorFactory.withConnector(
+      const result = await this.connectorFactory.withConnector(
         datasource,
         async (c) => {
           const tables = await c.getTables();
@@ -335,10 +348,28 @@ export class DatasourceService {
           };
         },
       );
+      // M7: a schema change can reshape `SELECT *` results under identical
+      // SQL — invalidate the workspace's query cache.
+      await this.bumpCacheRevision(datasource.oid);
+      return result;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       throw new InternalServerErrorException(
         tr('datasource.sync_failed', { msg }),
+      );
+    }
+  }
+
+  /** M7: query-cache invalidation for the workspace. AWAITED on purpose:
+   *  these are cold paths (update/sync/remove) and a fire-and-forget write
+   *  would land at an arbitrary later point. A failed bump only means
+   *  entries live until their TTL — warn, never throw. */
+  private async bumpCacheRevision(oid: number): Promise<void> {
+    try {
+      await this.queryCache.bumpRevision(oid);
+    } catch (e) {
+      this.logger.warn(
+        `cache revision bump failed (oid=${oid}): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }
@@ -356,13 +387,42 @@ export class DatasourceService {
     });
   }
 
-  /** Execute a (validated, read-only) SQL statement against the datasource. */
+  /** Execute a (validated, read-only) SQL statement against the datasource.
+   *  MetaDataImprove M7: this is the single execution funnel every query
+   *  (chat / dashboard / MCP / regression) goes through, so the query-cost
+   *  guards live here — quota.max_rows caps rows (a caller's smaller limit
+   *  wins, a larger one is clamped), and with cache.enabled repeated
+   *  effective SQL (appendLimit output — deterministic, so hashing it matches
+   *  what the connector executes) is served from Postgres until TTL/revision
+   *  invalidation. */
   async execSql(id: number, sql: string, limit?: number) {
     const datasource = await this.loadForConnector(id);
-    const max = limit ?? this.config.get<number>('chat.limitRows')!;
-    return this.connectorFactory.withConnector(datasource, (c) =>
+    const oid = this.currentOid();
+    const cfg = await resolveEmbeddingConfig(this.prisma);
+    const max = Math.min(limit ?? cfg.quotaMaxRows, cfg.quotaMaxRows);
+    if (!cfg.cacheEnabled) {
+      return this.connectorFactory.withConnector(datasource, (c) =>
+        c.execSql(sql, max),
+      );
+    }
+    const finalSql = appendLimit(sql, max);
+    const sqlHash = effectiveSqlHash(finalSql);
+    const revision = await this.queryCache.currentRevision(oid);
+    const hit = await this.queryCache.lookup(oid, id, sqlHash, revision);
+    if (hit) return hit;
+    const result = await this.connectorFactory.withConnector(datasource, (c) =>
       c.execSql(sql, max),
     );
+    void this.queryCache.store(
+      oid,
+      id,
+      sqlHash,
+      finalSql,
+      result,
+      revision,
+      cfg.cacheTtlSeconds,
+    );
+    return result;
   }
 
   /** Run `fn` against the datasource's live connection inside ONE connector
