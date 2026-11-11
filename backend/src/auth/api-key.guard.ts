@@ -24,6 +24,7 @@ import {
 import { tr } from '../common/i18n/translate';
 import { decrypt } from '../common/utils/aes';
 import { PrismaService } from '../database/prisma.service';
+import { ADMIN_UID } from './admin.guard';
 
 export const APIKEY_HEADER = 'X-QUERYPRISM-APIKEY';
 export const APISECRET_HEADER = 'X-QUERYPRISM-APISECRET';
@@ -76,22 +77,40 @@ export class ApiKeyGuard implements CanActivate {
         language: true,
         oid: true,
         status: true,
-        userWorkspaces: { select: { oid: true, weight: true } },
+        userWorkspaces: {
+          select: {
+            oid: true,
+            weight: true,
+            workspace: { select: { archivedAt: true } },
+          },
+        },
       },
     });
     if (!user || user.status !== 1) {
       throw new UnauthorizedException(tr('apikey.invalid'));
     }
-    const membership = user.userWorkspaces.find((m) => m.oid === user.oid);
-    if (!membership) {
-      throw new UnauthorizedException(tr('apikey.invalid'));
+    // Mirror JwtAuthGuard: uid 1 may enter any existing workspace without a
+    // UserWs row; everyone else needs a membership in a non-archived one.
+    let weight = 0;
+    if (user.id === ADMIN_UID) {
+      const workspace = await this.prisma.workspace.findUnique({
+        where: { id: user.oid },
+        select: { id: true },
+      });
+      if (!workspace) throw new UnauthorizedException(tr('apikey.invalid'));
+    } else {
+      const membership = user.userWorkspaces.find((m) => m.oid === user.oid);
+      if (!membership || membership.workspace.archivedAt != null) {
+        throw new UnauthorizedException(tr('apikey.invalid'));
+      }
+      weight = membership.weight;
     }
     const current: CurrentUserInfo = {
       id: user.id,
       account: user.account,
       oid: user.oid,
       language: user.language,
-      weight: membership.weight,
+      weight,
     };
     req.user = current;
     const store = requestContextStorage.getStore();
