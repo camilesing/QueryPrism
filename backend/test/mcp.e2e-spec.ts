@@ -20,6 +20,7 @@ import {
 } from './../src/llm/generator.service';
 import { SqlSafetyService } from './../src/chat/sql-safety.service';
 import { G2SsrClient } from './../src/mcp/g2-ssr-client.service';
+import { PrismaService } from './../src/database/prisma.service';
 
 const TOKEN_HEADER = 'X-QUERYPRISM-TOKEN';
 
@@ -145,6 +146,9 @@ describe('MCP /api/v1/mcp (e2e)', () => {
   let app: INestApplication<App>;
   let jwt: string;
   let integration: IntegrationSnake;
+  let prisma: PrismaService;
+  /** Chats created through the tools, removed in afterAll. */
+  const chatIds: number[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -238,6 +242,7 @@ describe('MCP /api/v1/mcp (e2e)', () => {
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api/v1');
     await app.init();
+    prisma = app.get(PrismaService);
     jwt = await login(app);
     await sweepIntegrations(app, jwt);
     integration = await createIntegration(app, jwt, 'e2e-agent');
@@ -245,6 +250,11 @@ describe('MCP /api/v1/mcp (e2e)', () => {
 
   afterAll(async () => {
     await sweepIntegrations(app, jwt);
+    if (chatIds.length > 0) {
+      await prisma.chat
+        .deleteMany({ where: { id: { in: chatIds } } })
+        .catch(() => undefined);
+    }
     await app.close();
   });
 
@@ -414,6 +424,14 @@ describe('MCP /api/v1/mcp (e2e)', () => {
       chat_id: number;
     };
     expect(parsed.chat_id).toBeGreaterThan(0);
+    chatIds.push(parsed.chat_id);
+    // origin=1 is what makes runCore bypass row-permission filtering for MCP;
+    // asserting the id alone would not catch that contract breaking.
+    const chat = await prisma.chat.findUnique({
+      where: { id: parsed.chat_id },
+      select: { origin: true, oid: true },
+    });
+    expect(chat).toMatchObject({ origin: 1, oid: 1 });
   });
 
   it('ask_question assembles the pipeline result + an image block', async () => {
@@ -441,6 +459,11 @@ describe('MCP /api/v1/mcp (e2e)', () => {
       chart_type: string;
       chart_config: Record<string, unknown>;
     };
+    const record = await prisma.chatRecord.findUnique({
+      where: { id: parsed.record_id },
+      select: { chatId: true },
+    });
+    if (record) chatIds.push(record.chatId);
     expect(parsed.sql).toBe('SELECT x, y FROM t');
     expect(parsed.brief).toBe('e2e brief');
     expect(parsed.chart_type).toBe('bar');
@@ -462,48 +485,65 @@ describe('MCP /api/v1/mcp (e2e)', () => {
     });
   });
 
-  it('disabling the integration revokes its token immediately', async () => {
-    const update = await request(app.getHttpServer())
-      .put('/api/v1/system/mcp-integration')
-      .set(TOKEN_HEADER, jwt)
-      .send({ id: integration.id, status: 'disabled' });
-    expect(update.status).toBe(200);
+  it('disabling an integration revokes its token immediately', async () => {
+    // Destructive tests use their OWN integration: mutating the shared
+    // fixture made every later test order-dependent.
+    const target = await createIntegration(app, jwt, 'e2e-disable-agent');
+    try {
+      const update = await request(app.getHttpServer())
+        .put('/api/v1/system/mcp-integration')
+        .set(TOKEN_HEADER, jwt)
+        .send({ id: target.id, status: 'disabled' });
+      expect(update.status).toBe(200);
 
-    const res = await callMcp(app, 'tools/list', {}, 10, integration.token);
-    expect(res.status).toBe(401);
+      const res = await callMcp(app, 'tools/list', {}, 10, target.token);
+      expect(res.status).toBe(401);
 
-    // Re-enable for the rotation test.
-    await request(app.getHttpServer())
-      .put('/api/v1/system/mcp-integration')
-      .set(TOKEN_HEADER, jwt)
-      .send({ id: integration.id, status: 'active' });
+      await request(app.getHttpServer())
+        .put('/api/v1/system/mcp-integration')
+        .set(TOKEN_HEADER, jwt)
+        .send({ id: target.id, status: 'active' });
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/system/mcp-integration/${target.id}`)
+        .set(TOKEN_HEADER, jwt);
+    }
   });
 
   it('rotating the token invalidates the old token', async () => {
-    const rotate = await request(app.getHttpServer())
-      .patch(`/api/v1/system/mcp-integration/secret/${integration.id}`)
-      .set(TOKEN_HEADER, jwt);
-    expect(rotate.status).toBe(200);
-    const rotated = (rotate.body as ApiEnvelope<{ token: string }>).data.token;
-    expect(rotated).toMatch(/^qp_[0-9a-f]{32}\.[0-9a-f]{64}$/);
-    expect(rotated).not.toBe(integration.token);
+    const target = await createIntegration(app, jwt, 'e2e-rotate-agent');
+    try {
+      const rotate = await request(app.getHttpServer())
+        .patch(`/api/v1/system/mcp-integration/secret/${target.id}`)
+        .set(TOKEN_HEADER, jwt);
+      expect(rotate.status).toBe(200);
+      const rotated = (rotate.body as ApiEnvelope<{ token: string }>).data
+        .token;
+      expect(rotated).toMatch(/^qp_[0-9a-f]{32}\.[0-9a-f]{64}$/);
+      expect(rotated).not.toBe(target.token);
 
-    const oldRes = await callMcp(app, 'tools/list', {}, 11, integration.token);
-    expect(oldRes.status).toBe(401);
+      const oldRes = await callMcp(app, 'tools/list', {}, 11, target.token);
+      expect(oldRes.status).toBe(401);
 
-    const newRes = await callMcp(app, 'tools/list', {}, 12, rotated);
-    expect(newRes.status).toBe(200);
+      const newRes = await callMcp(app, 'tools/list', {}, 12, rotated);
+      expect(newRes.status).toBe(200);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/system/mcp-integration/${target.id}`)
+        .set(TOKEN_HEADER, jwt);
+    }
   });
 
   it('deleting the integration revokes its token', async () => {
+    const target = await createIntegration(app, jwt, 'e2e-delete-agent');
     const rotated = await request(app.getHttpServer())
-      .get(`/api/v1/system/mcp-integration/${integration.id}/secret`)
+      .get(`/api/v1/system/mcp-integration/${target.id}/secret`)
       .set(TOKEN_HEADER, jwt);
     expect(rotated.status).toBe(200);
     const token = (rotated.body as ApiEnvelope<{ token: string }>).data.token;
 
     const del = await request(app.getHttpServer())
-      .delete(`/api/v1/system/mcp-integration/${integration.id}`)
+      .delete(`/api/v1/system/mcp-integration/${target.id}`)
       .set(TOKEN_HEADER, jwt);
     expect(del.status).toBe(200);
 
@@ -521,6 +561,8 @@ describe('MCP ask_question clarify (e2e)', () => {
   let app: INestApplication<App>;
   let jwt: string;
   let integration: IntegrationSnake;
+  let prisma: PrismaService;
+  const chatIds: number[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -627,6 +669,7 @@ describe('MCP ask_question clarify (e2e)', () => {
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api/v1');
     await app.init();
+    prisma = app.get(PrismaService);
     jwt = await login(app);
     await sweepIntegrations(app, jwt);
     integration = await createIntegration(app, jwt, 'e2e-clarify-agent');
@@ -634,8 +677,22 @@ describe('MCP ask_question clarify (e2e)', () => {
 
   afterAll(async () => {
     await sweepIntegrations(app, jwt);
+    if (chatIds.length > 0) {
+      await prisma.chat
+        .deleteMany({ where: { id: { in: chatIds } } })
+        .catch(() => undefined);
+    }
     await app.close();
   });
+
+  /** Remember the transient chat behind a tool-created record for cleanup. */
+  async function trackRecord(recordId: number): Promise<void> {
+    const record = await prisma.chatRecord.findUnique({
+      where: { id: recordId },
+      select: { chatId: true },
+    });
+    if (record) chatIds.push(record.chatId);
+  }
 
   it('returns needs_clarification, then resumes the record with picked tables', async () => {
     // Phase 1: ambiguous question → structured clarify result, no SQL.
@@ -665,6 +722,7 @@ describe('MCP ask_question clarify (e2e)', () => {
     expect(asked.max_select).toBe(3);
     // The response carries the round token the caller must echo back.
     expect(asked.round).toBe(1);
+    await trackRecord(asked.record_id);
 
     // Phase 2: answer with two table picks → the same record produces SQL.
     const picks = asked.candidates.slice(0, 2).map((c) => c.table_id);
@@ -696,6 +754,71 @@ describe('MCP ask_question clarify (e2e)', () => {
     expect(answered.needs_clarification).toBeUndefined();
   });
 
+  it('rejects a stale clarify round and keeps the record resumable', async () => {
+    const first = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: { question: '统计一下整体情况', datasource_id: 1 },
+      },
+      5,
+      integration.token,
+    );
+    const firstResult = first.envelope.result as CallResult;
+    expect(firstResult.isError).toBeFalsy();
+    const asked = JSON.parse(firstResult.content[0].text ?? '') as {
+      needs_clarification: boolean;
+      record_id: number;
+      round: number;
+      candidates: Array<{ table_id: number }>;
+    };
+    expect(asked.needs_clarification).toBe(true);
+    await trackRecord(asked.record_id);
+    const picks = asked.candidates.slice(0, 2).map((c) => c.table_id);
+
+    // A round the card was not rendered for must not claim the record.
+    const stale = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: {
+          clarify_record_id: asked.record_id,
+          clarify_table_ids: picks,
+          clarify_round: asked.round + 1,
+        },
+      },
+      6,
+      integration.token,
+    );
+    const staleResult = stale.envelope.result as CallResult;
+    expect(staleResult.isError).toBe(true);
+
+    // The record is still pending: the correct token resumes it.
+    const resumed = await callMcp(
+      app,
+      'tools/call',
+      {
+        name: 'ask_question',
+        arguments: {
+          clarify_record_id: asked.record_id,
+          clarify_table_ids: picks,
+          clarify_round: asked.round,
+        },
+      },
+      7,
+      integration.token,
+    );
+    const resumedResult = resumed.envelope.result as CallResult;
+    expect(resumedResult.isError).toBeFalsy();
+    const answered = JSON.parse(resumedResult.content[0].text ?? '') as {
+      sql: string;
+    };
+    expect(asked.round).toBe(1);
+    expect(answered.sql).toBe('SELECT 1');
+  });
+
   it('rejects a clarify answer for a record that never paused (error result)', async () => {
     // Ask with an explicit table mention → no clarify pause → the record
     // finishes; resuming it must fail as a tool error, not a crash.
@@ -714,6 +837,7 @@ describe('MCP ask_question clarify (e2e)', () => {
       record_id: number;
     };
     expect(parsed.record_id).toBeGreaterThan(0);
+    await trackRecord(parsed.record_id);
 
     const resume = await callMcp(
       app,
