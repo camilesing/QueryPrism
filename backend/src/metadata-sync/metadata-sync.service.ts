@@ -147,7 +147,8 @@ export class MetadataSyncService {
     const existing = await this.getOwned(id, actor.oid);
     await this.prisma.metadataSyncSource.delete({ where: { id: existing.id } });
     this.scheduler.remove(existing.id);
-    return { success: true };
+    // Name/id travel back so the DELETE audit row can identify the source.
+    return { success: true, id: existing.id, name: existing.name };
   }
 
   async listRuns(id: number, currentPage: number, pageSize: number) {

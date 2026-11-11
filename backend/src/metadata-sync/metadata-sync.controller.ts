@@ -49,6 +49,10 @@ export class MetadataSyncController {
     module: OperationModule.METADATA_SYNC,
     type: OperationType.CREATE,
     detail: '新增元数据同步源',
+    resources: (r) => {
+      const item = r as { id: number; name: string };
+      return [{ name: item.name, originId: item.id }];
+    },
   })
   create(@Body() dto: MetadataSyncUpsertDto) {
     return this.sync.create(dto);
@@ -60,6 +64,10 @@ export class MetadataSyncController {
     module: OperationModule.METADATA_SYNC,
     type: OperationType.UPDATE,
     detail: '修改元数据同步源',
+    resources: (r) => {
+      const item = r as { id: number; name: string };
+      return [{ name: item.name, originId: item.id }];
+    },
   })
   update(@Body() dto: MetadataSyncUpsertDto) {
     return this.sync.update(dto);
@@ -70,6 +78,10 @@ export class MetadataSyncController {
     module: OperationModule.METADATA_SYNC,
     type: OperationType.DELETE,
     detail: '删除元数据同步源',
+    resources: (r) => {
+      const item = r as { id: number; name: string };
+      return [{ name: item.name, originId: item.id }];
+    },
   })
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.sync.remove(id);

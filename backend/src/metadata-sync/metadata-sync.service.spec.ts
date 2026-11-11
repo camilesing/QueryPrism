@@ -227,6 +227,8 @@ describe('MetadataSyncService', () => {
 
     await expect(run(() => m.service.remove(5))).resolves.toEqual({
       success: true,
+      id: 5,
+      name: 's',
     });
     expect(m.prisma.metadataSyncSource.delete).toHaveBeenCalledWith({
       where: { id: 5 },
