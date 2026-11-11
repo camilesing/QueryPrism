@@ -1,15 +1,16 @@
 import { request } from '@/utils/request'
 
-/** MetaDataImprove M6 — semantic regression suite admin API (snake_case wire). */
-
+/** MetaDataImprove M6 — semantic regression suite admin API. Request bodies
+ *  and query params are snake_case (Nest DTOs); list/detail responses are raw
+ *  Prisma rows (camelCase) — the interfaces below mirror those. */
 export interface RegressionCaseRow {
   id: number
   oid: number
-  datasource_id: number
+  datasourceId: number
   name: string
   question: string
-  metric_code: string | null
-  tolerance_pct: number
+  metricCode: string | null
+  tolerancePct: number
   enabled: boolean
   baseline: {
     rowCount: number
@@ -18,31 +19,31 @@ export interface RegressionCaseRow {
     capturedAt: string
     runId: number
   } | null
-  create_by: number | null
-  create_time: string
-  update_time: string
+  createBy: number | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface RegressionRunRow {
   id: number
   oid: number
   trigger: 'approval' | 'manual' | 'api'
-  trigger_detail: Record<string, unknown> | null
+  triggerDetail: Record<string, unknown> | null
   status: 'running' | 'done'
   passed: number
   flagged: number
   errored: number
-  started_at: string
-  finished_at: string | null
+  startedAt: string
+  finishedAt: string | null
 }
 
 export interface RegressionRunCaseRow {
   id: number
-  run_id: number
-  case_id: number
+  runId: number
+  caseId: number
   status: 'passed' | 'flagged' | 'baseline_captured' | 'needs_clarify' | 'error'
   sql: string | null
-  row_count: number | null
+  rowCount: number | null
   sums: Record<string, number> | null
   delta: {
     rowCountPct: number | null
@@ -52,7 +53,7 @@ export interface RegressionRunCaseRow {
     reasons: string[]
   } | null
   message: string | null
-  record_id: number | null
+  recordId: number | null
   case?: { name: string; question: string }
 }
 

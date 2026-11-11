@@ -16,13 +16,16 @@ const { t } = useI18n()
 const loading = ref(false)
 const cases = ref<RegressionCaseRow[]>([])
 const datasources = ref<Array<{ id: number; name: string }>>([])
+const casePage = reactive({ currentPage: 1, pageSize: 20, total: 0 })
 
-const searchCases = () => {
+const searchCases = (page = 1) => {
   loading.value = true
   regressionApi
-    .cases({ current_page: 1, page_size: 100 })
+    .cases({ current_page: page, page_size: casePage.pageSize })
     .then((res) => {
       cases.value = res?.rows || []
+      casePage.currentPage = page
+      casePage.total = res?.total || 0
     })
     .finally(() => {
       loading.value = false
@@ -74,11 +77,11 @@ const openCreate = () => {
 }
 const openEdit = (row: RegressionCaseRow) => {
   form.id = row.id
-  form.datasource_id = row.datasource_id
+  form.datasource_id = row.datasourceId
   form.name = row.name
   form.question = row.question
-  form.metric_code = row.metric_code ?? ''
-  form.tolerance_pct = row.tolerance_pct
+  form.metric_code = row.metricCode ?? ''
+  form.tolerance_pct = row.tolerancePct
   form.enabled = row.enabled
   dialog.value = true
 }
@@ -134,13 +137,16 @@ const toggleCase = (row: RegressionCaseRow) => {
 const runsLoading = ref(false)
 const runs = ref<RegressionRunRow[]>([])
 const running = ref(false)
+const runPage = reactive({ currentPage: 1, pageSize: 20, total: 0 })
 
-const searchRuns = () => {
+const searchRuns = (page = 1) => {
   runsLoading.value = true
   regressionApi
-    .runs({ current_page: 1, page_size: 20 })
+    .runs({ current_page: page, page_size: runPage.pageSize })
     .then((res) => {
       runs.value = res?.rows || []
+      runPage.currentPage = page
+      runPage.total = res?.total || 0
     })
     .finally(() => {
       runsLoading.value = false
@@ -252,9 +258,9 @@ onMounted(() => {
         show-overflow-tooltip
       />
       <el-table-column :label="t('regression.datasource')" width="140">
-        <template #default="{ row }">{{ dsName(row.datasource_id) }}</template>
+        <template #default="{ row }">{{ dsName(row.datasourceId) }}</template>
       </el-table-column>
-      <el-table-column prop="tolerance_pct" :label="t('regression.tolerance')" width="90" />
+      <el-table-column prop="tolerancePct" :label="t('regression.tolerance')" width="90" />
       <el-table-column :label="t('regression.baseline')" width="200">
         <template #default="{ row }">
           <span v-if="row.baseline">
@@ -279,6 +285,14 @@ onMounted(() => {
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      v-model:current-page="casePage.currentPage"
+      :page-size="casePage.pageSize"
+      :total="casePage.total"
+      layout="total, prev, pager, next"
+      @current-change="(p: number) => searchCases(p)"
+    />
 
     <h3 class="section-title">{{ t('regression.runs') }}</h3>
     <el-table v-loading="runsLoading" :data="runs" border>
@@ -307,7 +321,7 @@ onMounted(() => {
         </template>
       </el-table-column>
       <el-table-column :label="t('regression.started_at')" width="170">
-        <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
+        <template #default="{ row }">{{ formatDate(row.startedAt) }}</template>
       </el-table-column>
       <el-table-column :label="t('regression.operations')" width="180">
         <template #default="{ row }">
@@ -320,6 +334,14 @@ onMounted(() => {
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      v-model:current-page="runPage.currentPage"
+      :page-size="runPage.pageSize"
+      :total="runPage.total"
+      layout="total, prev, pager, next"
+      @current-change="(p: number) => searchRuns(p)"
+    />
 
     <el-dialog v-model="dialog" :title="t('regression.create_case')" width="620px">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
@@ -360,7 +382,7 @@ onMounted(() => {
     <el-drawer v-model="detailDrawer" :title="t('regression.detail')" size="70%">
       <el-table v-loading="detailLoading" :data="detailCases" border>
         <el-table-column :label="t('regression.case_name')" min-width="120">
-          <template #default="{ row }">{{ row.case?.name ?? `#${row.case_id}` }}</template>
+          <template #default="{ row }">{{ row.case?.name ?? `#${row.caseId}` }}</template>
         </el-table-column>
         <el-table-column :label="t('regression.status')" width="130">
           <template #default="{ row }">
@@ -370,7 +392,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column :label="t('regression.row_count')" width="90">
-          <template #default="{ row }">{{ row.row_count ?? '-' }}</template>
+          <template #default="{ row }">{{ row.rowCount ?? '-' }}</template>
         </el-table-column>
         <el-table-column :label="t('regression.delta')" min-width="200">
           <template #default="{ row }">{{ deltaText(row) }}</template>
