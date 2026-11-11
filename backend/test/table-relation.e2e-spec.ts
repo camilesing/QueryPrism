@@ -34,7 +34,6 @@ describe('Table relation versions (e2e)', () => {
   let token: string;
   let prisma: PrismaService;
   let dsId: number;
-  let createdDs = false;
   let memberToken = '';
   let memberAccount = '';
   let foreignDsId = 0;
@@ -51,19 +50,10 @@ describe('Table relation versions (e2e)', () => {
     prisma = app.get(PrismaService);
     token = await login(app);
 
-    const existing = await prisma.datasource.findFirst({
-      where: { oid: 1 },
-      orderBy: { id: 'asc' },
+    const ds = await prisma.datasource.create({
+      data: { oid: 1, name: `e2e-relation-ds-${stamp}`, type: 'sqlite' },
     });
-    if (existing) {
-      dsId = existing.id;
-    } else {
-      const ds = await prisma.datasource.create({
-        data: { oid: 1, name: 'e2e-relation-ds', type: 'sqlite' },
-      });
-      dsId = ds.id;
-      createdDs = true;
-    }
+    dsId = ds.id;
     await prisma.datasourceRelationVersion.deleteMany({
       where: { datasourceId: dsId },
     });
@@ -108,11 +98,9 @@ describe('Table relation versions (e2e)', () => {
     await prisma.datasource
       .update({ where: { id: dsId }, data: { tableRelation: [] } })
       .catch(() => undefined);
-    if (createdDs) {
-      await prisma.datasource
-        .delete({ where: { id: dsId } })
-        .catch(() => undefined);
-    }
+    await prisma.datasource
+      .delete({ where: { id: dsId } })
+      .catch(() => undefined);
     if (foreignDsId) {
       await prisma.datasource
         .delete({ where: { id: foreignDsId } })
@@ -161,11 +149,14 @@ describe('Table relation versions (e2e)', () => {
       .set(TOKEN_HEADER, token)
       .send({});
     expect(versions.status).toBe(200);
-    const rows = (
-      versions.body as ApiEnvelope<
-        Array<{ version: number; snapshot: unknown }>
-      >
+    const page = (
+      versions.body as ApiEnvelope<{
+        data: Array<{ version: number; snapshot: unknown }>;
+        total_count: number;
+      }>
     ).data;
+    const rows = page.data;
+    expect(page.total_count).toBe(2);
     expect(rows.map((r) => r.version)).toEqual([2, 1]);
     expect(rows[0].snapshot).toEqual(second);
     expect(rows[1].snapshot).toEqual(first);
@@ -280,11 +271,12 @@ describe('Table relation versions (e2e)', () => {
       .post(`/api/v1/table_relation/versions/${dsId}`)
       .set(TOKEN_HEADER, token)
       .send({});
-    const rows = (
-      versions.body as ApiEnvelope<
-        Array<{ version: number; snapshot: unknown; note: string | null }>
-      >
+    const page = (
+      versions.body as ApiEnvelope<{
+        data: Array<{ version: number; snapshot: unknown; note: string | null }>;
+      }>
     ).data;
+    const rows = page.data;
     expect(rows[0].version).toBe(out.version);
     expect(rows[0].snapshot).toEqual([edgeA]);
     expect(rows[0].note).toContain(String(compareVersions.from));

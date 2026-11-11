@@ -110,6 +110,17 @@ describe('SQL result cache (e2e)', () => {
       .data;
   }
 
+  // Each test starts from the same 2-row table + empty cache so it can run in
+// any order (jest --randomize).
+  beforeEach(() => {
+    const db = new Database(tempDbPath);
+    db.exec('DELETE FROM orders');
+    db.exec('INSERT INTO orders (id, total) VALUES (1, 9.99)');
+    db.exec('INSERT INTO orders (id, total) VALUES (2, 5.01)');
+    db.close();
+    return prisma.queryCacheEntry.deleteMany({ where: {} });
+  });
+
   it('caches a repeated identical SQL and serves the hit', async () => {
     const first = await exec();
     expect(first.rows).toHaveLength(2);
@@ -122,7 +133,12 @@ describe('SQL result cache (e2e)', () => {
     expect(entries[0].rowCount).toBe(2);
     // The cached SQL is the EFFECTIVE sql (LIMIT appended, not raw).
     expect(entries[0].sql).toContain('LIMIT');
-    expect(entries[0].revision).toBe(0);
+    const rev = await prisma.systemVariable.findUnique({
+      where: { name: 'cache.rev.1' },
+    });
+    const expectedRevision =
+      rev && typeof rev.value === 'number' ? rev.value : 0;
+    expect(entries[0].revision).toBe(expectedRevision);
 
     // Change the data under the SAME SQL: a hit within TTL serves the stale
     // snapshot by design — the revision bump below is the invalidation path.
@@ -135,6 +151,11 @@ describe('SQL result cache (e2e)', () => {
   });
 
   it('a semantic-revision bump invalidates the entry', async () => {
+    // Make the data change idempotent: this test must pass even if it runs
+    // before the cache test (which also inserts row 3).
+    const db = new Database(tempDbPath);
+    db.exec('INSERT OR IGNORE INTO orders (id, total) VALUES (3, 1.5)');
+    db.close();
     // Bump FORWARD from whatever the current revision is (a lower write
     // would resurrect stale entries — never do that, here or in prod).
     const row = await prisma.systemVariable.findUnique({
@@ -157,6 +178,7 @@ describe('SQL result cache (e2e)', () => {
       () => prisma.queryCacheEntry.findMany(),
       (rows) => rows.length === 1 && rows[0].revision === current + 1,
     );
-    expect(entries[0].rowCount).toBe(3);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ revision: current + 1, rowCount: 3 });
   });
 });
