@@ -559,6 +559,33 @@ export class ChatService {
     }
 
     const namesById = clarifyCandidateNames(record.clarify);
+    // The resume follows the source question's language; resolve messages and
+    // the chat BEFORE claiming so a quota rejection / stale pick leaves the
+    // record pending and retryable.
+    const lang = this.detectLang(record.question);
+    const msgs = chatMessages(lang);
+    const chat = await this.prisma.chat.findFirst({
+      where: this.ownedChatWhere(record.chatId, oid),
+    });
+    if (!chat) {
+      throw new NotFoundException(
+        chatMessages(this.profileLang()).chatNotFound(record.chatId),
+      );
+    }
+    // A resume is a second full NL2SQL run (keyword extraction, generate_sql,
+    // chart/filter calls), so it charges the daily budget like a fresh
+    // question — otherwise one counted question can drive max_rounds + 1 runs.
+    const subject = this.quota.currentSubject();
+    if (subject) {
+      try {
+        await this.quota.assertWithinBudget(oid, subject);
+      } catch (e) {
+        if (e instanceof QuotaExceededError) {
+          throw new BadRequestException(msgs.quotaExceeded(e.dailyLimit));
+        }
+        throw e;
+      }
+    }
     // Replay every round's supplement (legacy rows: the single `text`) so a
     // later round never loses what the user said earlier. Table picks stay
     // per-round.
@@ -605,17 +632,6 @@ export class ChatService {
       );
     }
 
-    // The resume follows the source question's language.
-    const lang = this.detectLang(record.question);
-    const msgs = chatMessages(lang);
-    const chat = await this.prisma.chat.findFirst({
-      where: this.ownedChatWhere(record.chatId, oid),
-    });
-    if (!chat) {
-      throw new NotFoundException(
-        chatMessages(this.profileLang()).chatNotFound(record.chatId),
-      );
-    }
     // Supplement texts join the question for THIS run (the stored question
     // stays immutable; later turns see every round via getHistory).
     const content = [record.question, ...accumulatedTexts].join('\n');
@@ -1311,7 +1327,10 @@ export class ChatService {
     // need_clarify; once it is spent (or the user chose skip) the block would
     // only invite a pause that cannot happen, so keep it out of the prompt.
     const candidateTablesText =
-      !opts?.skipClarify && rounds < cfg.clarifyMaxRounds && tableIds
+      cfg.clarifyEnabled &&
+      !opts?.skipClarify &&
+      rounds < cfg.clarifyMaxRounds &&
+      tableIds
         ? this.renderCandidateTables(decoratedClarifyOptions, stuffedIds)
         : '';
 
@@ -1404,7 +1423,7 @@ export class ChatService {
         messages: this.appendAiMessage(sqlMessages, sqlContent),
         tokenUsage: sqlTokenUsage,
       });
-      if (opts?.skipClarify || rounds >= cfg.clarifyMaxRounds) {
+      if (!cfg.clarifyEnabled || opts?.skipClarify || rounds >= cfg.clarifyMaxRounds) {
         yield* this.fail(record.id, msgs.sqlSchemaInsufficient);
         return;
       }
