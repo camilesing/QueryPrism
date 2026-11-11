@@ -31,10 +31,7 @@ interface ClarifyPayload {
 
 const props = defineProps<{ record: ChatRecord }>()
 const emit = defineEmits<{
-  (
-    e: 'answer',
-    body: { table_ids?: number[]; text?: string; skip?: boolean; round?: number }
-  ): void
+  (e: 'answer', body: { table_ids?: number[]; text?: string; skip?: boolean; round?: number }): void
 }>()
 
 const { t } = useI18n()
