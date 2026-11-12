@@ -447,79 +447,86 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
         />
       </div>
 
-      <el-table
-        :data="rows"
-        style="width: 100%"
-        @selection-change="(sel: SemanticRow[]) => (selection = sel)"
-      >
-        <el-table-column type="selection" width="40" />
-        <el-table-column :label="t('semantic.datasource')" width="140">
-          <template #default="{ row }">{{ dsName(row.datasource_id) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.table_name')" width="160">
-          <template #default="{ row }">
-            <span>{{ row.table_name }}</span>
-            <span v-if="row.field_name" class="field-name">.{{ row.field_name }}</span>
+      <div class="table-region">
+        <el-table
+          :data="rows"
+          height="100%"
+          style="width: 100%"
+          @selection-change="(sel: SemanticRow[]) => (selection = sel)"
+        >
+          <el-table-column type="selection" width="40" />
+          <el-table-column :label="t('semantic.datasource')" width="140">
+            <template #default="{ row }">{{ dsName(row.datasource_id) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.table_name')" width="160">
+            <template #default="{ row }">
+              <span>{{ row.table_name }}</span>
+              <span v-if="row.field_name" class="field-name">.{{ row.field_name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="activeTab === 'field'" :label="t('semantic.role')" width="90">
+            <template #default="{ row }">{{ roleLabel(row.role) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.meaning')" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.meaning }}
+              <span v-if="row.unit" class="unit-tag">{{ row.unit }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.scope')" width="110">
+            <template #default="{ row }">
+              <el-tag
+                size="small"
+                :type="
+                  row.scope === 'PERSONAL'
+                    ? 'info'
+                    : row.scope === 'WORKSPACE'
+                      ? 'success'
+                      : 'warning'
+                "
+              >
+                {{ scopeLabel(row.scope) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.version')" width="70">
+            <template #default="{ row }">
+              <el-link type="primary" @click="openVersions(row)">v{{ row.version }}</el-link>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('common.enableSwitch')" width="70">
+            <template #default="{ row }">
+              <el-switch :model-value="row.enabled" @change="(v: any) => toggleEnabled(row, !!v)" />
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('common.operate')" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-tooltip :content="t('common.edit')" placement="top">
+                <el-icon class="operate-icon" @click="openEdit(row)"><IconOpeEdit /></el-icon>
+              </el-tooltip>
+              <el-tooltip :content="t('common.delete')" placement="top">
+                <el-icon class="operate-icon" @click="removeRows([row])"><IconOpeDelete /></el-icon>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <EmptyBackground
+              v-if="!loading"
+              :description="t('semantic.empty')"
+              img-type="noneWhite"
+            />
           </template>
-        </el-table-column>
-        <el-table-column v-if="activeTab === 'field'" :label="t('semantic.role')" width="90">
-          <template #default="{ row }">{{ roleLabel(row.role) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.meaning')" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ row.meaning }}
-            <span v-if="row.unit" class="unit-tag">{{ row.unit }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.scope')" width="110">
-          <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="
-                row.scope === 'PERSONAL'
-                  ? 'info'
-                  : row.scope === 'WORKSPACE'
-                    ? 'success'
-                    : 'warning'
-              "
-            >
-              {{ scopeLabel(row.scope) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.version')" width="70">
-          <template #default="{ row }">
-            <el-link type="primary" @click="openVersions(row)">v{{ row.version }}</el-link>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('common.enableSwitch')" width="70">
-          <template #default="{ row }">
-            <el-switch :model-value="row.enabled" @change="(v: any) => toggleEnabled(row, !!v)" />
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('common.operate')" width="90" fixed="right">
-          <template #default="{ row }">
-            <el-tooltip :content="t('common.edit')" placement="top">
-              <el-icon class="operate-icon" @click="openEdit(row)"><IconOpeEdit /></el-icon>
-            </el-tooltip>
-            <el-tooltip :content="t('common.delete')" placement="top">
-              <el-icon class="operate-icon" @click="removeRows([row])"><IconOpeDelete /></el-icon>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-model:current-page="pageInfo.currentPage"
-        :page-size="pageInfo.pageSize"
-        :total="pageInfo.total"
-        layout="total, prev, pager, next"
-        @current-change="(p: number) => search(p)"
-      />
-      <EmptyBackground
-        v-if="!loading && rows.length === 0"
-        :description="t('semantic.empty')"
-        img-type="noneWhite"
-      />
+        </el-table>
+      </div>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="pageInfo.currentPage"
+          :page-size="pageInfo.pageSize"
+          :total="pageInfo.total"
+          layout="total, prev, pager, next"
+          @current-change="(p: number) => search(p)"
+        />
+      </div>
     </template>
 
     <!-- approval tab -->
@@ -528,60 +535,65 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
         <el-radio-button value="pending">{{ t('semantic.pending_box') }}</el-radio-button>
         <el-radio-button value="mine">{{ t('semantic.mine_box') }}</el-radio-button>
       </el-radio-group>
-      <el-table
-        v-loading="approvalLoading"
-        :data="approvalRows"
-        style="width: 100%; margin-top: 12px"
-      >
-        <el-table-column :label="t('semantic.content')" min-width="260">
-          <template #default="{ row }">{{ payloadSummary(row) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.target_type')" width="110">
-          <template #default="{ row }">{{ scopeLabel(row.target_type) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.proposer')" width="120">
-          <template #default="{ row }">{{ row.proposer ?? row.proposer_uid }}</template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.status')" width="90">
-          <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="
-                row.status === 'pending'
-                  ? 'warning'
-                  : row.status === 'approved'
-                    ? 'success'
-                    : 'info'
-              "
-            >
-              {{ t(`semantic.status_${row.status}`) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('semantic.created_time')" width="160">
-          <template #default="{ row }">{{ fmt(row.create_time) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('common.operate')" width="140" fixed="right">
-          <template #default="{ row }">
-            <template v-if="row.status === 'pending' && approvalBox === 'pending'">
-              <el-button size="small" type="primary" @click="review(row, true)">
-                {{ t('semantic.approve') }}
-              </el-button>
-              <el-button size="small" @click="review(row, false)">
-                {{ t('semantic.reject') }}
-              </el-button>
+      <div class="table-region approval-region">
+        <el-table
+          v-loading="approvalLoading"
+          :data="approvalRows"
+          height="100%"
+          style="width: 100%"
+        >
+          <el-table-column :label="t('semantic.content')" min-width="260">
+            <template #default="{ row }">{{ payloadSummary(row) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.target_type')" width="110">
+            <template #default="{ row }">{{ scopeLabel(row.target_type) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.proposer')" width="120">
+            <template #default="{ row }">{{ row.proposer ?? row.proposer_uid }}</template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.status')" width="90">
+            <template #default="{ row }">
+              <el-tag
+                size="small"
+                :type="
+                  row.status === 'pending'
+                    ? 'warning'
+                    : row.status === 'approved'
+                      ? 'success'
+                      : 'info'
+                "
+              >
+                {{ t(`semantic.status_${row.status}`) }}
+              </el-tag>
             </template>
-            <span v-else-if="row.review_note">{{ row.review_note }}</span>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-model:current-page="approvalPage.currentPage"
-        :page-size="approvalPage.pageSize"
-        :total="approvalPage.total"
-        layout="total, prev, pager, next"
-        @current-change="(p: number) => searchRequests(p)"
-      />
+          </el-table-column>
+          <el-table-column :label="t('semantic.created_time')" width="160">
+            <template #default="{ row }">{{ fmt(row.create_time) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('common.operate')" width="140" fixed="right">
+            <template #default="{ row }">
+              <template v-if="row.status === 'pending' && approvalBox === 'pending'">
+                <el-button size="small" type="primary" @click="review(row, true)">
+                  {{ t('semantic.approve') }}
+                </el-button>
+                <el-button size="small" @click="review(row, false)">
+                  {{ t('semantic.reject') }}
+                </el-button>
+              </template>
+              <span v-else-if="row.review_note">{{ row.review_note }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="approvalPage.currentPage"
+          :page-size="approvalPage.pageSize"
+          :total="approvalPage.total"
+          layout="total, prev, pager, next"
+          @current-change="(p: number) => searchRequests(p)"
+        />
+      </div>
     </template>
 
     <!-- create / edit dialog -->
@@ -668,12 +680,39 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
 
 <style scoped lang="less">
 .semantic {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   padding: 16px;
+
+  :deep(.ed-tabs) {
+    flex: none;
+  }
 
   .toolbar {
     display: flex;
+    flex: none;
     gap: 8px;
     margin-bottom: 12px;
+  }
+
+  // The table takes the remaining height so the pager can sit at the bottom
+  // of the page instead of floating right under the table.
+  .table-region {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .approval-region {
+    margin-top: 12px;
+  }
+
+  .pager {
+    display: flex;
+    flex: none;
+    justify-content: flex-end;
+    margin-top: 12px;
   }
 
   .field-name {

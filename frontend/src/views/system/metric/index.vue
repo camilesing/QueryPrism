@@ -616,84 +616,91 @@ function payloadSummary(row: ChangeRequestRow): string {
         />
       </div>
 
-      <el-table
-        :data="rows"
-        style="width: 100%"
-        @selection-change="(sel: Array<MetricRow | StandardRow>) => (selection = sel)"
-      >
-        <el-table-column type="selection" width="40" />
-        <el-table-column label="code" width="170" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.code }}</template>
-        </el-table-column>
-        <el-table-column :label="t('metric.name')" width="150" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ activeTab === 'standard' ? (row as StandardRow).term : row.name }}
+      <div class="table-region">
+        <el-table
+          :data="rows"
+          height="100%"
+          style="width: 100%"
+          @selection-change="(sel: Array<MetricRow | StandardRow>) => (selection = sel)"
+        >
+          <el-table-column type="selection" width="40" />
+          <el-table-column label="code" width="170" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.code }}</template>
+          </el-table-column>
+          <el-table-column :label="t('metric.name')" width="150" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ activeTab === 'standard' ? (row as StandardRow).term : row.name }}
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('metric.def_summary')" min-width="240" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ defSummary(row) }}
+              <span
+                v-if="'table_exists' in row && !row.table_exists"
+                class="missing-tag"
+                :title="t('metric.table_missing')"
+              >
+                {{ t('metric.table_missing') }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('metric.aliases')" width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ (row.aliases ?? []).join(', ') }}</template>
+          </el-table-column>
+          <el-table-column :label="t('metric.scope')" width="110">
+            <template #default="{ row }">
+              <el-tag
+                size="small"
+                :type="
+                  row.scope === 'PERSONAL'
+                    ? 'info'
+                    : row.scope === 'WORKSPACE'
+                      ? 'success'
+                      : 'warning'
+                "
+              >
+                {{ scopeLabel(row.scope) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('metric.version')" width="70">
+            <template #default="{ row }">
+              <el-link type="primary" @click="openVersions(row)">v{{ row.version }}</el-link>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('common.enableSwitch')" width="70">
+            <template #default="{ row }">
+              <el-switch :model-value="row.enabled" @change="(v: any) => toggleEnabled(row, !!v)" />
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('common.operate')" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-tooltip :content="t('common.edit')" placement="top">
+                <el-icon class="operate-icon" @click="openEdit(row)"><IconOpeEdit /></el-icon>
+              </el-tooltip>
+              <el-tooltip :content="t('common.delete')" placement="top">
+                <el-icon class="operate-icon" @click="removeRows([row])"><IconOpeDelete /></el-icon>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <EmptyBackground
+              v-if="!loading"
+              :description="t('metric.empty')"
+              img-type="noneWhite"
+            />
           </template>
-        </el-table-column>
-        <el-table-column :label="t('metric.def_summary')" min-width="240" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ defSummary(row) }}
-            <span
-              v-if="'table_exists' in row && !row.table_exists"
-              class="missing-tag"
-              :title="t('metric.table_missing')"
-            >
-              {{ t('metric.table_missing') }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('metric.aliases')" width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ (row.aliases ?? []).join(', ') }}</template>
-        </el-table-column>
-        <el-table-column :label="t('metric.scope')" width="110">
-          <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="
-                row.scope === 'PERSONAL'
-                  ? 'info'
-                  : row.scope === 'WORKSPACE'
-                    ? 'success'
-                    : 'warning'
-              "
-            >
-              {{ scopeLabel(row.scope) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('metric.version')" width="70">
-          <template #default="{ row }">
-            <el-link type="primary" @click="openVersions(row)">v{{ row.version }}</el-link>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('common.enableSwitch')" width="70">
-          <template #default="{ row }">
-            <el-switch :model-value="row.enabled" @change="(v: any) => toggleEnabled(row, !!v)" />
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('common.operate')" width="90" fixed="right">
-          <template #default="{ row }">
-            <el-tooltip :content="t('common.edit')" placement="top">
-              <el-icon class="operate-icon" @click="openEdit(row)"><IconOpeEdit /></el-icon>
-            </el-tooltip>
-            <el-tooltip :content="t('common.delete')" placement="top">
-              <el-icon class="operate-icon" @click="removeRows([row])"><IconOpeDelete /></el-icon>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-model:current-page="pageInfo.currentPage"
-        :page-size="pageInfo.pageSize"
-        :total="pageInfo.total"
-        layout="total, prev, pager, next"
-        @current-change="(p: number) => search(p)"
-      />
-      <EmptyBackground
-        v-if="!loading && rows.length === 0"
-        :description="t('metric.empty')"
-        img-type="noneWhite"
-      />
+        </el-table>
+      </div>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="pageInfo.currentPage"
+          :page-size="pageInfo.pageSize"
+          :total="pageInfo.total"
+          layout="total, prev, pager, next"
+          @current-change="(p: number) => search(p)"
+        />
+      </div>
     </template>
 
     <!-- approval tab -->
@@ -702,62 +709,67 @@ function payloadSummary(row: ChangeRequestRow): string {
         <el-radio-button value="pending">{{ t('metric.pending_box') }}</el-radio-button>
         <el-radio-button value="mine">{{ t('metric.mine_box') }}</el-radio-button>
       </el-radio-group>
-      <el-table
-        v-loading="approvalLoading"
-        :data="approvalRows"
-        style="width: 100%; margin-top: 12px"
-      >
-        <el-table-column :label="t('metric.content')" min-width="260">
-          <template #default="{ row }">{{ payloadSummary(row) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('metric.target_type')" width="110">
-          <template #default="{ row }">{{ scopeLabel(row.target_type) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('metric.proposer')" width="120">
-          <template #default="{ row }">{{ row.proposer ?? row.proposer_uid }}</template>
-        </el-table-column>
-        <el-table-column :label="t('metric.status')" width="90">
-          <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="
-                row.status === 'pending'
-                  ? 'warning'
-                  : row.status === 'approved'
-                    ? 'success'
-                    : 'info'
-              "
-            >
-              {{ t(`metric.status_${row.status}`) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('metric.created_time')" width="160">
-          <template #default="{ row }">{{
-            (row.create_time ?? '').slice(0, 19).replace('T', ' ')
-          }}</template>
-        </el-table-column>
-        <el-table-column :label="t('common.operate')" width="140" fixed="right">
-          <template #default="{ row }">
-            <template v-if="row.status === 'pending' && approvalBox === 'pending'">
-              <el-button size="small" type="primary" @click="review(row, true)">
-                {{ t('metric.approve') }}
-              </el-button>
-              <el-button size="small" @click="review(row, false)">
-                {{ t('metric.reject') }}
-              </el-button>
+      <div class="table-region approval-region">
+        <el-table
+          v-loading="approvalLoading"
+          :data="approvalRows"
+          height="100%"
+          style="width: 100%"
+        >
+          <el-table-column :label="t('metric.content')" min-width="260">
+            <template #default="{ row }">{{ payloadSummary(row) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('metric.target_type')" width="110">
+            <template #default="{ row }">{{ scopeLabel(row.target_type) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('metric.proposer')" width="120">
+            <template #default="{ row }">{{ row.proposer ?? row.proposer_uid }}</template>
+          </el-table-column>
+          <el-table-column :label="t('metric.status')" width="90">
+            <template #default="{ row }">
+              <el-tag
+                size="small"
+                :type="
+                  row.status === 'pending'
+                    ? 'warning'
+                    : row.status === 'approved'
+                      ? 'success'
+                      : 'info'
+                "
+              >
+                {{ t(`metric.status_${row.status}`) }}
+              </el-tag>
             </template>
-            <span v-else-if="row.review_note">{{ row.review_note }}</span>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-model:current-page="approvalPage.currentPage"
-        :page-size="approvalPage.pageSize"
-        :total="approvalPage.total"
-        layout="total, prev, pager, next"
-        @current-change="(p: number) => searchRequests(p)"
-      />
+          </el-table-column>
+          <el-table-column :label="t('metric.created_time')" width="160">
+            <template #default="{ row }">{{
+              (row.create_time ?? '').slice(0, 19).replace('T', ' ')
+            }}</template>
+          </el-table-column>
+          <el-table-column :label="t('common.operate')" width="140" fixed="right">
+            <template #default="{ row }">
+              <template v-if="row.status === 'pending' && approvalBox === 'pending'">
+                <el-button size="small" type="primary" @click="review(row, true)">
+                  {{ t('metric.approve') }}
+                </el-button>
+                <el-button size="small" @click="review(row, false)">
+                  {{ t('metric.reject') }}
+                </el-button>
+              </template>
+              <span v-else-if="row.review_note">{{ row.review_note }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="approvalPage.currentPage"
+          :page-size="approvalPage.pageSize"
+          :total="approvalPage.total"
+          layout="total, prev, pager, next"
+          @current-change="(p: number) => searchRequests(p)"
+        />
+      </div>
     </template>
 
     <!-- create / edit dialog -->
@@ -968,12 +980,39 @@ function payloadSummary(row: ChangeRequestRow): string {
 
 <style scoped lang="less">
 .metric {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   padding: 16px;
+
+  :deep(.ed-tabs) {
+    flex: none;
+  }
 
   .toolbar {
     display: flex;
+    flex: none;
     gap: 8px;
     margin-bottom: 12px;
+  }
+
+  // The table takes the remaining height so the pager can sit at the bottom
+  // of the page instead of floating right under the table.
+  .table-region {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .approval-region {
+    margin-top: 12px;
+  }
+
+  .pager {
+    display: flex;
+    flex: none;
+    justify-content: flex-end;
+    margin-top: 12px;
   }
 
   .missing-tag {
