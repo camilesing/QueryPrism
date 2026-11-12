@@ -1406,6 +1406,7 @@
     "promote_confirm": "Adopt this run's aggregates as the new baselines? Flagged results are adopted too.",
     "promoted": "{count} case baselines updated",
     "status": "Enabled",
+    "run_status": "Status",
     "status_passed": "Passed",
     "status_flagged": "Flagged",
     "status_baseline_captured": "Baseline captured",

@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onBeforeMount, onMounted, onUnmounted } from 'vue'
 import Menu from './Menu.vue'
 import custom_small from '@/assets/svg/logo-custom_small.svg'
 import Workspace from './Workspace.vue'
@@ -12,7 +12,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppearanceStoreWithOut } from '@/stores/appearance'
 import { useEmitt } from '@/utils/useEmitt'
 import { isMobile } from '@/utils/utils'
-import { onBeforeMount } from 'vue'
 
 const isPhone = computed(() => {
   return isMobile()
@@ -23,6 +22,7 @@ const collapseCopy = ref(false)
 const appearanceStore = useAppearanceStoreWithOut()
 let time: any
 onUnmounted(() => {
+  window.removeEventListener('resize', syncLayoutWidth)
   clearTimeout(time)
 })
 const loginBg = computed(() => {
@@ -63,6 +63,26 @@ onBeforeMount(() => {
     collapse.value = true
     collapseCopy.value = true
   }
+})
+
+// A 240px rail leaves too little room on small windows, so collapse it
+// automatically below the breakpoint and restore it when space returns. A
+// manual expand/collapse stays in effect until the next breakpoint crossing.
+const NARROW_BREAKPOINT = 900
+let autoCollapsed = false
+function syncLayoutWidth() {
+  const narrow = window.innerWidth < NARROW_BREAKPOINT
+  if (narrow && !collapse.value) {
+    autoCollapsed = true
+    handleCollapseChange(true)
+  } else if (!narrow && autoCollapsed) {
+    autoCollapsed = false
+    handleCollapseChange(false)
+  }
+}
+onMounted(() => {
+  window.addEventListener('resize', syncLayoutWidth)
+  syncLayoutWidth()
 })
 </script>
 

@@ -1406,6 +1406,7 @@
     "promote_confirm": "将该次运行的聚合结果采纳为新基准?被标记的结果也会被采纳。",
     "promoted": "已更新 {count} 个用例的基准",
     "status": "启用",
+    "run_status": "状态",
     "status_passed": "通过",
     "status_flagged": "已标记",
     "status_baseline_captured": "基准已采集",

@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus-secondary'
 import {
@@ -11,6 +11,13 @@ import {
 import { datasourceApi } from '@/api/datasource'
 
 const { t } = useI18n()
+
+// Dialog/drawer sizes are JS-driven (Element Plus takes them as props), so the
+// page also reacts to window resizes from a desktop layout.
+const isNarrow = ref(window.innerWidth < 768)
+const syncNarrow = () => {
+  isNarrow.value = window.innerWidth < 768
+}
 
 // --- cases ---------------------------------------------------------------
 const loading = ref(false)
@@ -220,6 +227,7 @@ const deltaText = (rc: RegressionRunCaseRow) => {
 }
 
 onMounted(() => {
+  window.addEventListener('resize', syncNarrow)
   datasourceApi
     .list()
     .then((res: any) => {
@@ -229,13 +237,17 @@ onMounted(() => {
   searchCases()
   searchRuns()
 })
+
+onUnmounted(() => {
+  window.removeEventListener('resize', syncNarrow)
+})
 </script>
 
 <template>
   <div class="page-container">
     <div class="toolbar">
       <h2 class="page-title">{{ t('regression.menu_title') }}</h2>
-      <div>
+      <el-space wrap class="toolbar-actions">
         <el-button type="primary" @click="openCreate">{{ t('regression.create_case') }}</el-button>
         <el-button type="warning" :loading="running" @click="runNow">
           {{ t('regression.run_now') }}
@@ -243,50 +255,58 @@ onMounted(() => {
         <el-button :loading="loading" @click="refreshAll">
           {{ t('regression.refresh') }}
         </el-button>
-      </div>
+      </el-space>
     </div>
     <p class="page-hint">{{ t('regression.hint') }}</p>
 
     <h3 class="section-title">{{ t('regression.cases') }}</h3>
-    <el-table v-loading="loading" :data="cases" border>
-      <el-table-column prop="name" :label="t('regression.case_name')" min-width="140" />
-      <el-table-column
-        prop="question"
-        :label="t('regression.question')"
-        min-width="200"
-        show-overflow-tooltip
-      />
-      <el-table-column :label="t('regression.datasource')" width="140">
-        <template #default="{ row }">{{ dsName(row.datasourceId) }}</template>
-      </el-table-column>
-      <el-table-column prop="tolerancePct" :label="t('regression.tolerance')" width="90" />
-      <el-table-column :label="t('regression.baseline')" width="200">
-        <template #default="{ row }">
-          <span v-if="row.baseline">
-            {{ t('regression.baseline_at', { time: formatDate(row.baseline.capturedAt) }) }}
-          </span>
-          <span v-else>{{ t('regression.no_baseline') }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('regression.status')" width="90">
-        <template #default="{ row }">
-          <el-switch :model-value="row.enabled" @change="toggleCase(row)" />
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('regression.operations')" width="140">
-        <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row)">{{
-            t('regression.edit')
-          }}</el-button>
-          <el-button link type="danger" @click="removeCase(row)">{{
-            t('regression.delete')
-          }}</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="table-scroll">
+      <el-table v-loading="loading" :data="cases" border class="data-table">
+        <el-table-column prop="name" :label="t('regression.case_name')" min-width="120" />
+        <el-table-column
+          prop="question"
+          :label="t('regression.question')"
+          min-width="220"
+          show-overflow-tooltip
+        />
+        <el-table-column :label="t('regression.datasource')" min-width="110" show-overflow-tooltip>
+          <template #default="{ row }">{{ dsName(row.datasourceId) }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="tolerancePct"
+          :label="t('regression.tolerance')"
+          width="88"
+          align="center"
+        />
+        <el-table-column :label="t('regression.baseline')" min-width="170">
+          <template #default="{ row }">
+            <span v-if="row.baseline">
+              {{ t('regression.baseline_at', { time: formatDate(row.baseline.capturedAt) }) }}
+            </span>
+            <span v-else>{{ t('regression.no_baseline') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('regression.status')" width="80" align="center">
+          <template #default="{ row }">
+            <el-switch :model-value="row.enabled" @change="toggleCase(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('regression.operations')" width="140">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openEdit(row)">{{
+              t('regression.edit')
+            }}</el-button>
+            <el-button link type="danger" @click="removeCase(row)">{{
+              t('regression.delete')
+            }}</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <el-pagination
       v-model:current-page="casePage.currentPage"
+      class="pagination"
       :page-size="casePage.pageSize"
       :total="casePage.total"
       layout="total, prev, pager, next"
@@ -294,56 +314,69 @@ onMounted(() => {
     />
 
     <h3 class="section-title">{{ t('regression.runs') }}</h3>
-    <el-table v-loading="runsLoading" :data="runs" border>
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column :label="t('regression.trigger')" width="110">
-        <template #default="{ row }">{{ t(`regression.trigger_${row.trigger}`) }}</template>
-      </el-table-column>
-      <el-table-column :label="t('regression.status')" width="100">
-        <template #default="{ row }">
-          <el-tag :type="row.status === 'done' ? 'success' : 'warning'" size="small">
-            {{ row.status === 'done' ? t('regression.run_done') : t('regression.run_running') }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('regression.summary')" width="220">
-        <template #default="{ row }">
-          <el-tag type="success" size="small"
-            >{{ t('regression.passed') }}: {{ row.passed }}</el-tag
-          >
-          <el-tag type="danger" size="small" class="tag-gap"
-            >{{ t('regression.flagged') }}: {{ row.flagged }}</el-tag
-          >
-          <el-tag type="info" size="small" class="tag-gap"
-            >{{ t('regression.errored') }}: {{ row.errored }}</el-tag
-          >
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('regression.started_at')" width="170">
-        <template #default="{ row }">{{ formatDate(row.startedAt) }}</template>
-      </el-table-column>
-      <el-table-column :label="t('regression.operations')" width="180">
-        <template #default="{ row }">
-          <el-button link type="primary" @click="openDetail(row)">{{
-            t('regression.detail')
-          }}</el-button>
-          <el-button v-if="row.status === 'done'" link type="warning" @click="promote(row)">
-            {{ t('regression.promote') }}
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="table-scroll">
+      <el-table v-loading="runsLoading" :data="runs" border class="data-table">
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column :label="t('regression.trigger')" width="110">
+          <template #default="{ row }">{{ t(`regression.trigger_${row.trigger}`) }}</template>
+        </el-table-column>
+        <el-table-column :label="t('regression.run_status')" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'done' ? 'success' : 'warning'" size="small">
+              {{ row.status === 'done' ? t('regression.run_done') : t('regression.run_running') }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('regression.summary')" min-width="230">
+          <template #default="{ row }">
+            <el-tag type="success" size="small"
+              >{{ t('regression.passed') }}: {{ row.passed }}</el-tag
+            >
+            <el-tag type="danger" size="small" class="tag-gap"
+              >{{ t('regression.flagged') }}: {{ row.flagged }}</el-tag
+            >
+            <el-tag type="info" size="small" class="tag-gap"
+              >{{ t('regression.errored') }}: {{ row.errored }}</el-tag
+            >
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('regression.started_at')" min-width="170">
+          <template #default="{ row }">{{ formatDate(row.startedAt) }}</template>
+        </el-table-column>
+        <el-table-column :label="t('regression.operations')" width="160">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openDetail(row)">{{
+              t('regression.detail')
+            }}</el-button>
+            <el-button v-if="row.status === 'done'" link type="warning" @click="promote(row)">
+              {{ t('regression.promote') }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <el-pagination
       v-model:current-page="runPage.currentPage"
+      class="pagination"
       :page-size="runPage.pageSize"
       :total="runPage.total"
       layout="total, prev, pager, next"
       @current-change="(p: number) => searchRuns(p)"
     />
 
-    <el-dialog v-model="dialog" :title="t('regression.create_case')" width="620px">
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
+    <el-dialog
+      v-model="dialog"
+      :title="t('regression.create_case')"
+      :width="isNarrow ? '92%' : '620px'"
+    >
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-width="120px"
+        :label-position="isNarrow ? 'top' : 'right'"
+      >
         <el-form-item :label="t('regression.datasource')" prop="datasource_id">
           <el-select v-model="form.datasource_id" style="width: 100%">
             <el-option v-for="d in datasources" :key="d.id" :value="d.id" :label="d.name" />
@@ -378,49 +411,60 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailDrawer" :title="t('regression.detail')" size="70%">
-      <el-table v-loading="detailLoading" :data="detailCases" border>
-        <el-table-column :label="t('regression.case_name')" min-width="120">
-          <template #default="{ row }">{{ row.case?.name ?? `#${row.caseId}` }}</template>
-        </el-table-column>
-        <el-table-column :label="t('regression.status')" width="130">
-          <template #default="{ row }">
-            <el-tag :type="statusTag(row.status)" size="small">{{
-              statusLabel(row.status)
-            }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('regression.row_count')" width="90">
-          <template #default="{ row }">{{ row.rowCount ?? '-' }}</template>
-        </el-table-column>
-        <el-table-column :label="t('regression.delta')" min-width="200">
-          <template #default="{ row }">{{ deltaText(row) }}</template>
-        </el-table-column>
-        <el-table-column :label="t('regression.reasons')" min-width="200">
-          <template #default="{ row }">
-            <el-tag
-              v-for="r in row.delta?.reasons ?? []"
-              :key="r"
-              type="danger"
-              size="small"
-              class="tag-gap"
-            >
-              {{ reasonLabel(r) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('regression.sql')" min-width="260">
-          <template #default="{ row }">
-            <el-tooltip v-if="row.sql" :content="row.sql" placement="top" :show-after="300">
-              <span class="sql-cell">{{ row.sql }}</span>
-            </el-tooltip>
-            <span v-else>-</span>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('regression.message')" min-width="160">
-          <template #default="{ row }">{{ row.message ?? '-' }}</template>
-        </el-table-column>
-      </el-table>
+    <el-drawer
+      v-model="detailDrawer"
+      :title="t('regression.detail')"
+      :size="isNarrow ? '100%' : '70%'"
+    >
+      <div class="table-scroll">
+        <el-table
+          v-loading="detailLoading"
+          :data="detailCases"
+          border
+          class="data-table detail-table"
+        >
+          <el-table-column :label="t('regression.case_name')" min-width="130">
+            <template #default="{ row }">{{ row.case?.name ?? `#${row.caseId}` }}</template>
+          </el-table-column>
+          <el-table-column :label="t('regression.run_status')" width="130">
+            <template #default="{ row }">
+              <el-tag :type="statusTag(row.status)" size="small">{{
+                statusLabel(row.status)
+              }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('regression.row_count')" width="90" align="right">
+            <template #default="{ row }">{{ row.rowCount ?? '-' }}</template>
+          </el-table-column>
+          <el-table-column :label="t('regression.delta')" min-width="200">
+            <template #default="{ row }">{{ deltaText(row) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('regression.reasons')" min-width="180">
+            <template #default="{ row }">
+              <el-tag
+                v-for="r in row.delta?.reasons ?? []"
+                :key="r"
+                type="danger"
+                size="small"
+                class="tag-gap"
+              >
+                {{ reasonLabel(r) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('regression.sql')" min-width="260">
+            <template #default="{ row }">
+              <el-tooltip v-if="row.sql" :content="row.sql" placement="top" :show-after="300">
+                <span class="sql-cell">{{ row.sql }}</span>
+              </el-tooltip>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('regression.message')" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.message ?? '-' }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-drawer>
   </div>
 </template>
@@ -433,19 +477,50 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 .page-title {
   margin: 0;
   font-size: 16px;
+  white-space: nowrap;
+}
+.toolbar-actions {
+  margin-left: auto;
 }
 .page-hint {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+  line-height: 1.6;
   margin: 8px 0 12px;
 }
 .section-title {
   margin: 20px 0 10px;
   font-size: 14px;
+}
+/* Element Plus tables shrink columns until they are unusable; give the table
+   its natural width and let this wrapper scroll on narrow viewports instead. */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+.data-table {
+  min-width: 940px;
+}
+/* The theme gives every button an 80px min-width; link buttons in table cells
+   only need their text width, otherwise "edit / delete" wrap onto two lines. */
+.table-scroll :deep(.ed-button.is-link) {
+  min-width: 0;
+}
+.detail-table {
+  min-width: 1150px;
+}
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 8px;
+  margin: 12px 0 0;
 }
 .tag-gap {
   margin-left: 4px;
@@ -459,5 +534,30 @@ onMounted(() => {
   vertical-align: middle;
   font-family: monospace;
   font-size: 12px;
+}
+@media (max-width: 768px) {
+  .page-container {
+    padding: 12px;
+  }
+  .toolbar {
+    align-items: flex-start;
+  }
+  .toolbar-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .toolbar-actions :deep(.el-space__item) {
+    flex: 1 1 auto;
+  }
+  .toolbar-actions :deep(.el-button) {
+    width: 100%;
+    margin-left: 0;
+  }
+  .pagination {
+    justify-content: center;
+  }
+  .section-title {
+    margin-top: 16px;
+  }
 }
 </style>
