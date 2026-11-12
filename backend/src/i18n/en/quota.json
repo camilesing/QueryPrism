@@ -1,8 +1,8 @@
 {
   "invalid_subject_type": "Unknown budget subject type: {{type}}",
-  "invalid_daily_limit": "The daily query limit must be a positive integer",
+  "invalid_daily_limit": "The daily LLM character limit must be a positive integer",
   "default_has_no_subject": "The workspace default budget has no subject id",
   "subject_id_required": "A subject id is required for this subject type",
-  "budget_not_found": "Query budget row not found",
-  "exceeded": "Daily query budget ({{limit}}) exhausted — try again tomorrow or ask an admin to raise it"
+  "budget_not_found": "LLM character budget row not found",
+  "exceeded": "Daily LLM character budget ({{limit}}) exhausted — try again tomorrow or ask an admin to raise it"
 }

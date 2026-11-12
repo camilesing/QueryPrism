@@ -1,7 +1,8 @@
 // Query budget admin API (MetaDataImprove M7). Workspace admins configure
-// per-subject daily query limits (workspace default / user / MCP integration /
-// embedded assistant) and watch today's usage. Enforcement itself lives in
-// ChatService.runPipeline via QuotaService.assertWithinBudget.
+// per-subject daily LLM character limits (workspace default / user / MCP
+// integration / embedded assistant) and watch today's usage. Enforcement
+// itself lives in ChatService's generator wrapper via
+// QuotaService.reserveChars/chargeChars.
 import {
   Body,
   Controller,
@@ -13,7 +14,7 @@ import {
   Put,
   UseGuards,
 } from '@nestjs/common';
-import { IsInt, IsIn, IsOptional, IsPositive, Min } from 'class-validator';
+import { IsInt, IsIn, IsOptional, IsPositive, Max, Min } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { WsAdminGuard } from '../auth/ws-admin.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -34,6 +35,7 @@ export class QueryBudgetUpsertDto {
 
   @IsInt()
   @IsPositive()
+  @Max(100_000_000)
   daily_limit!: number;
 }
 
@@ -53,7 +55,7 @@ export class QuotaController {
   @SystemLog({
     module: OperationModule.QUOTA,
     type: OperationType.UPDATE,
-    detail: '更新查询预算',
+    detail: '更新 LLM 字数预算',
   })
   upsert(
     @CurrentUser('oid') oid: number,
@@ -73,7 +75,7 @@ export class QuotaController {
   @SystemLog({
     module: OperationModule.QUOTA,
     type: OperationType.DELETE,
-    detail: '删除查询预算',
+    detail: '删除 LLM 字数预算',
   })
   remove(
     @CurrentUser('oid') oid: number,

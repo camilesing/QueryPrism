@@ -33,7 +33,7 @@ import { QuotaModule } from '../quota/quota.module';
     PermissionModule,
     TerminologyModule, // 3fd6fa86: keyword → synonym expansion in runCore
     SemanticModule, // MetaDataImprove M2: effective semantics in runCore
-    QuotaModule, // MetaDataImprove M7: daily query budget at pipeline entry
+    QuotaModule, // MetaDataImprove M7: per-call LLM character budget
   ],
   controllers: [ChatController],
   providers: [ChatService, SqlSafetyService],

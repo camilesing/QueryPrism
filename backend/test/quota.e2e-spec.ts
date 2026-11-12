@@ -1,9 +1,10 @@
-// Quota e2e (MetaDataImprove M7) — daily query budgets enforced at the chat
-// pipeline entry. Runs the full SSE pipeline with deterministic LLM/datasource
+// Quota e2e (MetaDataImprove M7) — daily LLM CHARACTER budgets charged per
+// generator call. Runs the full SSE pipeline with deterministic LLM/datasource
 // fakes (same pattern as chat.e2e-spec) but the REAL QuotaService + Prisma:
-// a workspace-default budget of 1 lets the first question through and fails
-// the second with the quota error frame, without touching the LLM fake's SQL
-// path (the record is created, then failed).
+// each generator call reserves its prompt characters before producing content.
+// A budget of 300 chars lets the first question (SQL prompt/output 100+50 and
+// chart prompt/output 100+50) through and fails the second at the entry check,
+// without touching the LLM fake's SQL path.
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -17,6 +18,12 @@ import type { LlmGenEvent } from './../src/llm/generator.service';
 import { SqlSafetyService } from './../src/chat/sql-safety.service';
 
 const TOKEN_HEADER = 'X-QUERYPRISM-TOKEN';
+/** Deterministic character accounting: every generator call reserves a
+ *  100-char prompt and then charges a 50-char output. A full question runs
+ *  generate_sql + generate_chart → 300 chars. */
+const PROMPT_CHARS = 100;
+const OUTPUT_CHARS = 50;
+const QUESTION_CHARS = 2 * (PROMPT_CHARS + OUTPUT_CHARS);
 
 interface ApiEnvelope<T = unknown> {
   success: boolean;
@@ -68,6 +75,17 @@ describe('Query quota (e2e)', () => {
         generateSql: () =>
           asyncFrom<LlmGenEvent>([
             {
+              type: 'messages',
+              messages: [
+                {
+                  type: 'system',
+                  queryprism_system: false,
+                  content: 'p'.repeat(PROMPT_CHARS),
+                },
+              ],
+            },
+            { type: 'content', delta: 'o'.repeat(OUTPUT_CHARS) },
+            {
               type: 'result',
               data: {
                 success: true,
@@ -80,6 +98,17 @@ describe('Query quota (e2e)', () => {
           ]),
         generateChart: () =>
           asyncFrom<LlmGenEvent>([
+            {
+              type: 'messages',
+              messages: [
+                {
+                  type: 'system',
+                  queryprism_system: false,
+                  content: 'c'.repeat(PROMPT_CHARS),
+                },
+              ],
+            },
+            { type: 'content', delta: 'o'.repeat(OUTPUT_CHARS) },
             {
               type: 'result',
               data: { chartType: 'table', config: { type: 'table' } },
@@ -151,9 +180,9 @@ describe('Query quota (e2e)', () => {
         oid: 1,
         subjectType: 'user',
         subjectId: quotaUid,
-        dailyLimit: 1,
+        dailyLimit: QUESTION_CHARS,
       },
-      update: { dailyLimit: 1 },
+      update: { dailyLimit: QUESTION_CHARS },
     });
   });
 
@@ -194,7 +223,7 @@ describe('Query quota (e2e)', () => {
     return res.text;
   }
 
-  it('first query passes, second exhausts the budget and fails the record', async () => {
+  it('first question passes, second exhausts the character budget', async () => {
     const first = await askQuestion();
     expect(first).toContain('"type":"sql"');
     expect(first).not.toContain('"type":"error"');
@@ -225,9 +254,10 @@ describe('Query quota (e2e)', () => {
     const own = rows.find(
       (r) => r.subject_type === 'user' && r.subject_id === quotaUid,
     );
-    expect(own?.daily_limit).toBe(1);
-    // Rejected attempts don't consume budget — only the accepted first query.
-    expect(own?.used_today).toBe(1);
+    expect(own?.daily_limit).toBe(QUESTION_CHARS);
+    // Rejected attempts don't consume budget — only the accepted first
+    // question (two generator calls × 150 chars).
+    expect(own?.used_today).toBe(QUESTION_CHARS);
     // A default row created and removed within this test cannot leak to
     // other suites (serial worker): create → visible → delete.
     await request(app.getHttpServer())
@@ -291,7 +321,47 @@ describe('Query quota (e2e)', () => {
           subjectId: quotaUid,
         },
       },
-      data: { dailyLimit: 1 },
+      data: { dailyLimit: QUESTION_CHARS },
+    });
+  });
+
+  it('an over-limit first prompt is rejected without consuming budget', async () => {
+    // Reset today's usage, then shrink the budget below one prompt (100 chars).
+    await prisma.queryUsageDaily.deleteMany({
+      where: { oid: 1, subjectType: 'user', subjectId: quotaUid },
+    });
+    await prisma.queryBudget.update({
+      where: {
+        oid_subjectType_subjectId: {
+          oid: 1,
+          subjectType: 'user',
+          subjectId: quotaUid,
+        },
+      },
+      data: { dailyLimit: 10 },
+    });
+
+    const res = await askQuestion();
+    expect(res).toContain('"type":"error"');
+    expect(res).toContain('预算');
+    expect(res).not.toContain('"type":"sql"');
+
+    // The conditional INSERT ... SELECT refused the 100-char prompt before
+    // the provider stream, so nothing was consumed (no usage row at all).
+    const usage = await prisma.queryUsageDaily.findFirst({
+      where: { oid: 1, subjectType: 'user', subjectId: quotaUid },
+    });
+    expect(usage).toBeNull();
+
+    await prisma.queryBudget.update({
+      where: {
+        oid_subjectType_subjectId: {
+          oid: 1,
+          subjectType: 'user',
+          subjectId: quotaUid,
+        },
+      },
+      data: { dailyLimit: QUESTION_CHARS },
     });
   });
 });

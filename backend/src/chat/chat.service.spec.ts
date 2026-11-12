@@ -185,6 +185,15 @@ function makeService() {
     }),
   };
 
+  // MetaDataImprove M7: no subject in unit context → budget checks skipped.
+  // Tests that exercise charging override currentSubject and assert these.
+  const quota = {
+    currentSubject: jest.fn().mockReturnValue(null),
+    assertUnderBudget: jest.fn().mockResolvedValue(undefined),
+    reserveChars: jest.fn().mockResolvedValue(undefined),
+    chargeChars: jest.fn().mockResolvedValue(undefined),
+  };
+
   // MetaDataImprove M2: no effective semantics by default (empty maps →
   // rule 2 never narrows; individual tests override per-case).
   const semanticService = {
@@ -212,11 +221,8 @@ function makeService() {
     { namingTemplateFor: jest.fn().mockResolvedValue('') } as never,
     audit as unknown as AuditService,
     config as unknown as ConfigService,
-    // MetaDataImprove M7: no subject in unit context → budget check skipped.
-    {
-      currentSubject: jest.fn().mockReturnValue(null),
-      assertWithinBudget: jest.fn().mockResolvedValue(undefined),
-    } as never,
+    // MetaDataImprove M7: no subject in unit context → budget checks skipped.
+    quota as never,
   );
   return {
     service,
@@ -230,6 +236,7 @@ function makeService() {
     audit,
     config,
     semanticService,
+    quota,
   };
 }
 
@@ -613,6 +620,43 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     expect(events.find((e) => e.type === 'sql-data')!.data).toEqual({
       content: 'execute-success',
     });
+  });
+
+  it('reserves prompt chars before the stream and charges content after', async () => {
+    const m = makeService();
+    happyMocks(m);
+    const subject = { type: 'user' as const, id: 7 };
+    m.quota.currentSubject.mockReturnValue(subject);
+    m.generatorService.generateSql.mockReturnValue(
+      asyncFrom<LlmGenEvent>([
+        {
+          type: 'messages',
+          messages: [
+            { type: 'system', queryprism_system: false, content: 'abcd' },
+          ],
+        },
+        // reasoning is NOT part of the character budget.
+        { type: 'reasoning', delta: 'thinking' },
+        { type: 'content', delta: 'xy' },
+        {
+          type: 'result',
+          data: {
+            success: true,
+            sql: 'SELECT * FROM users',
+            tables: ['users'],
+            chartType: 'bar',
+            brief: '查询用户列表',
+          },
+        },
+      ]),
+    );
+
+    await run(1, () => collect(m.service.runPipeline(1, '查询所有用户')));
+
+    // The 4-char prompt is reserved before the provider stream starts; the
+    // 2-char output is charged after it ends.
+    expect(m.quota.reserveChars).toHaveBeenCalledWith(1, subject, 4);
+    expect(m.quota.chargeChars).toHaveBeenCalledWith(1, subject, 2);
   });
 
   it('runs select_datasource when the chat has no bound datasource', async () => {

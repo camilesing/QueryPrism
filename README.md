@@ -13,7 +13,7 @@ An intelligent data-visualization chatbot — connect your databases, ask questi
 - 🔄 **Chart regeneration** — regenerate a chart with a different chart type
 - 🧭 **Semantic layer governance** — curated table/field meanings, metric calibers and data standards in 3 scopes with approval flow, external sync and API ingestion
 - 🧪 **Semantic regression suite** — standard questions re-run after governance approvals, DB-side row counts and sums compared against baselines; join fan-out and widened calibers are flagged before users see wrong numbers (`/set/regression`)
-- 🛡️ **Query budgets & result cache** — per-user / per-agent daily query limits, a row cap per execution, and an optional SQL result cache — agent traffic cannot blow up the bill (`/set/quota`)
+- 🛡️ **LLM character budgets & result cache** — per-user / per-agent daily LLM interaction character limits (prompt + output, not question counts), a row cap per execution, and an optional SQL result cache — agent traffic cannot blow up the bill (`/system/setting/quota`)
 
 ## Tech Stack
 

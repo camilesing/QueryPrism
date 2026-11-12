@@ -66,7 +66,7 @@ const ZH_CN: ChatMessages = {
   clarifyTooManyTables: (max) => `最多只能选择 ${max} 张表`,
   sqlSchemaInsufficient: '当前选定的表不足以回答该问题，请调整所选表后重试',
   quotaExceeded: (limit) =>
-    `今日查询预算（${limit} 次）已用完，请明天再试或联系管理员调整`,
+    `今日 LLM 交互字数预算（${limit} 字）已用完，请明天再试或联系管理员调整`,
 };
 
 const EN: ChatMessages = {
@@ -101,7 +101,7 @@ const EN: ChatMessages = {
   sqlSchemaInsufficient:
     'The selected tables cannot answer this question; adjust the selection and retry',
   quotaExceeded: (limit) =>
-    `Daily query budget (${limit}) exhausted — try again tomorrow or ask an admin to raise it`,
+    `Daily LLM interaction character budget (${limit}) exhausted — try again tomorrow or ask an admin to raise it`,
 };
 
 /** Resolve the message set for a language tag: 'zh-CN' → Chinese, anything

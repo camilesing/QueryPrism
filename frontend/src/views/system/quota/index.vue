@@ -29,8 +29,9 @@ const subjectLabel = (row: QueryBudgetRow) =>
   row.subject_type === 'default'
     ? t('quota.workspace_default')
     : `${typeLabel(row.subject_type)} #${row.subject_id}`
-const remaining = (row: QueryBudgetRow) =>
-  row.used_today == null ? '-' : Math.max(0, row.daily_limit - row.used_today)
+const formatCount = (n: number | null) => (n == null ? '-' : n.toLocaleString())
+const remaining = (row: QueryBudgetRow): number | null =>
+  row.used_today == null ? null : Math.max(0, row.daily_limit - row.used_today)
 
 // --- subject option sources ---------------------------------------------
 interface SubjectOption {
@@ -97,7 +98,7 @@ const form = reactive({
   id: null as number | null,
   subject_type: 'default' as BudgetSubjectType,
   subject_id: null as number | null,
-  daily_limit: 100,
+  daily_limit: 500000,
 })
 const rules = computed(() => ({
   daily_limit: [{ required: true, message: t('quota.limit_required'), trigger: 'blur' }],
@@ -111,7 +112,7 @@ const openCreate = () => {
   form.id = null
   form.subject_type = 'default'
   form.subject_id = null
-  form.daily_limit = 100
+  form.daily_limit = 500000
   dialog.value = true
 }
 const openEdit = (row: QueryBudgetRow) => {
@@ -170,7 +171,7 @@ const remove = (row: QueryBudgetRow) => {
         <el-button :loading="loading" @click="search">{{ t('quota.refresh') }}</el-button>
       </div>
     </div>
-    <p class="page-hint">{{ t('quota.hint') }}</p>
+    <el-alert class="quota-hint" :title="t('quota.hint')" type="info" :closable="false" show-icon />
 
     <el-table v-loading="loading" :data="list" border>
       <el-table-column :label="t('quota.subject')">
@@ -178,16 +179,14 @@ const remove = (row: QueryBudgetRow) => {
           <span>{{ subjectLabel(row) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="daily_limit" :label="t('quota.daily_limit')" width="140" />
-      <el-table-column :label="t('quota.used_today')" width="140">
-        <template #default="{ row }">
-          <span>{{ row.used_today == null ? '-' : row.used_today }}</span>
-        </template>
+      <el-table-column :label="t('quota.daily_limit')" width="160">
+        <template #default="{ row }">{{ formatCount(row.daily_limit) }}</template>
       </el-table-column>
-      <el-table-column :label="t('quota.remaining')" width="120">
-        <template #default="{ row }">
-          <span>{{ remaining(row) }}</span>
-        </template>
+      <el-table-column :label="t('quota.used_today')" width="160">
+        <template #default="{ row }">{{ formatCount(row.used_today) }}</template>
+      </el-table-column>
+      <el-table-column :label="t('quota.remaining')" width="160">
+        <template #default="{ row }">{{ formatCount(remaining(row)) }}</template>
       </el-table-column>
       <el-table-column :label="t('quota.operations')">
         <template #default="{ row }">
@@ -227,7 +226,10 @@ const remove = (row: QueryBudgetRow) => {
           </el-select>
         </el-form-item>
         <el-form-item :label="t('quota.daily_limit')" prop="daily_limit">
-          <el-input-number v-model="form.daily_limit" :min="1" :max="1000000" style="width: 100%" />
+          <div class="limit-row">
+            <el-input-number v-model="form.daily_limit" :min="1" :max="100000000" :step="1000" />
+            <span class="limit-unit">{{ t('quota.unit') }}</span>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -253,9 +255,21 @@ const remove = (row: QueryBudgetRow) => {
   margin: 0;
   font-size: 16px;
 }
-.page-hint {
+.quota-hint {
+  margin: 8px 0 12px;
+}
+.limit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.limit-row :deep(.el-input-number) {
+  flex: 1;
+}
+.limit-unit {
   color: var(--el-text-color-secondary);
   font-size: 12px;
-  margin: 8px 0 12px;
+  white-space: nowrap;
 }
 </style>

@@ -1,6 +1,8 @@
 // quota-policy unit tests — subject attribution and budget resolution are
 // the security/cost boundary of M7.
 import {
+  countChars,
+  countMessageChars,
   dayKey,
   effectiveSqlHash,
   normalizeSqlForHash,
@@ -83,6 +85,28 @@ describe('dayKey', () => {
   it('formats the local calendar day', () => {
     expect(dayKey(new Date(2026, 10, 9, 23, 59))).toBe('2026-11-09');
     expect(dayKey(new Date(2026, 0, 1))).toBe('2026-01-01');
+  });
+});
+
+describe('countChars / countMessageChars', () => {
+  it('counts Unicode code points, not UTF-16 units', () => {
+    expect(countChars('')).toBe(0);
+    expect(countChars('abc')).toBe(3);
+    expect(countChars('你好')).toBe(2);
+    // An emoji is one character to the user even though JS length is 2.
+    expect(countChars('a😀b')).toBe(3);
+    // Whitespace/newlines are part of the prompt.
+    expect(countChars('a b\nc')).toBe(5);
+  });
+
+  it('sums every serialized message content', () => {
+    expect(
+      countMessageChars([
+        { content: 'system' },
+        { content: '你好' },
+        { content: '' },
+      ]),
+    ).toBe(8);
   });
 });
 

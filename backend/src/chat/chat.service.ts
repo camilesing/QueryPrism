@@ -32,6 +32,7 @@ import type { QueryResult } from '../datasource/db-connector/db-connector.interf
 import { AiQuestionService } from '../llm/ai-question.service';
 import {
   GeneratorService,
+  type LlmGenEvent,
   type SerializedMessage,
 } from '../llm/generator.service';
 import type { TokenUsage } from '../llm/llm.service';
@@ -50,6 +51,7 @@ import {
 } from '../llm/ai-question';
 import { SqlSafetyService } from './sql-safety.service';
 import { QuotaExceededError, QuotaService } from '../quota/quota.service';
+import { countChars, countMessageChars } from '../quota/quota-policy';
 import { RowPermissionService } from '../permission/row-permission.service';
 import type { ChatSseEvent } from './chat-sse-event';
 import {
@@ -66,7 +68,7 @@ import { OperationModule, OperationType } from '../audit/operation.enum';
 import { RequestContext } from '../common/context/request-context';
 import { tr } from '../common/i18n/translate';
 import { detectQuestionLanguage } from '../common/utils/detect-language';
-import { chatMessages } from './chat-messages';
+import { chatMessages, type ChatMessages } from './chat-messages';
 import { TerminologyService } from '../terminology/terminology.service';
 import {
   SemanticService,
@@ -264,16 +266,14 @@ export class ChatService {
     yield { type: 'question', data: { question: content } };
 
     try {
-      // M7: charge the daily query budget BEFORE any LLM work — the only
-      // reliable chokepoint for agent traffic (page user / MCP integration /
-      // embedded assistant, resolved from the request context; regression
-      // runs pass free). A spent budget fails the record like any other
-      // pre-LLM failure; the MCP path surfaces the same text via the
-      // collector.
+      // M7: fail fast when today's LLM character budget is already spent.
+      // The actual charge happens per generator call (withQuotaCharge). A
+      // spent budget fails the record like any other pre-LLM failure; the MCP
+      // path surfaces the same text via the collector.
       const subject = this.quota.currentSubject();
       if (subject) {
         try {
-          await this.quota.assertWithinBudget(oid, subject);
+          await this.quota.assertUnderBudget(oid, subject);
         } catch (e) {
           if (e instanceof QuotaExceededError) {
             yield* this.fail(record.id, msgs.quotaExceeded(e.dailyLimit));
@@ -305,9 +305,8 @@ export class ChatService {
         let selContent = '';
         let selTokenUsage: TokenUsage | undefined;
         try {
-          for await (const ev of this.generatorService.selectDatasource(
-            ctx,
-            modelId,
+          for await (const ev of this.withQuotaCharge(
+            this.generatorService.selectDatasource(ctx, modelId),
           )) {
             if (ev.type === 'messages') {
               selMessages = ev.messages;
@@ -386,7 +385,7 @@ export class ChatService {
         modelId,
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = this.errorText(e, msgs);
       this.logger.error(`pipeline failed for chat #${chatId}: ${msg}`);
       yield { type: 'error', data: { content: msg } };
       await this.finishRecord(record.id, msg);
@@ -476,7 +475,7 @@ export class ChatService {
         modelId,
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = this.errorText(e, msgs);
       this.logger.error(`regenerate failed for chat #${chatId}: ${msg}`);
       yield { type: 'error', data: { content: msg } };
       await this.finishRecord(record.id, msg);
@@ -589,12 +588,12 @@ export class ChatService {
       }
     }
     // A resume is a second full NL2SQL run (keyword extraction, generate_sql,
-    // chart/filter calls), so it charges the daily budget like a fresh
-    // question — otherwise one counted question can drive max_rounds + 1 runs.
+    // chart/filter calls), so its generator calls charge the character budget
+    // like fresh ones; this entry check only fails fast when it is spent.
     const subject = this.quota.currentSubject();
     if (subject) {
       try {
-        await this.quota.assertWithinBudget(oid, subject);
+        await this.quota.assertUnderBudget(oid, subject);
       } catch (e) {
         if (e instanceof QuotaExceededError) {
           throw new BadRequestException(msgs.quotaExceeded(e.dailyLimit));
@@ -685,7 +684,7 @@ export class ChatService {
         },
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = this.errorText(e, msgs);
       this.logger.error(
         `clarify resume failed for record #${recordId}: ${msg}`,
       );
@@ -756,9 +755,8 @@ export class ChatService {
       let content = '';
       let tokenUsage: TokenUsage | undefined;
       try {
-        for await (const ev of this.generatorService.generateAnalysis(
-          ctx,
-          modelId,
+        for await (const ev of this.withQuotaCharge(
+          this.generatorService.generateAnalysis(ctx, modelId),
         )) {
           if (ev.type === 'messages') {
             preStream = ev.messages;
@@ -812,7 +810,7 @@ export class ChatService {
           ),
         );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = this.errorText(e, msgs);
       this.logger.error(`analysis failed for record #${rid}: ${msg}`);
       yield { type: 'error', data: { content: msg } };
       await this.finishRecord(rid, msg);
@@ -881,9 +879,8 @@ export class ChatService {
       let content = '';
       let tokenUsage: TokenUsage | undefined;
       try {
-        for await (const ev of this.generatorService.generatePredict(
-          ctx,
-          modelId,
+        for await (const ev of this.withQuotaCharge(
+          this.generatorService.generatePredict(ctx, modelId),
         )) {
           if (ev.type === 'messages') {
             preStream = ev.messages;
@@ -942,7 +939,7 @@ export class ChatService {
           ),
         );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = this.errorText(e, msgs);
       this.logger.error(`predict failed for record #${rid}: ${msg}`);
       yield { type: 'error', data: { content: msg } };
       await this.finishRecord(rid, msg);
@@ -1426,9 +1423,8 @@ export class ChatService {
     let sqlContent = '';
     let sqlTokenUsage: TokenUsage | undefined;
     try {
-      for await (const ev of this.generatorService.generateSql(
-        sqlCtx,
-        modelId,
+      for await (const ev of this.withQuotaCharge(
+        this.generatorService.generateSql(sqlCtx, modelId),
       )) {
         if (ev.type === 'messages') {
           sqlMessages = ev.messages;
@@ -1587,9 +1583,8 @@ export class ChatService {
         });
         let filterResult: FilterGenResult | null = null;
         try {
-          for await (const ev of this.generatorService.generateFilter(
-            filterCtx,
-            modelId,
+          for await (const ev of this.withQuotaCharge(
+            this.generatorService.generateFilter(filterCtx, modelId),
           )) {
             // The filter re-gen also emits messages/usage — fold
             // its reasoning into the same sqlLog, ignore its messages snapshot
@@ -1696,9 +1691,8 @@ export class ChatService {
     let chartContent = '';
     let chartTokenUsage: TokenUsage | undefined;
     try {
-      for await (const ev of this.generatorService.generateChart(
-        chartCtx,
-        modelId,
+      for await (const ev of this.withQuotaCharge(
+        this.generatorService.generateChart(chartCtx, modelId),
       )) {
         if (ev.type === 'messages') {
           chartMessages = ev.messages;
@@ -1794,6 +1788,58 @@ export class ChatService {
     yield { type: 'error', data: { content: message } };
     await this.finishRecord(recordId, message);
     yield { type: 'finish', data: {} };
+  }
+
+  /** Pipeline failure text: quota exhaustion is localized (the internal error
+   *  is English), everything else keeps its own message. */
+  private errorText(e: unknown, msgs: ChatMessages): string {
+    return e instanceof QuotaExceededError
+      ? msgs.quotaExceeded(e.dailyLimit)
+      : e instanceof Error
+        ? e.message
+        : String(e);
+  }
+
+  /** Charge one generator call against the subject's daily LLM character
+   *  budget. `GeneratorService.run` emits `messages` BEFORE starting the
+   *  provider stream, so the prompt is reserved before the LLM is called: an
+   *  over-budget prompt throws QuotaExceededError and the provider never runs.
+   *  Output `content` is added in `finally`; reasoning/thinking is NOT counted.
+   *  A client disconnect closes the stream early, so a generated-but-not-
+   *  consumed tail may go uncharged — acceptable for a cost guard. */
+  private async *withQuotaCharge(
+    gen: AsyncGenerator<LlmGenEvent>,
+  ): AsyncGenerator<LlmGenEvent> {
+    const subject = this.quota.currentSubject();
+    if (!subject) {
+      yield* gen;
+      return;
+    }
+    const oid = this.currentOid();
+    let reserved = false;
+    let outputChars = 0;
+    try {
+      for await (const ev of gen) {
+        if (ev.type === 'messages' && !reserved) {
+          reserved = true;
+          const chars = countMessageChars(ev.messages);
+          if (chars > 0) await this.quota.reserveChars(oid, subject, chars);
+        } else if (ev.type === 'content') {
+          outputChars += countChars(ev.delta);
+        }
+        yield ev;
+      }
+    } finally {
+      if (outputChars > 0) {
+        try {
+          await this.quota.chargeChars(oid, subject, outputChars);
+        } catch (e) {
+          this.logger.warn(
+            `quota output charge failed: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
   }
 
   /** Attach the actor-effective table meaning to clarify candidates. Reuses
@@ -2362,9 +2408,8 @@ export class ChatService {
       let reasoning = '';
       let tokenUsage: TokenUsage | undefined;
       try {
-        for await (const ev of this.generatorService.generateGuessQuestion(
-          ctx,
-          undefined,
+        for await (const ev of this.withQuotaCharge(
+          this.generatorService.generateGuessQuestion(ctx, undefined),
         )) {
           if (ev.type === 'messages') {
             preStream = ev.messages;
@@ -2412,7 +2457,14 @@ export class ChatService {
       };
       yield { type: 'finish', data: {} };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg =
+        e instanceof QuotaExceededError
+          ? chatMessages(this.detectLang(record.question)).quotaExceeded(
+              e.dailyLimit,
+            )
+          : e instanceof Error
+            ? e.message
+            : String(e);
       this.logger.error(
         `recommend_questions failed for record #${rid}: ${msg}`,
       );
@@ -2562,13 +2614,19 @@ export class ChatService {
       lang,
     });
     let guess: GuessResult | null = null;
-    for await (const ev of this.generatorService.generateGuessQuestion(
-      ctx,
-      undefined,
-    )) {
-      if (ev.type === 'result') {
-        guess = (ev.data as GuessResult | null) ?? null;
+    try {
+      for await (const ev of this.withQuotaCharge(
+        this.generatorService.generateGuessQuestion(ctx, undefined),
+      )) {
+        if (ev.type === 'result') {
+          guess = (ev.data as GuessResult | null) ?? null;
+        }
       }
+    } catch (e) {
+      // The cache warmer is optional: a spent budget is a normal skip, not an
+      // error worth logging on every successful question.
+      if (e instanceof QuotaExceededError) return;
+      throw e;
     }
     if (guess && guess.questions.length > 0) {
       await this.prisma.chat.update({
@@ -2710,9 +2768,8 @@ export class ChatService {
       let reasoning = '';
       let messages: SerializedMessage[] | undefined;
       let tokenUsage: TokenUsage | undefined;
-      for await (const ev of this.generatorService.extractKeywords(
-        ctx,
-        modelId,
+      for await (const ev of this.withQuotaCharge(
+        this.generatorService.extractKeywords(ctx, modelId),
       )) {
         if (ev.type === 'messages') messages = ev.messages;
         else if (ev.type === 'reasoning') reasoning += ev.delta;
@@ -2734,6 +2791,9 @@ export class ChatService {
       }
       return answer;
     } catch (e) {
+      // Quota exhaustion must reach the top-level catch (localized there);
+      // degrading it to "use the raw question" would just burn another call.
+      if (e instanceof QuotaExceededError) throw e;
       this.logger.warn(
         `keyword extraction failed, recalling with the raw question: ${e instanceof Error ? e.message : String(e)}`,
       );

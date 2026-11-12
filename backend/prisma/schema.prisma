@@ -897,17 +897,18 @@ model RegressionRunCase {
   @@index([caseId])
 }
 
-// ============================== MetaDataImprove M7: 查询预算与配额 ==============================
+// ============================== MetaDataImprove M7: LLM 字数预算 ==============================
 
-// 查询预算：按主体的每日查询上限。解析顺序 subject 行 > 'default' 行 > 不限。
+// LLM 字数预算：按主体的每日 LLM 交互字符数上限（输入提示词 + 输出 content，
+// 不含 reasoning / embedding）。解析顺序 subject 行 > 'default' 行 > 不限。
 // agent（MCP 集成 / embedded 助手）在查询层统一管控——下游 agent 管不住，
-// 所以预算检查收敛在 chat 流水线入口。
+// 所以预算检查收敛在 chat 流水线的每个 generator 调用上。
 model QueryBudget {
   id          Int      @id @default(autoincrement())
   oid         Int
   subjectType String // default | user | mcp_integration | assistant
-  subjectId   Int? // 仅 default 为 null
-  dailyLimit  Int // 每日查询上限
+  subjectId   Int? // 仅 default 为 0（NULL 会逃逸唯一约束）
+  dailyLimit  Int // 每日 LLM 交互字数上限（字符数）
   createBy    Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -916,15 +917,15 @@ model QueryBudget {
   @@index([oid])
 }
 
-// 每主体每日查询计数（自然日，服务器本地时区）。check-then-increment 在事务
-// 内执行，并发下轻微超计可接受（成本管控目的，非精确计量）。
+// 每主体每日 LLM 交互字符计数（自然日，服务器本地时区）。输入在 LLM 调用前
+// 原子预扣（不超过上限才写入），输出在流结束后补扣；并发下不会超扣输入。
 model QueryUsageDaily {
   id          Int      @id @default(autoincrement())
   oid         Int
   day         String // 'YYYY-MM-DD'
   subjectType String
   subjectId   Int
-  queries     Int      @default(0)
+  llmChars    Int      @default(0)
   updatedAt   DateTime @updatedAt
 
   @@unique([oid, day, subjectType, subjectId])

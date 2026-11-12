@@ -1,8 +1,9 @@
 // Pure query-quota policy (MetaDataImprove M7) — no Nest/Prisma imports,
-// unit-testable. Budgets are enforced at the chat pipeline entry because the
-// agents downstream (MCP integrations, embedded assistants) cannot be trusted
-// to self-limit: one agent plan easily asks twenty questions, each a full
-// NL2SQL pipeline + datasource execution.
+// unit-testable. Budgets are daily LLM interaction CHARACTER counts (prompt +
+// output content, not reasoning) and are charged at every generator call
+// because the agents downstream (MCP integrations, embedded assistants) cannot
+// be trusted to self-limit: one agent plan easily asks twenty questions, each a
+// full NL2SQL pipeline + datasource execution.
 import { createHash } from 'crypto';
 import type { RequestContextData } from '../common/context/request-context';
 
@@ -16,8 +17,8 @@ export const BUDGET_SUBJECT_TYPES = [
 ] as const;
 export type BudgetSubjectType = (typeof BUDGET_SUBJECT_TYPES)[number];
 
-/** Who is spending query budget. 'regression' never counts — the regression
- * runner executes dozens of standard questions per run on purpose. */
+/** Who is spending LLM character budget. 'regression' never counts — the
+ * regression runner executes dozens of standard questions per run on purpose. */
 export interface QuerySubject {
   type: 'user' | 'mcp_integration' | 'assistant' | 'regression';
   id: number | null;
@@ -47,8 +48,8 @@ export interface BudgetRowLike {
   dailyLimit: number;
 }
 
-/** Effective daily limit for a subject: its own row > the workspace default
- *  row (matched by type — its subjectId is the 0 sentinel) > null (=
+/** Effective daily character limit for a subject: its own row > the workspace
+ *  default row (matched by type — its subjectId is the 0 sentinel) > null (=
  *  unlimited). Regression never resolves a limit. */
 export function pickDailyLimit(
   rows: BudgetRowLike[],
@@ -69,6 +70,21 @@ export function dayKey(now: Date = new Date()): string {
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   return `${now.getFullYear()}-${m}-${d}`;
+}
+
+/** Count characters the way a user reads them: Unicode code points, so a
+ *  Chinese character / emoji counts as 1 (JS `.length` would count an emoji as
+ *  2 UTF-16 units). Whitespace and newlines sent to the model are counted
+ *  too — they are part of the prompt. */
+export function countChars(text: string): number {
+  return Array.from(text).length;
+}
+
+/** Total characters of a serialized prompt (system + history + task). */
+export function countMessageChars(
+  messages: ReadonlyArray<{ content: string }>,
+): number {
+  return messages.reduce((sum, m) => sum + countChars(m.content), 0);
 }
 
 /** Normalize SQL text for cache hashing: collapse whitespace RUNS OUTSIDE
