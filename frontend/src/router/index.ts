@@ -160,11 +160,12 @@ export const routes = [
         component: Regression,
         meta: { title: 'regression.menu_title' },
       },
+      // 旧地址兼容：查询预算已收进系统管理「系统设置」
       {
         path: '/set/quota',
-        name: 'quota',
-        component: Quota,
-        meta: { title: 'quota.menu_title' },
+        name: 'quota-legacy',
+        redirect: '/system/setting/quota',
+        hidden: true,
       },
     ],
   },
@@ -250,7 +251,7 @@ export const routes = [
       {
         path: 'setting',
         meta: { title: 'system.system_settings', iconActive: 'set', iconDeActive: 'noSet' },
-        redirect: 'system_/appearance',
+        redirect: '/system/setting/appearance',
         name: 'setting',
         children: [
           {
@@ -270,6 +271,12 @@ export const routes = [
             name: 'variables',
             component: Variables,
             meta: { title: 'variables.system_variables' },
+          },
+          {
+            path: 'quota',
+            name: 'quota',
+            component: Quota,
+            meta: { title: 'quota.menu_title' },
           },
         ],
       },
