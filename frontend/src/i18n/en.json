@@ -1271,7 +1271,20 @@
     "tencent_cloud": "Tencent Cloud",
     "volcano_engine": "Volcano Engine",
     "minimax": "MiniMax",
-    "generic_openai": "Generic OpenAI"
+    "generic_openai": "Generic OpenAI",
+    "zhipu_glm": "Zhipu GLM",
+    "anthropic": "Anthropic (Claude)",
+    "xai": "xAI (Grok)",
+    "groq": "Groq",
+    "mistral": "Mistral AI",
+    "ollama": "Ollama (Local)",
+    "perplexity": "Perplexity",
+    "together": "Together AI",
+    "fireworks": "Fireworks AI",
+    "cohere": "Cohere",
+    "deepinfra": "DeepInfra",
+    "friendli": "FriendliAI",
+    "novita": "Novita AI"
   },
   "modelType": {
     "llm": "Large Language Model"
