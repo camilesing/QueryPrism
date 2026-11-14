@@ -24,8 +24,9 @@ LangChain 框架层已内置大量供应商的原生集成：
 ## 已确认的决策
 
 1. **范围**：框架全量约 30 个 chat 供应商中，接入凭 `{api_key, api_domain}` 单 key
-   表单即可完成鉴权的全部供应商（25 个页面条目，19 种原生 protocol）。
-2. **存量供应商**：LangChain 有原生类的（百炼/Kimi/MiniMax/DeepSeek/Gemini），新建
+   表单即可完成鉴权的全部供应商（25 个页面条目，17 种原生 protocol；执行期修订：
+   MiniMax 除外，见 protocol 表 14 的说明）。
+2. **存量供应商**：LangChain 有原生类的（百炼/Kimi/DeepSeek/Gemini），新建
    模型行走原生类；存量 `AiModel` 行 protocol 仍为 1，继续走原 OpenAI 兼容路径，
    不迁移、不受影响。
 3. **实现方案**：方案 A —— 扩展现有双端注册表（前端 `supplier.ts` + 后端新增
@@ -50,7 +51,7 @@ LangChain 框架层已内置大量供应商的原生集成：
 | 11 | fireworks | `ChatFireworks` |
 | 12 | cohere | `ChatCohere` |
 | 13 | moonshot（Kimi） | `ChatMoonshot` |
-| 14 | minimax | `ChatMinimax` |
+| 14 | ~~minimax~~（保留） | 不注册 — ChatMinimax 硬编码国内 `api.minimax.chat` 旧端点且强制 groupId，与国际站 `api.minimax.io`（页面现供的 OpenAI 兼容端点）不是同一服务；MiniMax 保留 protocol 1 |
 | 15 | tongyi（阿里百炼） | `ChatAlibabaTongyi` |
 | 16 | perplexity | `ChatPerplexity` |
 | 17 | together | `ChatTogetherAI` |

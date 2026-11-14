@@ -12,6 +12,7 @@
 - 📝 对话历史 - 保存最近20条对话记录
 - 🔄 图表重生成 - 支持重新生成不同类型的图表
 - 🧭 语义层治理 - 表/字段业务含义、指标口径与数据标准,三层级作用域 + 审批流,支持外部同步与 API 录入
+- 🧠 20+ 大模型接入 - LangChain 原生集成(OpenAI、智谱GLM、Claude、Grok、Gemini、DeepSeek、Kimi、通义千问、Ollama、Groq、Mistral 等),另支持任意 OpenAI 兼容端点
 - 🧪 语义回归测试 - 治理审批通过后自动重跑标准问题,用数据库端行数与数值汇总对比基准;join 扇出与口径放宽在用户看到错误数字之前被标记(`/set/regression`)
 - 🛡️ LLM 字数预算与结果缓存 - 按用户/Agent 的每日 LLM 交互字数上限（输入提示词 + 输出内容，不是提问次数）、单次执行行数上限、可选的 SQL 结果缓存——Agent 流量打不爆账单(`/system/setting/quota`)
 
