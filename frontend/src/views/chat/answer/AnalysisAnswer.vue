@@ -168,10 +168,17 @@ const sendMessage = async () => {
                 emits('error', currentRecord.id)
                 break
               case 'analysis-result':
-                analysis_answer += data.content
-                analysis_answer_thinking += data.reasoning_content
-                _currentChat.value.records[index.value].analysis = analysis_answer
-                _currentChat.value.records[index.value].analysis_thinking = analysis_answer_thinking
+                // reasoning/content events each carry only their own field;
+                // appending the missing one would concatenate literal "undefined"
+                if (data.content) {
+                  analysis_answer += data.content
+                  _currentChat.value.records[index.value].analysis = analysis_answer
+                }
+                if (data.reasoning_content) {
+                  analysis_answer_thinking += data.reasoning_content
+                  _currentChat.value.records[index.value].analysis_thinking =
+                    analysis_answer_thinking
+                }
                 break
               case 'analysis_finish':
                 emits('finish', currentRecord.id)

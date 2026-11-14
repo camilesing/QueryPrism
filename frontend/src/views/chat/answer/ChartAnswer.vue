@@ -180,8 +180,12 @@ async function consumeChatStream(
               emits('error', currentRecord.id)
               break
             case 'sql-result':
-              sql_answer += data.reasoning_content
-              _currentChat.value.records[index.value].sql_answer = sql_answer
+              // content-only events carry no reasoning_content (and vice versa);
+              // appending the missing field would concatenate literal "undefined"
+              if (data.reasoning_content) {
+                sql_answer += data.reasoning_content
+                _currentChat.value.records[index.value].sql_answer = sql_answer
+              }
               break
             case 'sql':
               _currentChat.value.records[index.value].sql = data.content
@@ -190,8 +194,10 @@ async function consumeChatStream(
               getChatData(_currentChat.value.records[index.value].id)
               break
             case 'chart-result':
-              chart_answer += data.reasoning_content
-              _currentChat.value.records[index.value].chart_answer = chart_answer
+              if (data.reasoning_content) {
+                chart_answer += data.reasoning_content
+                _currentChat.value.records[index.value].chart_answer = chart_answer
+              }
               break
             case 'chart':
               _currentChat.value.records[index.value].chart = data.content

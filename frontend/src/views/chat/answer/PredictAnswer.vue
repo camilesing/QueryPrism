@@ -172,10 +172,16 @@ const sendMessage = async () => {
                 emits('error', currentRecord.id)
                 break
               case 'predict-result':
-                predict_answer += data.reasoning_content
-                predict_content += data.content
-                _currentChat.value.records[index.value].predict = predict_answer
-                _currentChat.value.records[index.value].predict_content = predict_content
+                // reasoning/content events each carry only their own field;
+                // appending the missing one would concatenate literal "undefined"
+                if (data.reasoning_content) {
+                  predict_answer += data.reasoning_content
+                  _currentChat.value.records[index.value].predict = predict_answer
+                }
+                if (data.content) {
+                  predict_content += data.content
+                  _currentChat.value.records[index.value].predict_content = predict_content
+                }
                 break
               case 'predict-failed':
                 emits('error', currentRecord.id)
