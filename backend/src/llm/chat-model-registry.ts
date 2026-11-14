@@ -11,6 +11,11 @@
 //  - iFlytek Xinghuo: ChatIflytekXinghuo needs appid+apiKey+apiSecret — same
 //    story; stays on protocol 1.
 //  - Baidu Qianfan: no native class in @langchain/community v1 — protocol 1.
+//  - MiniMax: ChatMinimax hardcodes the legacy China endpoint
+//    (api.minimax.chat/v1/text/chatcompletion_pro) and requires a groupId —
+//    NOT the same service as the international OpenAI-compatible
+//    api.minimax.io the admin page offers. Stays on protocol 1; protocol id
+//    14 is reserved if a native class for the Intl endpoint ever lands.
 //  - Bedrock/VertexAI/watsonx need cloud credential chains; llama_cpp/webllm
 //    run in-process; arcjet/portkey/premai are gateway wrappers with extra
 //    required config. None fit the {api_key, api_domain} form — unsupported.
@@ -27,17 +32,14 @@
 // google-genai (baseUrl), xai (baseURL), groq (baseUrl), mistral (serverURL),
 // ollama (baseUrl), deepseek/fireworks (configuration.baseURL — OpenAI-
 // derived), friendli (baseUrl), tongyi (region derived from the domain);
-// IGNORED for zhipuai/cohere/moonshot/minimax/perplexity/together/deepinfra/
-// novita (they hardcode their official endpoint; together/novita even delete
-// a user-passed configuration) — for those, api_domain is stored for form
+// IGNORED for zhipuai/cohere/moonshot/perplexity/together/deepinfra/novita
+// (they hardcode their official endpoint; together/novita even delete a
+// user-passed configuration) — for those, api_domain is stored for form
 // display only.
 //
-// ChatMinimax additionally requires a groupId: read from the stored `config`
-// advanced-parameter row `minimax_group_id` (fallback: MINIMAX_GROUP_ID env,
-// the class's own default) — the admin form prefills that key for MiniMax.
-//
 // `streaming: true` is passed only where the class input declares the field
-// (zhipuai/moonshot/minimax/perplexity read it into their request payload);
+// (zhipuai/moonshot/perplexity read it into their request payload; the
+// OpenAI-derived classes share BaseChatOpenAI's streaming flag);
 // everywhere else BaseChatModel.stream() streams on demand regardless.
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
@@ -50,7 +52,6 @@ import { ChatFireworks } from '@langchain/fireworks';
 import { ChatCohere } from '@langchain/cohere';
 import { ChatZhipuAI } from '@langchain/community/chat_models/zhipuai';
 import { ChatMoonshot } from '@langchain/community/chat_models/moonshot';
-import { ChatMinimax } from '@langchain/community/chat_models/minimax';
 import { ChatAlibabaTongyi } from '@langchain/community/chat_models/alibaba_tongyi';
 import { ChatPerplexity } from '@langchain/community/chat_models/perplexity';
 import { ChatTogetherAI } from '@langchain/community/chat_models/togetherai';
@@ -64,17 +65,6 @@ export type ChatModelFactory = (model: AiModel, apiKey: string) => ChatLike;
 
 /** `baseModel || name` — the same precedence getChatModel always used. */
 const nameOf = (m: AiModel): string => m.baseModel || m.name;
-
-/** Read one advanced-parameter value from the stored `config` JSON — the
- *  frontend persists the form's config_list rows as [{key,name,val}]. */
-const configValue = (m: AiModel, key: string): string | undefined => {
-  if (!Array.isArray(m.config)) return undefined;
-  const hit = (m.config as Array<{ key?: string; val?: unknown }>).find(
-    (r) => r && r.key === key,
-  );
-  const v = hit?.val;
-  return v !== undefined && v !== null && `${v}` !== '' ? `${v}` : undefined;
-};
 
 /** Derive the DashScope region from the stored api_domain (custom gateways
  *  fall back to 'china' — the Tongyi class has no raw-URL override). */
@@ -153,19 +143,11 @@ export const CHAT_MODEL_FACTORIES: Record<string, ChatModelFactory> = {
       model: nameOf(m) as never,
       streaming: true,
     }) as unknown as ChatLike,
-  '14': (m, apiKey) =>
-    new ChatMinimax({
-      apiKey,
-      model: nameOf(m) as never,
-      ...(configValue(m, 'minimax_group_id')
-        ? { minimaxGroupId: configValue(m, 'minimax_group_id') }
-        : {}),
-      streaming: true,
-    }) as unknown as ChatLike,
+  // '14' reserved for MiniMax — see the limitations note above.
   '15': (m, apiKey) =>
     new ChatAlibabaTongyi({
       alibabaApiKey: apiKey,
-      model: nameOf(m) as never,
+      model: nameOf(m),
       region: tongyiRegion(m),
     }) as unknown as ChatLike,
   '16': (m, apiKey) =>

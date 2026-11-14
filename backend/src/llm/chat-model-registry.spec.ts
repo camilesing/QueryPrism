@@ -5,10 +5,7 @@
 import { ChatZhipuAI } from '@langchain/community/chat_models/zhipuai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import type { AiModel } from '@prisma/client';
-import {
-  CHAT_MODEL_FACTORIES,
-  type ChatModelFactory,
-} from './chat-model-registry';
+import { CHAT_MODEL_FACTORIES } from './chat-model-registry';
 
 function row(over: Partial<AiModel> = {}): AiModel {
   return {
@@ -30,10 +27,11 @@ function row(over: Partial<AiModel> = {}): AiModel {
 }
 
 describe('CHAT_MODEL_FACTORIES', () => {
-  it('registers exactly the 18 native protocol ids (3..20)', () => {
-    expect(Object.keys(CHAT_MODEL_FACTORIES).sort((a, b) => +a - +b)).toEqual(
-      Array.from({ length: 18 }, (_, i) => String(i + 3)),
-    );
+  it('registers exactly the 17 native protocol ids (3..13, 15..20)', () => {
+    expect(Object.keys(CHAT_MODEL_FACTORIES).sort((a, b) => +a - +b)).toEqual([
+      ...Array.from({ length: 11 }, (_, i) => String(i + 3)),
+      ...Array.from({ length: 6 }, (_, i) => String(i + 15)),
+    ]);
   });
 
   it.each([
@@ -48,9 +46,8 @@ describe('CHAT_MODEL_FACTORIES', () => {
     ['11', 'ChatFireworks'],
     ['12', 'ChatCohere'],
     ['13', 'ChatMoonshot'],
-    // '14' (ChatMinimax) is covered by its own test below — the class throws
-    // at construction without a groupId (or MINIMAX_GROUP_ID env), so a bare
-    // row() can never instantiate it.
+    // no '14' — reserved for MiniMax (native class targets the legacy China
+    // endpoint + requires groupId; the admin page stays on protocol 1)
     ['15', 'ChatAlibabaTongyi'],
     ['16', 'ChatPerplexity'],
     ['17', 'ChatTogetherAI'],
@@ -58,14 +55,14 @@ describe('CHAT_MODEL_FACTORIES', () => {
     ['19', 'ChatFriendli'],
     ['20', 'ChatNovitaAI'],
   ] as [string, string][])('protocol %s → %s', (protocol, className) => {
-    const factory = CHAT_MODEL_FACTORIES[protocol] as ChatModelFactory;
+    const factory = CHAT_MODEL_FACTORIES[protocol];
     expect(factory).toBeDefined();
     const chat = factory(row({ protocol }), 'sk-test');
     expect(chat.constructor.name).toBe(className);
   });
 
   it('prefers baseModel over name for the model id', () => {
-    const factory = CHAT_MODEL_FACTORIES['3'] as ChatModelFactory;
+    const factory = CHAT_MODEL_FACTORIES['3'];
     const chat = factory(
       row({ baseModel: 'glm-4.6', name: '我的GLM' }),
       'sk-test',
@@ -74,7 +71,7 @@ describe('CHAT_MODEL_FACTORIES', () => {
   });
 
   it('passes apiDomain through to the native URL override (google-genai)', () => {
-    const factory = CHAT_MODEL_FACTORIES['5'] as ChatModelFactory;
+    const factory = CHAT_MODEL_FACTORIES['5'];
     const chat = factory(
       row({ apiDomain: 'https://gemini-proxy.internal/v1beta' }),
       'sk-test',
@@ -82,23 +79,12 @@ describe('CHAT_MODEL_FACTORIES', () => {
     expect(chat.baseUrl).toBe('https://gemini-proxy.internal/v1beta');
   });
 
-  it('reads minimax_group_id from the stored config rows (ChatMinimax throws without it)', () => {
-    const factory = CHAT_MODEL_FACTORIES['14'] as ChatModelFactory;
-    const withGroup = factory(
-      row({ config: [{ key: 'minimax_group_id', val: '1234567890' }] }),
-      'sk-test',
-    ) as unknown as { minimaxGroupId?: string };
-    expect(withGroup.constructor.name).toBe('ChatMinimax');
-    expect(withGroup.minimaxGroupId).toBe('1234567890');
-    // Without the config row (and no env) the native class fails loud —
-    // that error surfaces at chat time with an actionable message.
-    expect(() =>
-      factory(row({ config: [{ key: 'temperature', val: 0.7 }] }), 'sk-test'),
-    ).toThrow('Minimax GroupID not found');
+  it('reserves protocol 14 (MiniMax) — not registered', () => {
+    expect(CHAT_MODEL_FACTORIES['14']).toBeUndefined();
   });
 
   it('maps the DashScope domain to the tongyi region', () => {
-    const factory = CHAT_MODEL_FACTORIES['15'] as ChatModelFactory;
+    const factory = CHAT_MODEL_FACTORIES['15'];
     const cn = factory(row(), 'sk') as unknown as { region: string };
     const intl = factory(
       row({ apiDomain: 'https://dashscope-intl.aliyuncs.com' }),
