@@ -6,7 +6,7 @@ import icon_form_outlined from '@/assets/svg/icon_form_outlined.svg'
 import icon_chat_outlined from '@/assets/svg/icon_new-chat_outlined.svg'
 import { computed, ref, unref } from 'vue'
 import { ClickOutside as vClickOutside } from 'element-plus-secondary'
-import { dsTypeWithImg } from './js/ds-type'
+import { dsTypeImg } from './js/ds-type'
 import edit from '@/assets/svg/icon_edit_outlined.svg'
 import icon_recommended_problem from '@/assets/svg/icon_recommended_problem.svg'
 import { datasourceApi } from '@/api/datasource.ts'
@@ -40,7 +40,7 @@ const emits = defineEmits([
   'endChecking',
 ])
 const icon = computed(() => {
-  return (dsTypeWithImg.find((ele) => props.type === ele.type) || {}).img
+  return dsTypeImg(props.type)
 })
 const handleEdit = () => {
   emits('edit')

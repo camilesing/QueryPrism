@@ -2,6 +2,7 @@ import mysql_ds from '@/assets/datasource/icon_mysql.png'
 import excel from '@/assets/datasource/icon_excel.png'
 import oracle from '@/assets/datasource/icon_oracle.png'
 import pg from '@/assets/datasource/icon_PostgreSQL.png'
+import sqlite from '@/assets/datasource/icon_sqlite.png'
 import sqlServer from '@/assets/datasource/icon_SQL_Server.png'
 import ck from '@/assets/datasource/icon_ck.png'
 import dm from '@/assets/datasource/icon_dm.png'
@@ -47,3 +48,16 @@ export const dsTypeWithImg = [
 ]
 
 export const haveSchema = ['sqlServer', 'pg', 'oracle', 'dm', 'redshift', 'kingbase']
+
+// Icon lookup for EXISTING datasource rows (list cards, chat header, embedded
+// cards). A superset of dsTypeWithImg: backend-only types — `sqlite` (demo
+// connector) and the legacy `postgresql` alias — must still render an icon,
+// but stay out of the creation picker (dsTypeWithImg) on purpose.
+export const dsTypeImgMap: Record<string, string> = {
+  ...Object.fromEntries(dsTypeWithImg.map((ele) => [ele.type, ele.img])),
+  sqlite,
+  postgresql: pg,
+}
+
+export const dsTypeImg = (type: string | undefined): string | undefined =>
+  type ? dsTypeImgMap[type] : undefined

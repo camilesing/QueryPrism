@@ -3,7 +3,7 @@ import icon_form_outlined from '@/assets/svg/icon_form_outlined.svg'
 import icon_personal_privacy_outlined from '@/assets/embedded/icon_personal-privacy_outlined.svg'
 import icon_community_tab_outlined from '@/assets/embedded/icon_community-tab_outlined.svg'
 import { computed } from 'vue'
-import { dsTypeWithImg } from '@/views/ds/js/ds-type'
+import { dsTypeImg } from '@/views/ds/js/ds-type'
 
 const props = withDefaults(
   defineProps<{
@@ -26,7 +26,7 @@ const props = withDefaults(
 
 const emits = defineEmits(['active', 'private', 'public'])
 const icon = computed(() => {
-  return (dsTypeWithImg.find((ele) => props.type === ele.type) || {}).img
+  return dsTypeImg(props.type)
 })
 const handleActive = () => {
   emits('active')

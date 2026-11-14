@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import icon_form_outlined from '@/assets/svg/icon_form_outlined.svg'
 import { computed } from 'vue'
-import { dsTypeWithImg } from './js/ds-type'
+import { dsTypeImg } from './js/ds-type'
 
 const props = withDefaults(
   defineProps<{
@@ -25,7 +25,7 @@ const props = withDefaults(
 
 const emits = defineEmits(['selectDs', 'selectDsDirectly'])
 const icon = computed(() => {
-  return (dsTypeWithImg.find((ele) => props.type === ele.type) || {}).img
+  return dsTypeImg(props.type)
 })
 
 const SelectDs = () => {

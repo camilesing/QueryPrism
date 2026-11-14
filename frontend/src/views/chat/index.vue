@@ -462,7 +462,7 @@ import ChatCreator from '@/views/chat/ChatCreator.vue'
 import ChatTokenTime from '@/views/chat/ChatTokenTime.vue'
 import ErrorInfo from './ErrorInfo.vue'
 import ChatToolBar from './ChatToolBar.vue'
-import { dsTypeWithImg } from '@/views/ds/js/ds-type'
+import { dsTypeImg } from '@/views/ds/js/ds-type'
 import { useI18n } from 'vue-i18n'
 import { find, forEach } from 'lodash-es'
 import custom_small from '@/assets/svg/logo-custom_small.svg'
@@ -701,7 +701,7 @@ function onClickHistory(chat: ChatInfo) {
 }
 
 const currentChatEngineType = computed(() => {
-  return (dsTypeWithImg.find((ele) => currentChat.value.ds_type === ele.type) || {}).img
+  return dsTypeImg(currentChat.value.ds_type)
 })
 
 function onChatDeleted(id: number) {
