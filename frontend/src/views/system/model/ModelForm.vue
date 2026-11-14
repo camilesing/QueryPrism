@@ -180,7 +180,7 @@ const supplierChang = (supplier: any) => {
   const config = supplier.model_config[modelForm.model_type || 0]
   modelForm.api_domain = config.api_domain
   modelForm.base_model = ''
-  modelForm.protocol = supplier.type === 'vllm' ? 2 : 1
+  modelForm.protocol = supplier.protocol ?? 1
   advancedSetting.value = []
 }
 let curId = +new Date()
