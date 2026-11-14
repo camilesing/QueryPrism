@@ -34,6 +34,10 @@ export interface CaseDelta {
   /** Numeric columns only present in current / only in baseline sums. */
   newColumns: string[];
   missingColumns: string[];
+  /** Alias renames forgiven by the rename bijection (baseline name → current
+   *  name); the sums delta for such a column is keyed by the BASELINE name.
+   *  Absent on rows written before the bijection existed. */
+  renamedColumns: Array<{ from: string; to: string }>;
   /** Machine-readable flag reasons, e.g. row_count_inflated / sum_inflated:amount. */
   reasons: string[];
 }
@@ -45,9 +49,47 @@ export function deltaPct(base: number, current: number): number {
   return ((current - base) / Math.abs(base)) * 100;
 }
 
+/** Pair leftover baseline↔current columns that only differ by NAME (LLM
+ *  alias drift: the same aggregate re-aliased visit_cnt/visit_count across
+ *  runs). A leftover baseline column pairs with a leftover current column
+ *  only when their sums are WITHIN the case tolerance and that relation is
+ *  unambiguous on both sides — i.e. exactly what a pass would look like had
+ *  the name stayed. Everything else keeps reporting schema_changed:
+ *  a rename riding on beyond-tolerance drift, a genuinely swapped column
+ *  (same count, different metric) or added/dropped columns. Known
+ *  limitations: duplicate-valued renames (a:100,b:100 → a2:100,b2:100) are
+ *  ambiguous and stay flagged; a rename plus within-tolerance data refresh
+ *  passes — which is the suite's own definition of "within tolerance". */
+function pairRenames(
+  baseCols: string[],
+  curCols: string[],
+  baseline: CaseAggregate,
+  current: CaseAggregate,
+  tolerancePct: number,
+): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const withinTol = (b: string, c: string) =>
+    Math.abs(deltaPct(baseline.sums[b], current.sums[c])) <=
+    tolerancePct + 1e-9;
+  const hitsOf = (c: string) =>
+    baseCols.filter((b) => withinTol(b, c) && !pairs.has(b));
+  const backOf = (b: string) =>
+    curCols.filter((c) => withinTol(b, c) && !pairs.has(c));
+  for (const cur of curCols) {
+    const hits = hitsOf(cur);
+    if (hits.length !== 1 || backOf(hits[0]).length !== 1) continue; // ambiguous or drifted
+    pairs.set(hits[0], cur);
+  }
+  return pairs;
+}
+
 /** Compare current aggregates against the baseline with the case's tolerance.
  *  Reasons carry direction — INFLATED is the review-blocking one (fan-out /
- *  widened caliber), shrunk is recorded but is usually a data refresh. */
+ *  widened caliber), shrunk is recorded but is usually a data refresh.
+ *  Column names are matched exactly first; leftover columns whose sums sit
+ *  within tolerance of exactly one counterpart are treated as LLM alias
+ *  renames (see pairRenames) — a pure rename is not a schema change, and a
+ *  rename riding on beyond-tolerance drift still flags (as schema_changed). */
 export function compareCase(
   baseline: CaseAggregate,
   current: CaseAggregate,
@@ -62,23 +104,53 @@ export function compareCase(
   if (baseline.sumsUnavailable) {
     // Captured rowCount-only: comparing against an empty sum map would report
     // every current column as new. Row-count drift still flags normally.
-    return { rowCountPct, sums, newColumns: [], missingColumns: [], reasons };
+    return {
+      rowCountPct,
+      sums,
+      newColumns: [],
+      missingColumns: [],
+      renamedColumns: [],
+      reasons,
+    };
   }
-  const baseCols = Object.keys(baseline.sums);
-  const curCols = Object.keys(current.sums);
-  const newColumns = curCols.filter((c) => !(c in baseline.sums));
-  const missingColumns = baseCols.filter((c) => !(c in current.sums));
-  for (const col of curCols) {
-    if (!(col in baseline.sums)) continue;
-    const pct = deltaPct(baseline.sums[col], current.sums[col]);
-    sums[col] = pct;
+  const renames = pairRenames(
+    Object.keys(baseline.sums).filter((c) => !(c in current.sums)),
+    Object.keys(current.sums).filter((c) => !(c in baseline.sums)),
+    baseline,
+    current,
+    tolerancePct,
+  );
+  const newColumns = Object.keys(current.sums).filter(
+    (c) => !(c in baseline.sums) && ![...renames.values()].includes(c),
+  );
+  const missingColumns = Object.keys(baseline.sums).filter(
+    (c) => !(c in current.sums) && !renames.has(c),
+  );
+  const compare = (col: string, curCol: string) => {
+    const pct = deltaPct(baseline.sums[col], current.sums[curCol]);
+    sums[col] = pct; // keyed by the baseline name — the reference identity
     if (pct > tolerancePct) reasons.push(`sum_inflated:${col}`);
     else if (pct < -tolerancePct) reasons.push(`sum_shrunk:${col}`);
+  };
+  for (const col of Object.keys(current.sums)) {
+    if (col in baseline.sums) compare(col, col);
   }
+  for (const [from, to] of renames) compare(from, to);
   if (newColumns.length > 0 || missingColumns.length > 0) {
     reasons.push('schema_changed');
   }
-  return { rowCountPct, sums, newColumns, missingColumns, reasons };
+  const renamedColumns = [...renames.entries()].map(([from, to]) => ({
+    from,
+    to,
+  }));
+  return {
+    rowCountPct,
+    sums,
+    newColumns,
+    missingColumns,
+    renamedColumns,
+    reasons,
+  };
 }
 
 /** Identifier quoting per engine family: MySQL takes backticks, the

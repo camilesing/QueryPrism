@@ -71,13 +71,24 @@ const semanticTable = `reg_orders_${stamp}`;
 // obvious when you run the numbers.
 const SQL_NARROW = `SELECT category, SUM(amount) AS total FROM orders WHERE category = 'A' GROUP BY category`;
 const SQL_WIDE = `SELECT category, SUM(amount) AS total FROM orders GROUP BY category`;
+// Phase 3: LLM alias drift — the same wide caliber re-aliased. A pure rename
+// must NOT flag schema_changed; a rename on a genuinely changed caliber
+// stays flagged (coarser reason, still loud).
+const SQL_WIDE_RENAMED = `SELECT category, SUM(amount) AS total_renamed FROM orders GROUP BY category`;
+const SQL_NARROW_RENAMED = `SELECT category, SUM(amount) AS total_renamed FROM orders WHERE category = 'A' GROUP BY category`;
 let fakeSql = SQL_NARROW;
 
 interface RunCaseRow {
   status: string;
   rowCount: number | null;
-  sums: { total?: number } | null;
-  delta: { reasons?: string[]; rowCountPct?: number } | null;
+  sums: { total?: number; total_renamed?: number } | null;
+  delta: {
+    reasons?: string[];
+    rowCountPct?: number;
+    newColumns?: string[];
+    missingColumns?: string[];
+    renamedColumns?: Array<{ from: string; to: string }>;
+  } | null;
   message: string | null;
 }
 
@@ -331,6 +342,42 @@ describe('Regression suite (e2e)', () => {
     const cases = await runCasesOf(runId);
     expect(cases[0].status).toBe('passed');
     expect(cases[0].delta?.reasons).toEqual([]);
+  });
+
+  it('a pure LLM alias rename passes without schema_changed', async () => {
+    // Same wide caliber, alias total → total_renamed: identical aggregates
+    // under a different name must not flag the case.
+    fakeSql = SQL_WIDE_RENAMED;
+
+    const runId = await startManualRun();
+    await waitRunDone(runId);
+    const cases = await runCasesOf(runId);
+
+    expect(cases[0].status).toBe('passed');
+    expect(cases[0].sums?.total_renamed).toBe(150);
+    expect(cases[0].delta?.reasons).toEqual([]);
+    expect(cases[0].delta?.newColumns).toEqual([]);
+    expect(cases[0].delta?.missingColumns).toEqual([]);
+    expect(cases[0].delta?.renamedColumns).toEqual([
+      { from: 'total', to: 'total_renamed' },
+    ]);
+  });
+
+  it('a rename on a genuinely changed caliber still flags (schema_changed)', async () => {
+    // Alias drifted AND the caliber narrowed (150 → 100, beyond the 10%
+    // tolerance): the pairing cannot prove a rename, so the case stays
+    // loud — schema_changed plus the row-count shrink.
+    fakeSql = SQL_NARROW_RENAMED;
+
+    const runId = await startManualRun();
+    await waitRunDone(runId);
+    const cases = await runCasesOf(runId);
+
+    expect(cases[0].status).toBe('flagged');
+    expect(cases[0].delta?.reasons).toContain('schema_changed');
+    expect(cases[0].delta?.reasons).toContain('row_count_shrunk');
+    expect(cases[0].delta?.reasons).not.toContain('sum_shrunk:total');
+    expect(cases[0].delta?.renamedColumns).toEqual([]);
   });
 
   it('cleans up its transient regression chats (origin=2)', async () => {

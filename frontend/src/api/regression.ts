@@ -50,6 +50,9 @@ export interface RegressionRunCaseRow {
     sums: Record<string, number>
     newColumns: string[]
     missingColumns: string[]
+    /** Alias renames forgiven by the comparison (LLM alias drift); absent on
+     *  rows written before that existed. */
+    renamedColumns?: { from: string; to: string }[]
     reasons: string[]
   } | null
   message: string | null

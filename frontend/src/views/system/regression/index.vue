@@ -223,6 +223,9 @@ const deltaText = (rc: RegressionRunCaseRow) => {
   if (rc.delta.rowCountPct != null)
     parts.push(`${t('regression.row_count')} ${rc.delta.rowCountPct.toFixed(1)}%`)
   for (const [col, pct] of Object.entries(rc.delta.sums)) parts.push(`${col} ${pct.toFixed(1)}%`)
+  // LLM alias drift the comparison forgave — shown so the names here can be
+  // matched against the run's SQL despite the rename.
+  for (const r of rc.delta.renamedColumns ?? []) parts.push(`${r.from} → ${r.to}`)
   return parts.join(' / ')
 }
 

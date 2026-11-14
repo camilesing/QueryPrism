@@ -86,6 +86,109 @@ describe('compareCase', () => {
     expect(d2.missingColumns).toEqual(['qty']);
   });
 
+  // --- LLM alias drift (rename bijection) --------------------------------
+  // The generated SQL is LLM-produced: the same question can alias the same
+  // aggregate `visit_cnt` / `visit_count` / `订单量` across runs. A pure
+  // rename is NOT a schema change — the values still compare.
+
+  it('a pure column rename passes and is recorded in renamedColumns', () => {
+    const d = compareCase(
+      base,
+      { rowCount: 100, sums: { amount_total: 1000, quantity: 50 } },
+      10,
+    );
+    expect(d.reasons).toEqual([]);
+    expect(d.newColumns).toEqual([]);
+    expect(d.missingColumns).toEqual([]);
+    expect(d.renamedColumns).toContainEqual({
+      from: 'amount',
+      to: 'amount_total',
+    });
+    expect(d.renamedColumns).toContainEqual({ from: 'qty', to: 'quantity' });
+    // deltas are keyed by the BASELINE name (the reference identity)
+    expect(d.sums.amount).toBe(0);
+    expect(d.sums.qty).toBe(0);
+  });
+
+  it('a rename riding on beyond-tolerance drift still flags (schema_changed)', () => {
+    // With drift beyond tolerance the pairing cannot tell a rename from a
+    // swapped column — it stays loud, just with the coarser reason.
+    const d = compareCase(
+      { rowCount: 7, sums: { visit_cnt: 200 } },
+      { rowCount: 7, sums: { visit_count: 242 } },
+      5,
+    );
+    expect(d.reasons).toContain('schema_changed');
+    expect(d.reasons).not.toContain('sum_inflated:visit_cnt');
+    expect(d.newColumns).toEqual(['visit_count']);
+    expect(d.missingColumns).toEqual(['visit_cnt']);
+    expect(d.renamedColumns).toEqual([]);
+  });
+
+  it('a rename plus within-tolerance data refresh passes and records the rename', () => {
+    // Same as above but the drift is inside the tolerance — exactly what a
+    // pass looks like had the alias stayed stable.
+    const d = compareCase(
+      { rowCount: 7, sums: { visit_cnt: 200 } },
+      { rowCount: 7, sums: { visit_count: 206 } },
+      5,
+    );
+    expect(d.reasons).toEqual([]);
+    expect(d.renamedColumns).toEqual([
+      { from: 'visit_cnt', to: 'visit_count' },
+    ]);
+    expect(d.sums.visit_cnt).toBeCloseTo(3, 6);
+  });
+
+  it('a rename plus column reorder is rescued by unique-value pairing', () => {
+    // Same columns, same values, different names AND different order.
+    const d = compareCase(
+      { rowCount: 1, sums: { amount: 1000, qty: 50 } },
+      { rowCount: 1, sums: { quantity: 50, amount_total: 1000 } },
+      10,
+    );
+    expect(d.reasons).toEqual([]);
+    expect(d.renamedColumns).toContainEqual({
+      from: 'amount',
+      to: 'amount_total',
+    });
+    expect(d.renamedColumns).toContainEqual({ from: 'qty', to: 'quantity' });
+  });
+
+  it('duplicate-valued renames are ambiguous and stay flagged', () => {
+    // Both unmatched columns sum to 100 — the value relation is not unique,
+    // so no pairing happens and schema_changed stays loud (known limitation).
+    const d = compareCase(
+      { rowCount: 2, sums: { a: 100, b: 100 } },
+      { rowCount: 2, sums: { a2: 100, b2: 100 } },
+      10,
+    );
+    expect(d.reasons).toContain('schema_changed');
+    expect(d.renamedColumns).toEqual([]);
+  });
+
+  it('a rename combined with an added column reports only the real addition', () => {
+    // The renamed column still pairs across the count mismatch; the genuinely
+    // new column keeps schema_changed loud.
+    const d = compareCase(
+      { rowCount: 100, sums: { amount: 1000 } },
+      { rowCount: 100, sums: { amount_total: 1000, extra: 3 } },
+      10,
+    );
+    expect(d.reasons).toEqual(['schema_changed']);
+    expect(d.newColumns).toEqual(['extra']);
+    expect(d.missingColumns).toEqual([]);
+    expect(d.renamedColumns).toEqual([{ from: 'amount', to: 'amount_total' }]);
+  });
+
+  it('keeps flagging when current sums are empty against a summed baseline', () => {
+    // The runner's SUM-probe degradation path (numericCols=[] → sums {})
+    // must stay loud, not be rescued by rename pairing.
+    const d = compareCase(base, { rowCount: 100, sums: {} }, 10);
+    expect(d.reasons).toContain('schema_changed');
+    expect(d.missingColumns).toEqual(['amount', 'qty']);
+  });
+
   it('zero tolerance flags any nonzero drift', () => {
     const d = compareCase(
       base,
