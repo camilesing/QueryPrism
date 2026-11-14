@@ -186,8 +186,11 @@ const handleEditModel = (row: any) => {
   activeStep.value = 1
   editModel.value = true
   activeType.value = row.supplier
-  activeName.value = row.supplier_item.name
-  activeNameI18nKey.value = row.supplier_item.i18nKey
+  // legacy rows can carry a supplier id with no registry entry — guard or the
+  // edit drawer header (`$t(activeNameI18nKey)`) crashes the same way as the
+  // popover img
+  activeName.value = row.supplier_item?.name ?? ''
+  activeNameI18nKey.value = row.supplier_item?.i18nKey ?? ''
   modelApi.query(row.id).then((res: any) => {
     modelConfigvVisible.value = true
     nextTick(() => {
@@ -357,7 +360,10 @@ const submit = (item: any) => {
                 :class="ele.default_model && 'isActive'"
                 @click="handleDefaultModelChange(ele)"
               >
-                <img :src="ele.supplier_item.icon" width="24px" height="24px" />
+                <!-- supplier registry has no entry for legacy rows (e.g. supplier
+                     stored as 'ollama' maps to 0) — optional chain or the whole
+                     page render aborts and the model list goes blank -->
+                <img :src="ele.supplier_item?.icon" width="24px" height="24px" />
                 <div class="model-name ellipsis" v-html="formatKeywords(ele.name)"></div>
                 <el-icon size="16" class="done">
                   <icon_done_outlined></icon_done_outlined>
