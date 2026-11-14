@@ -497,11 +497,7 @@ export const supplierList: Array<{
       0: {
         api_domain: 'http://127.0.0.1:11434',
         common_args: [{ key: 'temperature', val: 0.7, type: 'number', range: '[0, 1]' }],
-        model_options: [
-          { name: 'qwen3:8b' },
-          { name: 'llama3.1:8b' },
-          { name: 'deepseek-r1:8b' },
-        ],
+        model_options: [{ name: 'qwen3:8b' }, { name: 'llama3.1:8b' }, { name: 'deepseek-r1:8b' }],
       },
     },
   },
