@@ -6,6 +6,10 @@
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },
+  "moduleNameMapper": {
+    "^@mistralai/mistralai/lib/http\\.js$": "<rootDir>/mocks/mistralai-http.cjs",
+    "^@mistralai/mistralai$": "<rootDir>/mocks/mistralai-sdk.cjs"
+  },
   "globalSetup": "<rootDir>/global-setup.ts",
   "setupFiles": ["<rootDir>/setup-env.ts"],
   "maxWorkers": 1

@@ -105,6 +105,10 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "moduleNameMapper": {
+      "^@mistralai/mistralai/lib/http\\.js$": "<rootDir>/../test/mocks/mistralai-http.cjs",
+      "^@mistralai/mistralai$": "<rootDir>/../test/mocks/mistralai-sdk.cjs"
+    },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
