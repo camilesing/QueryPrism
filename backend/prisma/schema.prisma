@@ -158,7 +158,7 @@ model ChatRecord {
   extractedKeywords  String? // 3fd6fa86 (072_chat_record): LLM 从问题提取的关键词（逗号分隔）
   expandedKeywords   String? // 3fd6fa86: 术语同义词扩展后的关键词（供分析等环节复用）
   analysis           String? // 分析文本 (Phase 5b)
-  predict            String? // 预测文本 (Phase 5b)
+  predict            String? // 预测思考过程 (前端 thinking 块; 区别于 predictContent 正文)
   predictData        Json? // 预测数据 (Phase 5b)
   recommendedQuestion Json? // 推荐问题 (Phase 5b)
   analysisRecordId   Int? // 关联分析 record (Phase 5b)
@@ -172,7 +172,7 @@ model ChatRecord {
   clarifyStatus      String? // pending | answered | skipped (null = 未触发澄清)
   clarifyRound       Int      @default(0) // 已发起的澄清轮数 (pause 时 +1; 受 clarify.max_rounds 限制)；同时充当恢复时的轮次令牌
   analysisThinking   String? // 分析思考过程 (区别于 analysis 正文)
-  predictContent     String? // 预测正文 (区别于 predict 摘要)
+  predictContent     String? // 预测正文 (Phase 5b; 区别于 predict 思考流)
   runTime            Int      @default(0) // 执行耗时 (秒)
   firstChat          Boolean  @default(false) // 是否首轮对话
   duration           Int? // 总耗时 (秒)

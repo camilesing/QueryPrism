@@ -927,7 +927,12 @@ export class ChatService {
       await this.prisma.chatRecord.update({
         where: { id: rid },
         data: {
-          predict: predict.predict,
+          // `predict` is the frontend's THINKING slot (BaseAnswer
+          // reasoningName 'predict' — live sessions accumulate the reasoning
+          // deltas there), so persist the reasoning to match; writing the
+          // prose here would render it twice after reload (thinking block +
+          // predictContent body) and lose the thinking.
+          predict: reasoning || null,
           // The body column (预测正文) so reloaded history shows the prose;
           // the live session gets the same prose via the content frame above.
           predictContent: predict.predict,

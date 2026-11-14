@@ -1936,7 +1936,10 @@ describe('ChatService Phase 5b (analysis / predict / quick-cmd / reads)', () => 
     expect(m.prisma.chatRecord.update).toHaveBeenCalledWith({
       where: { id: 100 },
       data: {
-        predict: '上升趋势',
+        // `predict` is the frontend's thinking slot — persist the reasoning
+        // (live sessions accumulate it there), NOT the prose (which would
+        // duplicate predictContent after reload).
+        predict: '预测中',
         predictContent: '上升趋势',
         predictData: [{ label: 'x', value: 1 }],
       },
