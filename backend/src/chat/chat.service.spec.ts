@@ -334,6 +334,13 @@ function happyMocks(m: ReturnType<typeof makeService>) {
   m.generatorService.generatePredict.mockReturnValue(
     asyncFrom<LlmGenEvent>([
       { type: 'reasoning', delta: '预测中' },
+      // The real generator streams the JSON envelope as content deltas —
+      // runPredict must accumulate it WITHOUT forwarding it to the client.
+      {
+        type: 'content',
+        delta:
+          '{"predict":"上升趋势","predict_data":[{"label":"x","value":1}]}',
+      },
       {
         type: 'result',
         data: { predict: '上升趋势', predictData: [{ label: 'x', value: 1 }] },
@@ -1909,7 +1916,7 @@ describe('ChatService Phase 5b (analysis / predict / quick-cmd / reads)', () => 
     );
   });
 
-  it('runPredict streams predict + persists predict/predictData in-place', async () => {
+  it('runPredict streams reasoning + parsed prose, never the raw JSON envelope', async () => {
     const m = makeService();
     happyMocks(m);
     m.prisma.chatRecord.findFirst.mockResolvedValue(sourceRecord());
@@ -1917,12 +1924,20 @@ describe('ChatService Phase 5b (analysis / predict / quick-cmd / reads)', () => 
     const events = await run(1, () => collect(m.service.runPredict(1, 100)));
 
     expect(types(events)).toBe(
-      'id,info,predict-result,predict-success,predict_finish',
+      'id,info,predict-result,predict-result,predict-success,predict_finish',
     );
+    // Frame 1: live thinking; frame 2: the parsed prose as ONE content frame.
+    expect(events[2].data).toEqual({ reasoning_content: '预测中' });
+    expect(events[3].data).toEqual({ content: '上升趋势' });
+    // Regression: the raw JSON envelope must never reach the visible stream.
+    for (const e of events) {
+      expect(JSON.stringify(e.data)).not.toContain('predict_data');
+    }
     expect(m.prisma.chatRecord.update).toHaveBeenCalledWith({
       where: { id: 100 },
       data: {
         predict: '上升趋势',
+        predictContent: '上升趋势',
         predictData: [{ label: 'x', value: 1 }],
       },
     });
@@ -2017,7 +2032,7 @@ describe('ChatService Phase 5b (analysis / predict / quick-cmd / reads)', () => 
       collect(m.service.runPipeline(1, '/predict 100')),
     );
     expect(types(events)).toBe(
-      'id,info,predict-result,predict-success,predict_finish',
+      'id,info,predict-result,predict-result,predict-success,predict_finish',
     );
   });
 

@@ -16,7 +16,10 @@
 //   - `*-result` events stream live LLM deltas: `content` = the visible
 //     token stream, `reasoning_content` = the thinking stream. Each frame
 //     carries one or the other (optional fields) — callers split the LLM
-//     `content`/`reasoning` LlmGenEvents into the matching field.
+//     `content`/`reasoning` LlmGenEvents into the matching field. EXCEPT
+//     `predict-result`: its LLM content is a JSON envelope ({predict,
+//     predict_data}), so raw deltas are never streamed — `content` is
+//     emitted exactly once with the parsed prose on success.
 //   - `finish` / `analysis_finish` / `predict-success` / `predict-failed` /
 //     `predict_finish` carry an empty payload `{}`.
 export interface ChatSseEventMap {

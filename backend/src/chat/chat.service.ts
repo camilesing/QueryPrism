@@ -7,7 +7,9 @@
 //
 // Event names + payloads are aligned to the frontend contract.
 // `*-result` events stream live LLM deltas split into `content` (visible) +
-// `reasoning_content` (thinking); `sql`/`chart` carry `{content}` (the SQL
+// `reasoning_content` (thinking) — EXCEPT predict: its raw content is a JSON
+// envelope, so only the parsed prose is emitted as ONE content frame;
+// `sql`/`chart` carry `{content}` (the SQL
 // string / JSON.stringify(chart object)); `sql-data` carries `{content:
 // 'execute-success'}` (rows fetched via follow-up GET); `finish`/`*_finish`/
 // `predict-success`/`predict-failed` carry empty payloads.
@@ -820,9 +822,11 @@ export class ChatService {
 
   /** Generate a structured predict (prose + predict_data) for an existing
    *  record's SQL result. Persisted in-place on the source ChatRecord(:rid).
-   *  `predict-result` streams content + reasoning_content; success →
-   *  `predict-success` (frontend then GETs predict_data) + `predict_finish`;
-   *  failure → `predict-failed` + `predict_finish` (thrown adds `error` first). */
+   *  `predict-result` streams reasoning_content live; the raw content is a
+   *  JSON envelope and is NOT streamed — the parsed prose is emitted as ONE
+   *  content frame on success; success → `predict-success` (frontend then
+   *  GETs predict_data) + `predict_finish`; failure → `predict-failed` +
+   *  `predict_finish` (thrown adds `error` first). */
   async *runPredict(
     chatId: number,
     rid: number,
@@ -891,8 +895,10 @@ export class ChatService {
               data: { reasoning_content: ev.delta },
             };
           } else if (ev.type === 'content') {
+            // Unlike analysis, predict content is a JSON envelope
+            // ({predict, predict_data}) — NOT showable prose, so raw deltas
+            // are never streamed; they only accumulate for parsing/logging.
             content += ev.delta;
-            yield { type: 'predict-result', data: { content: ev.delta } };
           } else if (ev.type === 'usage') {
             tokenUsage = ev.usage;
           } else if (ev.type === 'result') {
@@ -914,10 +920,17 @@ export class ChatService {
         yield { type: 'predict_finish', data: {} };
         return;
       }
+      // The showable prose reaches the frontend as ONE content frame (the
+      // raw JSON envelope was never streamed) — the existing predict-result
+      // content handler appends it into the visible body.
+      yield { type: 'predict-result', data: { content: predict.predict } };
       await this.prisma.chatRecord.update({
         where: { id: rid },
         data: {
           predict: predict.predict,
+          // The body column (预测正文) so reloaded history shows the prose;
+          // the live session gets the same prose via the content frame above.
+          predictContent: predict.predict,
           predictData: predict.predictData as Prisma.InputJsonValue,
         },
       });
