@@ -231,6 +231,14 @@ describe('LlmService.getChatModel routing', () => {
     expect(AzureChatOpenAI).toHaveBeenCalledTimes(1);
     expect(ChatOpenAI).not.toHaveBeenCalled();
   });
+
+  it('routes native protocol ids through the registry (no ChatOpenAI)', () => {
+    const { svc } = makeService({});
+    const chat = svc.getChatModel(fakeModel({ protocol: '3' }), 'decrypted');
+    expect(chat.constructor.name).toBe('ChatZhipuAI');
+    expect(ChatOpenAI).not.toHaveBeenCalled();
+    expect(AzureChatOpenAI).not.toHaveBeenCalled();
+  });
 });
 
 describe('LlmService.resolveModel', () => {

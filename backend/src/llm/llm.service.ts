@@ -5,16 +5,20 @@
 // (AiModelService.testStatus calls back into here for a real connectivity
 // probe).
 //
-// Supplier routing: everything routes through the OpenAI-compatible base_url
-// (openai/tongyi/vllm/ollama/deepseek/qwen… all accept it); only
-// protocol='azure' switches to AzureChatOpenAI. Reasoning is surfaced two
-// ways — DeepSeek-style  think…/think  tags interleaved in `content`
-// (split by ReasoningParser) and Qwen-style `reasoning_content` in
-// additional_kwargs (read directly).
+// Supplier routing: the AiModel.protocol column stores the numeric protocol
+// id. Native ids (3..20) route through CHAT_MODEL_FACTORIES
+// (chat-model-registry.ts — LangChain provider classes: ChatZhipuAI,
+// ChatAnthropic, …); protocol 'azure' switches to AzureChatOpenAI; anything
+// else (1/2/legacy) stays on the OpenAI-compatible base_url path
+// (openai/tongyi-compat/vllm/ollama-compat/deepseek-compat/qwen…).
+// Reasoning is surfaced two ways — DeepSeek-style  think…/think  tags
+// interleaved in `content` (split by ReasoningParser) and Qwen-style
+// `reasoning_content` in additional_kwargs (read directly).
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { HumanMessage, type BaseMessage } from '@langchain/core/messages';
+import { CHAT_MODEL_FACTORIES } from './chat-model-registry';
 import type { AiModel } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { decrypt } from '../common/utils/aes';
@@ -103,10 +107,13 @@ export class LlmService {
   }
 
   /** Build a chat model from a stored AiModel row. Decrypts the apiKey and
-   *  routes azure → AzureChatOpenAI, everything else → ChatOpenAI with an
-   *  OpenAI-compatible base_url. */
+   *  routes: native protocol ids (3..20) through CHAT_MODEL_FACTORIES
+   *  (LangChain provider classes), azure → AzureChatOpenAI, everything else
+   *  → ChatOpenAI with an OpenAI-compatible base_url. */
   getChatModel(model: AiModel, apiKey: string): ChatLike {
     const modelName = model.baseModel || model.name;
+    const factory = CHAT_MODEL_FACTORIES[model.protocol];
+    if (factory) return factory(model, apiKey);
     if (model.protocol === 'azure') {
       return new AzureChatOpenAI({
         apiKey,
