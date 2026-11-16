@@ -1,8 +1,14 @@
 // CRUD tests for metadata sync sources (MetaDataImprove M5): oid scoping,
 // secret encryption/masking, validation and scheduler refresh.
 import type { MetadataSyncSource } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { setI18n } from '../common/i18n/translate';
 import { createTestI18n } from '../common/i18n/test-i18n';
 import { decryptJson, encryptJson } from '../common/utils/aes';
@@ -268,5 +274,329 @@ describe('MetadataSyncService', () => {
     expect(m.prisma.metadataSyncRun.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 10, take: 10 }),
     );
+  });
+
+  it('lists sources snake-mapped for the actor workspace', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.findMany.mockResolvedValue([
+      row({ id: 7, name: 'seven', cron: '0 * * * *', authJson: 'cipher' }),
+    ]);
+    const out = await run(() => m.service.list());
+    expect(m.prisma.metadataSyncSource.findMany).toHaveBeenCalledWith({
+      where: { oid: 1 },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      id: 7,
+      name: 'seven',
+      cron: '0 * * * *',
+      has_auth: true,
+    });
+  });
+
+  it('stores http_body / mcp_tool / mcp_args per kind on create', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.create.mockResolvedValue(row());
+    await run(() =>
+      m.service.create({
+        name: 's',
+        kind: 'HTTP_API',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/rows',
+        http_method: 'POST',
+        http_body: { page: 1 },
+      }),
+    );
+    expect(m.prisma.metadataSyncSource.create.mock.calls[0][0].data).toEqual(
+      expect.objectContaining({ httpMethod: 'POST', httpBody: { page: 1 } }),
+    );
+
+    m.prisma.metadataSyncSource.create.mockResolvedValue(
+      row({ kind: 'MCP', mcpTool: 'pull', mcpArgs: { q: 'x' } }),
+    );
+    await run(() =>
+      m.service.create({
+        name: 'm',
+        kind: 'MCP',
+        target: 'metric',
+        endpoint: 'https://meta.example.com/mcp',
+        mcp_tool: ' pull ',
+        mcp_args: { q: 'x' },
+      }),
+    );
+    expect(m.prisma.metadataSyncSource.create.mock.calls[1][0].data).toEqual(
+      expect.objectContaining({
+        kind: 'MCP',
+        mcpTool: 'pull',
+        mcpArgs: { q: 'x' },
+        // MCP create never stores an HTTP body
+        httpBody: undefined,
+      }),
+    );
+  });
+
+  it('encrypts token-only auth (headers ?? {} fallback)', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.create.mockImplementation(({ data }) =>
+      Promise.resolve(row({ authJson: String(data.authJson) })),
+    );
+    const result = await run(() =>
+      m.service.create({
+        name: 's',
+        kind: 'HTTP_API',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/rows',
+        auth: { token: 'bearer-value' },
+      }),
+    );
+    const data = m.prisma.metadataSyncSource.create.mock.calls[0][0].data;
+    expect(decryptJson(String(data.authJson), AES_KEY)).toEqual({
+      token: 'bearer-value',
+    });
+    expect(result.has_auth).toBe(true);
+  });
+
+  it('rejects an empty name and requires a user context', async () => {
+    const m = makeService();
+    await expect(
+      run(() =>
+        m.service.create({
+          name: '   ',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(m.prisma.metadataSyncSource.create).not.toHaveBeenCalled();
+
+    await expect(
+      requestContextStorage.run({}, () => m.service.list()),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('fails loudly when the AES key is not configured', async () => {
+    const prisma = {
+      metadataSyncSource: { findMany: jest.fn(), findFirst: jest.fn() },
+    };
+    const service = new MetadataSyncService(
+      prisma as never,
+      { get: () => undefined } as unknown as ConfigService,
+      { refresh: jest.fn(), remove: jest.fn() } as never,
+    );
+    await expect(
+      run(() =>
+        service.create({
+          name: 's',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+          auth: { token: 't' },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+  });
+
+  it('rethrows non-P2002 create errors untouched', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.create.mockRejectedValue(
+      new Error('connection refused'),
+    );
+    await expect(
+      run(() =>
+        m.service.create({
+          name: 's',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+        }),
+      ),
+    ).rejects.toThrow('connection refused');
+  });
+
+  it('keeps the save working when the scheduler refresh fails', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.create.mockResolvedValue(row({ id: 9 }));
+    m.scheduler.refresh
+      .mockRejectedValueOnce(new Error('cron engine down'))
+      .mockRejectedValueOnce('raw non-error rejection');
+    await expect(
+      run(() =>
+        m.service.create({
+          name: 's',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+        }),
+      ),
+    ).resolves.toMatchObject({ id: 9 });
+    await expect(
+      run(() =>
+        m.service.create({
+          name: 's2',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+        }),
+      ),
+    ).resolves.toMatchObject({ id: 9 });
+    expect(m.scheduler.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an update without id before touching the DB', async () => {
+    const m = makeService();
+    await expect(
+      run(() =>
+        m.service.update({
+          name: 's',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(m.prisma.metadataSyncSource.findFirst).not.toHaveBeenCalled();
+    expect(m.prisma.metadataSyncSource.update).not.toHaveBeenCalled();
+  });
+
+  it('updates HTTP_API fields: method, body set/clear, auth set/empty, cron set/clear', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.findFirst.mockResolvedValue(
+      row({ httpMethod: 'GET', httpBody: { old: 1 } }),
+    );
+    m.prisma.metadataSyncSource.update.mockResolvedValue(row());
+
+    // http_method present + http_body present + content-bearing auth + cron
+    await run(() =>
+      m.service.update({
+        id: 5,
+        name: 's',
+        kind: 'HTTP_API',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/rows',
+        http_method: 'POST',
+        http_body: { page: 2 },
+        auth: { headers: { Authorization: 'Bearer t' } },
+        cron: ' 0 0 * * * ',
+      }),
+    );
+    let data = m.prisma.metadataSyncSource.update.mock.calls[0][0].data;
+    expect(data.httpMethod).toBe('POST');
+    expect(data.httpBody).toEqual({ page: 2 });
+    expect(decryptJson(String(data.authJson), AES_KEY)).toEqual({
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(data.cron).toBe('0 0 * * *');
+
+    // explicit nulls clear http_body/cron; empty auth object clears authJson
+    await run(() =>
+      m.service.update({
+        id: 5,
+        name: 's',
+        kind: 'HTTP_API',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/rows',
+        http_body: null,
+        auth: {},
+        cron: null,
+      }),
+    );
+    data = m.prisma.metadataSyncSource.update.mock.calls[1][0].data;
+    expect(data.httpBody).toBe(Prisma.DbNull);
+    expect(data.authJson).toBeNull();
+    expect(data.cron).toBeNull();
+
+    // omitted http_method keeps the stored one
+    await run(() =>
+      m.service.update({
+        id: 5,
+        name: 's',
+        kind: 'HTTP_API',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/rows',
+      }),
+    );
+    data = m.prisma.metadataSyncSource.update.mock.calls[2][0].data;
+    expect(data.httpMethod).toBe('GET');
+  });
+
+  it('updates MCP rows: tool set/absent, args value/null/omitted, http cleared', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.findFirst.mockResolvedValue(
+      row({ kind: 'MCP', mcpTool: 'old', mcpArgs: { a: 1 } }),
+    );
+    m.prisma.metadataSyncSource.update.mockResolvedValue(row({ kind: 'MCP' }));
+
+    // tool + args value
+    await run(() =>
+      m.service.update({
+        id: 5,
+        name: 'm',
+        kind: 'MCP',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/mcp',
+        http_body: { ignore: true },
+        mcp_tool: ' pull ',
+        mcp_args: { q: 'x' },
+      }),
+    );
+    let data = m.prisma.metadataSyncSource.update.mock.calls[0][0].data;
+    expect(data).toEqual(
+      expect.objectContaining({
+        mcpTool: 'pull',
+        mcpArgs: { q: 'x' },
+        // an MCP row never keeps an HTTP body
+        httpBody: Prisma.DbNull,
+      }),
+    );
+
+    // args null clears (validate requires MCP rows to always carry a tool)
+    await run(() =>
+      m.service.update({
+        id: 5,
+        name: 'm',
+        kind: 'MCP',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/mcp',
+        mcp_tool: 'pull',
+        mcp_args: null,
+      }),
+    );
+    data = m.prisma.metadataSyncSource.update.mock.calls[1][0].data;
+    expect(data.mcpArgs).toBe(Prisma.DbNull);
+    expect(data.mcpTool).toBe('pull');
+
+    // args omitted keeps the stored value
+    await run(() =>
+      m.service.update({
+        id: 5,
+        name: 'm',
+        kind: 'MCP',
+        target: 'semantic',
+        endpoint: 'https://meta.example.com/mcp',
+        mcp_tool: 'keep',
+      }),
+    );
+    data = m.prisma.metadataSyncSource.update.mock.calls[2][0].data;
+    expect(data.mcpArgs).toBeUndefined();
+    expect(data.mcpTool).toBe('keep');
+  });
+
+  it('maps an update name conflict to a 400', async () => {
+    const m = makeService();
+    m.prisma.metadataSyncSource.findFirst.mockResolvedValue(row());
+    m.prisma.metadataSyncSource.update.mockRejectedValue({ code: 'P2002' });
+    await expect(
+      run(() =>
+        m.service.update({
+          id: 5,
+          name: 's',
+          kind: 'HTTP_API',
+          target: 'semantic',
+          endpoint: 'https://meta.example.com/rows',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });

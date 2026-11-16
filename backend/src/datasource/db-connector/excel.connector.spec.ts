@@ -136,3 +136,129 @@ describe('ExcelConnector table scoping', () => {
     });
   });
 });
+
+describe('ExcelConnector passthrough + sample guards', () => {
+  beforeEach(() => setI18n(createTestI18n()));
+
+  function makeFull(tableNames: string[]) {
+    const { connector, execSql, getFields } = makeConnector(tableNames);
+    const inner = (connector as unknown as { inner: PostgresConnector }).inner;
+    const getVersion = jest
+      .spyOn(inner, 'getVersion')
+      .mockResolvedValue('PostgreSQL 18.1');
+    const testConnection = jest
+      .spyOn(inner, 'testConnection')
+      .mockResolvedValue({ success: true, message: 'ok' });
+    const sampleDistinct = jest
+      .spyOn(inner, 'sampleDistinct')
+      .mockResolvedValue(['a', 'b']);
+    const close = jest.spyOn(inner, 'close').mockResolvedValue(undefined);
+    return {
+      connector,
+      execSql,
+      getFields,
+      getVersion,
+      testConnection,
+      sampleDistinct,
+      close,
+    };
+  }
+
+  it('delegates getVersion to the inner postgres connector', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(m.connector.getVersion()).resolves.toBe('PostgreSQL 18.1');
+    expect(m.getVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('testConnection reports the Excel success message on success', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(m.connector.testConnection()).resolves.toEqual({
+      success: true,
+      message: 'Excel 数据源连接成功',
+    });
+  });
+
+  it('testConnection keeps the inner failure message on failure', async () => {
+    const m = makeFull(['sheet1']);
+    m.testConnection.mockResolvedValue({
+      success: false,
+      message: 'connection refused',
+    });
+    await expect(m.connector.testConnection()).resolves.toEqual({
+      success: false,
+      message: 'connection refused',
+    });
+  });
+
+  it('getSchemas is always empty (no user-selectable schema)', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(m.connector.getSchemas()).resolves.toEqual([]);
+  });
+
+  it('getTableSampleData quotes the identifier and clamps the limit', async () => {
+    const m = makeFull(['sheet1']);
+    m.execSql.mockResolvedValue({ fields: [], rows: [['r1'], ['r2']] });
+    await expect(
+      m.connector.getTableSampleData('sheet1', 2.9),
+    ).resolves.toEqual([['r1'], ['r2']]);
+    expect(m.execSql).toHaveBeenCalledWith('SELECT * FROM "sheet1"', 2);
+    // default limit is 3; negative limits clamp to 0
+    await m.connector.getTableSampleData('sheet1');
+    expect(m.execSql).toHaveBeenLastCalledWith('SELECT * FROM "sheet1"', 3);
+    await m.connector.getTableSampleData('sheet1', -1);
+    expect(m.execSql).toHaveBeenLastCalledWith('SELECT * FROM "sheet1"', 0);
+  });
+
+  it('getTableSampleData escapes embedded double quotes in the table name', async () => {
+    const m = makeFull(['we"ird']);
+    m.execSql.mockResolvedValue({ fields: [], rows: [] });
+    await m.connector.getTableSampleData('we"ird');
+    expect(m.execSql).toHaveBeenCalledWith('SELECT * FROM "we""ird"', 3);
+  });
+
+  it('getTableSampleData rejects a non-member table', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(m.connector.getTableSampleData('User')).rejects.toThrow(
+      'does not belong to this Excel datasource',
+    );
+    expect(m.execSql).not.toHaveBeenCalled();
+  });
+
+  it('getTableSampleData passes any table through when none are configured', async () => {
+    const m = makeFull([]);
+    m.execSql.mockResolvedValue({ fields: [], rows: [] });
+    await expect(m.connector.getTableSampleData('anything')).resolves.toEqual(
+      [],
+    );
+  });
+
+  it('sampleDistinct delegates for a member table', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(
+      m.connector.sampleDistinct('sheet1', 'col', 100),
+    ).resolves.toEqual(['a', 'b']);
+    expect(m.sampleDistinct).toHaveBeenCalledWith('sheet1', 'col', 100);
+  });
+
+  it('sampleDistinct rejects a non-member table', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(
+      m.connector.sampleDistinct('other', 'col', 100),
+    ).rejects.toThrow('does not belong to this Excel datasource');
+    expect(m.sampleDistinct).not.toHaveBeenCalled();
+  });
+
+  it('sampleDistinct passes any table through when none are configured', async () => {
+    const m = makeFull([]);
+    await expect(m.connector.sampleDistinct('any', 'col', 5)).resolves.toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('close closes the inner connector', async () => {
+    const m = makeFull(['sheet1']);
+    await expect(m.connector.close()).resolves.toBeUndefined();
+    expect(m.close).toHaveBeenCalledTimes(1);
+  });
+});

@@ -14,8 +14,11 @@ import {
   namingTemplate,
   parseMetricDefinition,
   periodText,
-  type MetricDefLike,
+  renderComposite,
+  renderDerived,
   type DataStandardLike,
+  type MetricDefLike,
+  type MetricRenderContext,
 } from './metric-policy';
 
 const base = (over: Partial<MetricDefLike>): MetricDefLike => ({
@@ -587,5 +590,494 @@ describe('matchMetricDefinitions vector supplement', () => {
     );
     expect(r.matched).toBe(1);
     expect(r.text).not.toContain('refund_amount');
+  });
+
+  // --- appended branch-sweep tests -----------------------------------------
+
+  describe('parseMetricDefinition malformed-input arms', () => {
+    it('rejects non-object payloads outright', () => {
+      expect(parseMetricDefinition('atomic', null)).toBeNull();
+      expect(parseMetricDefinition('atomic', 'orders')).toBeNull();
+      expect(parseMetricDefinition('period', 7)).toBeNull();
+    });
+
+    it('rejects unknown period modes and anchors', () => {
+      expect(parseMetricDefinition('period', { mode: 'neither' })).toBeNull();
+      expect(
+        parseMetricDefinition('period', { mode: 'anchor', anchor: 'nope' }),
+      ).toBeNull();
+    });
+
+    it('trims a derived time_field and rejects a non-string expression', () => {
+      expect(
+        parseMetricDefinition('derived', {
+          atomic_code: 'a',
+          time_field: ' t ',
+        }),
+      ).toEqual({ atomicCode: 'a', timeField: 't' });
+      expect(parseMetricDefinition('composite', { expression: 5 })).toBeNull();
+    });
+  });
+
+  describe('definitionProblem remaining kinds', () => {
+    it('atomic/period/composite have no cross-field problem', () => {
+      expect(definitionProblem('atomic', {} as never)).toBeNull();
+      expect(definitionProblem('period', {} as never)).toBeNull();
+      expect(definitionProblem('composite', {} as never)).toBeNull();
+    });
+
+    it('derived without modifierCodes and modifier without values', () => {
+      expect(definitionProblem('derived', { atomicCode: 'a' })).toBeNull();
+      // hand-corrupted row: values missing entirely → treated as empty
+      expect(
+        definitionProblem('modifier', {
+          datasourceId: 1,
+          tableName: 't',
+          fieldName: 'f',
+          operator: '=',
+        } as never),
+      ).toBe('metric.def_values_required');
+    });
+  });
+
+  describe('conditionText remaining operators', () => {
+    const def = (operator: string, values: string[]) =>
+      ({
+        datasourceId: 1,
+        tableName: 'orders',
+        fieldName: 'status',
+        operator,
+        values,
+      }) as Parameters<typeof conditionText>[0];
+
+    it('renders every operator shape', () => {
+      expect(conditionText(def('!=', ['a']))).toBe('orders.status != a');
+      expect(conditionText(def('not_in', ['a', 'b']))).toBe(
+        'orders.status NOT IN (a, b)',
+      );
+      expect(conditionText(def('like', ['pay']))).toBe(
+        "orders.status LIKE '%pay%'",
+      );
+      expect(conditionText(def('gt', ['1']))).toBe('orders.status > 1');
+      expect(conditionText(def('gte', ['1']))).toBe('orders.status >= 1');
+      expect(conditionText(def('lt', ['9']))).toBe('orders.status < 9');
+      expect(conditionText(def('lte', ['9']))).toBe('orders.status <= 9');
+    });
+
+    it('falls back to an empty value when values is empty', () => {
+      // defensive: a hand-corrupted row can still render with values []
+      expect(conditionText(def('=', []))).toBe('orders.status = ');
+    });
+  });
+
+  describe('matching/render helper edges', () => {
+    it('matchNames drops non-string aliases', () => {
+      expect(matchNames('nm', [1, 'ok', null])).toEqual(['nm', 'ok']);
+    });
+
+    it('expressionCodes has no codes for a numbers-only expression', () => {
+      expect(expressionCodes('1 + 2.5')).toEqual([]);
+    });
+
+    it('expressionProblem bounds: blank, too long, too many tokens, early )', () => {
+      expect(expressionProblem('   ', 'x')).toBe('metric.expression_invalid');
+      expect(expressionProblem('a' + '+1'.repeat(2001), 'x')).toBe(
+        'metric.expression_invalid', // 4003 chars > 4000 cap
+      );
+      expect(expressionProblem('a' + ' + a'.repeat(100), 'x')).toBe(
+        'metric.expression_invalid', // 201 tokens > 200 cap
+      );
+      expect(expressionProblem(') a + b', 'x')).toBe(
+        'metric.expression_invalid', // depth < 0 mid-walk
+      );
+    });
+  });
+
+  describe('renderDerived reference resolution', () => {
+    const atomicDef = (datasource_id = 1) => ({
+      datasource_id,
+      table_name: 'orders',
+      field_name: 'pay_amount',
+      aggregation: 'SUM',
+    });
+    const pay = base({
+      id: 1,
+      kind: 'atomic',
+      code: 'pay',
+      name: '支付金额',
+      definition: atomicDef(),
+    });
+    const baby = base({
+      id: 2,
+      kind: 'modifier',
+      code: 'baby',
+      name: '母婴类',
+      definition: {
+        datasource_id: 1,
+        table_name: 'orders',
+        field_name: 'category',
+        operator: '=',
+        values: ['母婴'],
+      },
+    });
+    const last7 = base({
+      id: 3,
+      kind: 'period',
+      code: 'last7',
+      name: '最近7天',
+      definition: { mode: 'recent', time_unit: 'day', count: 7 },
+    });
+    const ctxOf = (rows: MetricDefLike[], ds = 1): MetricRenderContext => ({
+      rows: effectiveByCode(rows),
+      datasourceId: ds,
+      timeFieldOf: () => undefined,
+    });
+
+    it('returns null for a malformed derived definition', () => {
+      const bad = base({
+        id: 9,
+        kind: 'derived',
+        code: 'bad',
+        name: '坏',
+        definition: {},
+      });
+      expect(renderDerived(bad, ctxOf([bad]))).toBeNull();
+    });
+
+    it('returns null when the referenced atomic belongs to another datasource', () => {
+      const foreignAtomic = base({
+        ...pay,
+        definition: atomicDef(99),
+      });
+      const d = base({
+        id: 10,
+        kind: 'derived',
+        code: 'd',
+        name: 'd',
+        definition: { atomic_code: 'pay' },
+      });
+      expect(renderDerived(d, ctxOf([foreignAtomic, d]))).toBeNull();
+    });
+
+    it('returns null on dangling modifier / cross-datasource modifier / dangling period', () => {
+      const danglingMod = base({
+        id: 11,
+        kind: 'derived',
+        code: 'd1',
+        name: 'd1',
+        definition: { atomic_code: 'pay', modifier_codes: ['ghost'] },
+      });
+      expect(renderDerived(danglingMod, ctxOf([pay, danglingMod]))).toBeNull();
+
+      const foreignMod = base({
+        ...baby,
+        definition: {
+          datasource_id: 99,
+          table_name: 'orders',
+          field_name: 'category',
+          operator: '=',
+          values: ['母婴'],
+        },
+      });
+      const crossDsMod = base({
+        id: 12,
+        kind: 'derived',
+        code: 'd2',
+        name: 'd2',
+        definition: { atomic_code: 'pay', modifier_codes: ['baby'] },
+      });
+      expect(
+        renderDerived(crossDsMod, ctxOf([pay, foreignMod, crossDsMod])),
+      ).toBeNull();
+
+      const danglingPeriod = base({
+        id: 13,
+        kind: 'derived',
+        code: 'd3',
+        name: 'd3',
+        definition: { atomic_code: 'pay', period_code: 'ghost_p' },
+      });
+      expect(
+        renderDerived(danglingPeriod, ctxOf([pay, danglingPeriod])),
+      ).toBeNull();
+    });
+
+    it('renders without a period and without a time field when none resolve', () => {
+      const withMod = base({
+        id: 14,
+        kind: 'derived',
+        code: 'd4',
+        name: '母婴支付金额',
+        definition: { atomic_code: 'pay', modifier_codes: ['baby'] },
+      });
+      const out = renderDerived(withMod, ctxOf([pay, baby, withMod]));
+      expect(out).not.toBeNull();
+      expect(out!.line).toBe(
+        '母婴支付金额 (d4): 口径 = SUM(orders.pay_amount); 修饰: orders.category = 母婴',
+      );
+      expect(out!.line).not.toContain('时间:');
+
+      const withPeriodNoTimeField = base({
+        id: 15,
+        kind: 'derived',
+        code: 'd5',
+        name: '近7天支付金额',
+        definition: { atomic_code: 'pay', period_code: 'last7' },
+      });
+      const out2 = renderDerived(
+        withPeriodNoTimeField,
+        ctxOf([pay, last7, withPeriodNoTimeField]),
+      );
+      // no time_field on the def and timeFieldOf() → undefined → no 按-clause
+      expect(out2!.line).toContain('时间: 最近7天');
+      expect(out2!.line).not.toContain('按');
+    });
+  });
+
+  describe('renderComposite operand/depth arms', () => {
+    const pay = base({
+      id: 1,
+      kind: 'atomic',
+      code: 'pay',
+      name: '支付金额',
+      definition: {
+        datasource_id: 1,
+        table_name: 'orders',
+        field_name: 'pay_amount',
+        aggregation: 'SUM',
+      },
+    });
+    const ctxOf = (rows: MetricDefLike[], ds = 1): MetricRenderContext => ({
+      rows: effectiveByCode(rows),
+      datasourceId: ds,
+      timeFieldOf: () => undefined,
+    });
+
+    it('returns null for malformed defs, code-less expressions and pre-seen rows', () => {
+      const malformed = base({
+        id: 20,
+        kind: 'composite',
+        code: 'm',
+        name: 'm',
+        definition: {},
+      });
+      expect(renderComposite(malformed, ctxOf([malformed]))).toBeNull();
+
+      const noCodes = base({
+        id: 21,
+        kind: 'composite',
+        code: 'nc',
+        name: 'nc',
+        definition: { expression: '1 + 2' },
+      });
+      expect(renderComposite(noCodes, ctxOf([noCodes]))).toBeNull();
+
+      const self = base({
+        id: 22,
+        kind: 'composite',
+        code: 'self',
+        name: 'self',
+        definition: { expression: 'self + pay' },
+      });
+      // caller-supplied seen set → cycle guard fires before descending
+      expect(
+        renderComposite(self, ctxOf([pay, self]), new Set(['composite:self'])),
+      ).toBeNull();
+    });
+
+    it('returns null past the depth cap (direct + chained)', () => {
+      const deep = base({
+        id: 23,
+        kind: 'composite',
+        code: 'deep',
+        name: 'deep',
+        definition: { expression: 'pay + 1' },
+      });
+      expect(
+        renderComposite(deep, ctxOf([pay, deep]), new Set(), 9),
+      ).toBeNull();
+
+      // a 10-composite chain exceeds MAX_COMPOSITE_DEPTH from depth 0
+      const chain: MetricDefLike[] = [pay];
+      for (let i = 1; i <= 10; i++) {
+        chain.push(
+          base({
+            id: 30 + i,
+            kind: 'composite',
+            code: `c${i}`,
+            name: `c${i}`,
+            definition: { expression: i === 10 ? 'pay' : `c${i + 1} + 1` },
+          }),
+        );
+      }
+      expect(renderComposite(chain[1], ctxOf(chain))).toBeNull();
+    });
+
+    it('returns null on a foreign-datasource atomic operand or a dangling code', () => {
+      const foreign = base({
+        ...pay,
+        id: 2,
+        definition: {
+          datasource_id: 99,
+          table_name: 'orders',
+          field_name: 'pay_amount',
+          aggregation: 'SUM',
+        },
+      });
+      const usesForeign = base({
+        id: 24,
+        kind: 'composite',
+        code: 'uf',
+        name: 'uf',
+        definition: { expression: 'pay + 1' },
+      });
+      expect(
+        renderComposite(usesForeign, ctxOf([foreign, usesForeign])),
+      ).toBeNull();
+
+      const usesGhost = base({
+        id: 25,
+        kind: 'composite',
+        code: 'ug',
+        name: 'ug',
+        definition: { expression: 'ghost + pay' },
+      });
+      expect(renderComposite(usesGhost, ctxOf([pay, usesGhost]))).toBeNull();
+    });
+
+    it('clips an operand display name longer than the render-label bound', () => {
+      const longName = 'x'.repeat(130);
+      const longAtomic = base({
+        ...pay,
+        name: longName,
+      });
+      const comp = base({
+        id: 26,
+        kind: 'composite',
+        code: 'clip',
+        name: 'clip',
+        definition: { expression: 'pay * 2' },
+      });
+      const out = renderComposite(comp, ctxOf([longAtomic, comp]));
+      expect(out).not.toBeNull();
+      expect(out!.line).toContain('x'.repeat(119) + '…');
+      expect(out!.line).not.toContain(longName);
+    });
+  });
+
+  describe('matchMetricDefinitions additional guards', () => {
+    const pay = base({
+      id: 1,
+      kind: 'atomic',
+      code: 'pay_amount',
+      name: '支付金额',
+      definition: {
+        datasource_id: 1,
+        table_name: 'orders',
+        field_name: 'pay_amount',
+        aggregation: 'SUM',
+      },
+    });
+
+    it('skips the time part when the matched period row has a malformed definition', () => {
+      const brokenPeriod = base({
+        id: 2,
+        kind: 'period',
+        code: 'last7',
+        name: '最近7天',
+        definition: { mode: 'neither' },
+      });
+      const r = matchMetricDefinitions(
+        [pay, brokenPeriod],
+        1,
+        '最近7天支付金额',
+        5,
+        () => undefined,
+      );
+      expect(r.matched).toBe(1);
+      expect(r.text).toContain('支付金额 (pay_amount)');
+      expect(r.text).not.toContain('时间:');
+    });
+
+    it('renders the matched period without a 按-clause when no time field resolves', () => {
+      const validPeriod = base({
+        id: 4,
+        kind: 'period',
+        code: 'last7',
+        name: '最近7天',
+        definition: { mode: 'recent', time_unit: 'day', count: 7 },
+      });
+      const r = matchMetricDefinitions(
+        [pay, validPeriod],
+        1,
+        '最近7天支付金额',
+        5,
+        () => undefined, // no FieldSemantic role=time for the table
+      );
+      expect(r.matched).toBe(1);
+      expect(r.text).toContain('时间: 最近7天');
+      expect(r.text).not.toContain('按');
+    });
+
+    it('does not re-state an atomic already covered by a rendered derived metric', () => {
+      const derived = base({
+        id: 3,
+        kind: 'derived',
+        code: 'dv',
+        name: '支付金额衍生',
+        definition: { atomic_code: 'pay_amount' },
+      });
+      const r = matchMetricDefinitions(
+        [pay, derived],
+        1,
+        '支付金额衍生 支付金额',
+        5,
+        () => undefined,
+        { fuzzy: ['atomic:pay_amount'] },
+      );
+      expect(r.matched).toBe(1);
+      expect(r.text).toContain('支付金额衍生 (dv)');
+      // the covered atomic is neither re-rendered literally nor via fuzzy
+      expect(r.text).not.toContain('(pay_amount)');
+    });
+
+    it('does not re-render a literal hit via a fuzzy key', () => {
+      const r = matchMetricDefinitions(
+        [pay],
+        1,
+        '支付金额',
+        5,
+        () => undefined,
+        { fuzzy: ['atomic:pay_amount'] },
+      );
+      expect(r.matched).toBe(1);
+      expect(r.text.match(/- /g)).toHaveLength(1);
+    });
+  });
+
+  describe('namingTemplate optional attributes', () => {
+    it('omits category/description attributes when they are null', () => {
+      const rows: DataStandardLike[] = [
+        {
+          id: 9,
+          kind: 'naming',
+          code: 'biz',
+          term: '客户',
+          name: '顾客',
+          aliases: null,
+          category: null,
+          description: null,
+          scope: 'WORKSPACE',
+          oid: 1,
+          ownerUid: null,
+          enabled: true,
+          updatedAt: new Date(),
+        },
+      ];
+      const text = namingTemplate(rows, '客户是谁', 5);
+      expect(text).toContain('<rule term="客户" standard="顾客" />');
+      expect(text).not.toContain('category=');
+      expect(text).not.toContain('description=');
+    });
   });
 });

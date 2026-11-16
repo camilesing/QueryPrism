@@ -777,4 +777,336 @@ describe('AssistantService', () => {
       ).resolves.toBe(false);
     });
   });
+
+  // --- appended branch-sweep tests ---------------------------------------
+
+  describe('create/update optional-field arms', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    it('create stores status, keeps unparsable/non-string configuration out', async () => {
+      prisma.assistant.create.mockResolvedValue(
+        ast({ id: 30, name: 'a', type: 0 }),
+      );
+      await withUser(1, () =>
+        makeService(prisma, config).create({
+          name: 'a',
+          type: 0,
+          status: 'inactive',
+          configuration: 'not-json',
+        }),
+      );
+      const arg = prisma.assistant.create.mock.calls[0][0].data;
+      expect(arg.status).toBe('inactive');
+      expect(arg).not.toHaveProperty('configuration');
+
+      await withUser(1, () =>
+        makeService(prisma, config).create({
+          name: 'b',
+          type: 0,
+          // ValidationPipe passthrough body: a non-string value flows through
+          // parseJsonString's fallthrough arm untouched
+          configuration: 5 as never,
+        }),
+      );
+      expect(prisma.assistant.create.mock.calls[1][0].data.configuration).toBe(
+        5,
+      );
+    });
+
+    it('update omits domain/configuration when the body leaves them out', async () => {
+      prisma.assistant.findFirst.mockResolvedValue(
+        ast({ id: 31, name: 'x', type: 0 }),
+      );
+      prisma.assistant.update.mockResolvedValue(
+        ast({ id: 31, name: 'x', type: 0 }),
+      );
+      await withUser(1, () => makeService(prisma, config).update({ id: 31 }));
+      const arg = prisma.assistant.update.mock.calls[0][0].data;
+      expect(arg).not.toHaveProperty('domain');
+      expect(arg).not.toHaveProperty('configuration');
+    });
+  });
+
+  describe('updateUi edges', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    const file = (name: string) =>
+      ({ originalname: name, buffer: Buffer.from('x') }) as Express.Multer.File;
+
+    it('404s when the row vanishes between the ownership check and the read', async () => {
+      prisma.assistant.findFirst.mockResolvedValue(
+        ast({ id: 5, name: 'A', type: 0 }),
+      );
+      prisma.assistant.findUnique.mockResolvedValue(null);
+      await expect(
+        withUser(1, () => makeService(prisma, config).updateUi({ id: 5 }, [])),
+      ).rejects.toThrow(/不存在/);
+      expect(prisma.assistant.update).not.toHaveBeenCalled();
+    });
+
+    it('starts from an empty config when none is stored and uploads replace nothing', async () => {
+      prisma.assistant.findFirst.mockResolvedValue(
+        ast({ id: 6, name: 'B', type: 0, configuration: null }),
+      );
+      prisma.assistant.findUnique.mockResolvedValue(
+        ast({ id: 6, name: 'B', type: 0, configuration: null }),
+      );
+      prisma.assistant.update.mockResolvedValue(
+        ast({ id: 6, name: 'B', type: 0 }),
+      );
+      const fileMock = makeFileService({ uploadId: 'FIRST.png' });
+      await withUser(1, () =>
+        makeService(prisma, config, fileMock).updateUi(
+          { id: 6, theme: 'dark', welcome: null },
+          [file('logo.png,logo')],
+        ),
+      );
+      // no prior file to delete; null schema attr dropped (exclude-none)
+      expect(fileMock.delete).not.toHaveBeenCalled();
+      expect(prisma.assistant.update).toHaveBeenCalledWith({
+        where: { id: 6 },
+        data: { configuration: { logo: 'FIRST.png', theme: 'dark' } },
+      });
+    });
+  });
+
+  describe('createEmbedded / updateEmbedded optional-field arms', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    it('bare embedded create skips every optional field', async () => {
+      prisma.assistant.create.mockResolvedValue(
+        ast({ id: 40, name: 'e', type: 4 }),
+      );
+      await withUser(1, () =>
+        makeService(prisma, config).createEmbedded({ name: 'e' }),
+      );
+      const arg = prisma.assistant.create.mock.calls[0][0].data;
+      expect(arg).not.toHaveProperty('description');
+      expect(arg).not.toHaveProperty('domain');
+      expect(arg).not.toHaveProperty('configuration');
+      expect(arg).not.toHaveProperty('enableCustomModel');
+      expect(arg).not.toHaveProperty('customModel');
+    });
+
+    it('embedded create stores every optional field (invalid configuration skipped)', async () => {
+      prisma.assistant.create.mockResolvedValue(
+        ast({ id: 41, name: 'e2', type: 4 }),
+      );
+      await withUser(1, () =>
+        makeService(prisma, config).createEmbedded({
+          name: 'e2',
+          description: 'd',
+          domain: 'https://e.example.com',
+          configuration: '}{',
+          enable_custom_model: true,
+          custom_model: { provider: 'x' },
+        }),
+      );
+      const arg = prisma.assistant.create.mock.calls[0][0].data;
+      expect(arg.description).toBe('d');
+      expect(arg.domain).toBe('https://e.example.com');
+      expect(arg).not.toHaveProperty('configuration'); // unparsable → skipped
+      expect(arg.enableCustomModel).toBe(true);
+      expect(arg.customModel).toEqual({ provider: 'x' });
+    });
+
+    it('embedded update without name/domain/configuration only writes what it got', async () => {
+      prisma.assistant.findFirst.mockResolvedValue(
+        ast({ id: 42, name: 'old', type: 4 }),
+      );
+      prisma.assistant.update.mockResolvedValue(
+        ast({ id: 42, name: 'old', type: 4 }),
+      );
+      await withUser(1, () =>
+        makeService(prisma, config).updateEmbedded({
+          id: 42,
+          description: 'd',
+          enable_custom_model: false,
+          custom_model: 'gpt',
+        } as never),
+      );
+      const arg = prisma.assistant.update.mock.calls[0][0].data;
+      expect(arg).not.toHaveProperty('name');
+      expect(arg).not.toHaveProperty('domain');
+      expect(arg).not.toHaveProperty('configuration');
+      expect(arg.description).toBe('d');
+      expect(arg.enableCustomModel).toBe(false);
+      expect(arg.customModel).toBe('gpt');
+
+      // unparsable configuration string → field skipped, not clobbered
+      await withUser(1, () =>
+        makeService(prisma, config).updateEmbedded({
+          id: 42,
+          name: 'n',
+          configuration: '}{',
+        }),
+      );
+      expect(prisma.assistant.update.mock.calls[1][0].data).not.toHaveProperty(
+        'configuration',
+      );
+    });
+  });
+
+  describe('guards: currentOid / aesKey', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    it('401s when no user is bound to the request context', async () => {
+      await expect(
+        requestContextStorage.run({}, () => makeService(prisma, config).list()),
+      ).rejects.toThrow(); // UnauthorizedException
+      expect(prisma.assistant.findMany).not.toHaveBeenCalled();
+    });
+
+    it('fails loudly when the AES key is not configured', async () => {
+      const noKeyConfig: MockConfig = {
+        get: jest.fn(() => undefined),
+      };
+      await expect(
+        withUser(1, () =>
+          makeService(prisma, noKeyConfig).create({ name: 'x', type: 0 }),
+        ),
+      ).rejects.toThrow(); // aes key missing
+      expect(prisma.assistant.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listRuntimeDatasources (assistant token surface)', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    const withAssistant = <T>(
+      assistant: Record<string, unknown> | undefined,
+      fn: () => Promise<T>,
+    ): Promise<T> => requestContextStorage.run({ assistant } as never, fn);
+
+    function dsService() {
+      const dsPrisma = {
+        ...prisma,
+        datasource: { findMany: jest.fn().mockResolvedValue([]) },
+      };
+      return {
+        svc: makeService(dsPrisma, config),
+        findMany: dsPrisma.datasource.findMany,
+      };
+    }
+    const assistant = (over: Record<string, unknown> = {}) => ({
+      id: 50,
+      oid: 1,
+      type: 0,
+      domain: null,
+      appId: 'app-50',
+      ...over,
+    });
+
+    it('401s without an assistant context', async () => {
+      const { svc } = dsService();
+      await expect(
+        withAssistant(undefined, () => svc.listRuntimeDatasources()),
+      ).rejects.toThrow(); // UnauthorizedException
+    });
+
+    it('returns [] for type-1 (host-API) assistants', async () => {
+      const { svc, findMany } = dsService();
+      await expect(
+        withAssistant(assistant({ type: 1 }), () =>
+          svc.listRuntimeDatasources(),
+        ),
+      ).resolves.toEqual([]);
+      expect(findMany).not.toHaveBeenCalled();
+    });
+
+    it('returns [] for unusable configurations (null, bad JSON, array, scalar, non-object)', async () => {
+      const { svc, findMany } = dsService();
+      for (const configuration of [
+        null,
+        'not-json',
+        '[1,2]',
+        '5',
+        5,
+        [1, 2], // stored non-string ARRAY → not a config object → []
+      ]) {
+        await expect(
+          withAssistant(assistant({ configuration }), () =>
+            svc.listRuntimeDatasources(),
+          ),
+        ).resolves.toEqual([]);
+      }
+      expect(findMany).not.toHaveBeenCalled();
+    });
+
+    it('accepts a stored configuration OBJECT (Prisma Json column) directly', async () => {
+      const { svc, findMany } = dsService();
+      findMany.mockResolvedValue([]);
+      await withAssistant(
+        assistant({ online: true, configuration: { oid: 1 } }),
+        () => svc.listRuntimeDatasources(),
+      );
+      expect(findMany).toHaveBeenCalledWith({
+        where: { oid: 1 },
+        select: expect.anything(),
+        orderBy: { createdAt: 'desc' },
+      });
+    });
+
+    it('returns [] when oid is missing/non-positive or offline with no public list', async () => {
+      const { svc, findMany } = dsService();
+      for (const configuration of ['{}', '{"oid":"x"}', '{"oid":0}']) {
+        await expect(
+          withAssistant(assistant({ configuration }), () =>
+            svc.listRuntimeDatasources(),
+          ),
+        ).resolves.toEqual([]);
+      }
+      // offline (online not set) + empty public_list → nothing to expose
+      await expect(
+        withAssistant(
+          assistant({ configuration: '{"oid":1,"public_list":[]}' }),
+          () => svc.listRuntimeDatasources(),
+        ),
+      ).resolves.toEqual([]);
+      expect(findMany).not.toHaveBeenCalled();
+    });
+
+    it('online type-0 exposes every workspace datasource', async () => {
+      const { svc, findMany } = dsService();
+      findMany.mockResolvedValue([
+        {
+          id: 3,
+          name: 'pg',
+          description: null,
+          type: 'postgresql',
+          num: 'public',
+        },
+      ]);
+      const out = await withAssistant(
+        assistant({ online: true, configuration: '{"oid":1}' }),
+        () => svc.listRuntimeDatasources(),
+      );
+      expect(findMany).toHaveBeenCalledWith({
+        where: { oid: 1 },
+        select: expect.anything(),
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(out).toEqual([
+        {
+          id: 3,
+          name: 'pg',
+          description: null,
+          type: 'postgresql',
+          type_name: 'postgresql',
+          num: 'public',
+        },
+      ]);
+    });
+
+    it('offline type-0 exposes only the public_list datasources (ids coerced)', async () => {
+      const { svc, findMany } = dsService();
+      findMany.mockResolvedValue([]);
+      await withAssistant(
+        assistant({
+          configuration: '{"oid":1,"public_list":[2,"x",3.5,4]}',
+        }),
+        () => svc.listRuntimeDatasources(),
+      );
+      expect(findMany).toHaveBeenCalledWith({
+        where: { oid: 1, id: { in: [2, 4] } },
+        select: expect.anything(),
+        orderBy: { createdAt: 'desc' },
+      });
+    });
+  });
 });

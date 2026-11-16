@@ -580,6 +580,44 @@ describe('PermissionService', () => {
         ),
       ).resolves.toEqual({ id: 9, name: 'g' });
     });
+
+    it('accepts a valid nested sub_tree and continues to sibling items', async () => {
+      prisma.dsRules.create.mockResolvedValue({ id: 9, oid: 1, name: 'g' });
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              {
+                type: 'row',
+                expression_tree: JSON.stringify({
+                  logic: 'AND',
+                  items: [
+                    {
+                      type: 'tree',
+                      sub_tree: {
+                        logic: 'OR',
+                        items: [
+                          { type: 'item', term: 'eq', value: 'x' },
+                          {
+                            type: 'item',
+                            term: 'eq',
+                            value_type: 'variable',
+                            variable_id: 2,
+                          },
+                        ],
+                      },
+                    },
+                    { type: 'item', term: 'gt', value: '5' },
+                  ],
+                }),
+              },
+            ],
+            users: [],
+          }),
+        ),
+      ).resolves.toEqual({ id: 9, name: 'g' });
+    });
   });
 
   // ─────────────────────────── remove ───────────────────────────
@@ -604,6 +642,272 @@ describe('PermissionService', () => {
       prisma.dsRules.findFirst.mockResolvedValue(null);
       await expect(
         withUser(1, () => service.remove(999)),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  // ─────────────── tail-sweep: residual save/validation arms ───────────────
+
+  describe('save (optional-field defaults)', () => {
+    it('missing name defaults to empty → 400 (name ?? arm)', async () => {
+      await expect(
+        withUser(1, () => service.save({} as never)),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.dsRules.create).not.toHaveBeenCalled();
+    });
+
+    it('missing permissions array defaults to [] on create (no createMany)', async () => {
+      prisma.dsRules.create.mockResolvedValue({ id: 77, oid: 1, name: 'g' });
+      const out = await withUser(1, () => service.save({ name: 'g' }));
+      expect(out).toEqual({ id: 77, name: 'g' });
+      expect(prisma.dsPermission.createMany).not.toHaveBeenCalled();
+    });
+
+    it('missing permissions array defaults to [] on update (delete still runs)', async () => {
+      prisma.dsRules.findFirst.mockResolvedValue({ id: 200, oid: 5 });
+      prisma.dsRules.update.mockResolvedValue({ id: 200 });
+      const out = await withUser(5, () => service.save({ id: 200, name: 'n' }));
+      expect(out).toEqual({ id: 200, name: 'n' });
+      expect(prisma.dsPermission.deleteMany).toHaveBeenCalledWith({
+        where: { rulesId: 200 },
+      });
+      expect(prisma.dsPermission.createMany).not.toHaveBeenCalled();
+    });
+
+    it('a row item with null / empty expression_tree is allowed (no tree to validate)', async () => {
+      prisma.dsRules.create.mockResolvedValue({ id: 8, oid: 1, name: 'g' });
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              { type: 'row' }, // expression_tree absent (null arm)
+              { type: 'row', expression_tree: '' }, // empty-string arm
+            ],
+            users: [],
+          }),
+        ),
+      ).resolves.toEqual({ id: 8, name: 'g' });
+    });
+
+    it('items without optional fields persist as nulls (?? null arms)', async () => {
+      prisma.dsRules.create.mockResolvedValue({ id: 8, oid: 1, name: 'g' });
+      await withUser(1, () =>
+        service.save({
+          name: 'g',
+          permissions: [{ type: 'column' }],
+          users: [],
+        }),
+      );
+      const data = prisma.dsPermission.createMany.mock.calls[0][0] as {
+        data: Record<string, unknown>[];
+      };
+      expect(data.data[0]).toEqual({
+        rulesId: 8,
+        name: null,
+        type: 'column',
+        dsId: null,
+        dsName: null,
+        tableId: null,
+        tableName: null,
+        expressionTree: null,
+        permissions: null,
+      });
+    });
+  });
+
+  describe('save (expression-tree shape arms)', () => {
+    it('JSON that parses to a non-object (string/number/array) → 400', async () => {
+      for (const tree of ['"str"', '42', '[]']) {
+        await expect(
+          withUser(1, () =>
+            service.save({
+              name: 'g',
+              permissions: [{ type: 'row', expression_tree: tree }],
+              users: [],
+            }),
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+    });
+
+    it('missing / non-string / invalid logic → 400 (AND and OR are accepted)', async () => {
+      prisma.dsRules.create.mockResolvedValue({ id: 1, oid: 1, name: 'g' });
+      // top-level OR accepted
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              { type: 'row', expression_tree: '{"logic":"or","items":[]}' },
+            ],
+            users: [],
+          }),
+        ),
+      ).resolves.toEqual({ id: 1, name: 'g' });
+      // logic absent → '' → rejected
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [{ type: 'row', expression_tree: '{"items":[]}' }],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      // logic non-string → '' → rejected
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              { type: 'row', expression_tree: '{"logic":5,"items":[]}' },
+            ],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      // unknown operator word → rejected
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              { type: 'row', expression_tree: '{"logic":"XOR","items":[]}' },
+            ],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('items not an array → 400', async () => {
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              { type: 'row', expression_tree: '{"logic":"AND","items":{}}' },
+            ],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('between with a non-string value is rejected (value fallback to empty)', async () => {
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              {
+                type: 'row',
+                expression_tree: JSON.stringify({
+                  logic: 'AND',
+                  items: [{ type: 'item', term: 'between', value: 18 }],
+                }),
+              },
+            ],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('a null child entry inside items → 400 (unknown term, c?. guards)', async () => {
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [
+              {
+                type: 'row',
+                expression_tree: JSON.stringify({
+                  logic: 'AND',
+                  items: [null],
+                }),
+              },
+            ],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('save (workspace-reference validation arms)', () => {
+    it('rejects when a referenced datasource is missing / outside the workspace', async () => {
+      prisma.datasource.count.mockResolvedValueOnce(0); // found !== dsIds.length
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [{ type: 'column', ds_id: 99 }],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.dsRules.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects when a referenced table is missing / outside the workspace', async () => {
+      prisma.table.count.mockResolvedValueOnce(0);
+      prisma.dsRules.findFirst.mockResolvedValue({ id: 200, oid: 1 });
+      await expect(
+        withUser(1, () =>
+          service.save({
+            id: 200,
+            name: 'g',
+            permissions: [{ type: 'column', table_id: 99 }],
+            users: [],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.dsRules.update).not.toHaveBeenCalled();
+    });
+
+    it('non-number ds_id / table_id entries are skipped (filter typeof arm)', async () => {
+      prisma.dsRules.create.mockResolvedValue({ id: 3, oid: 1, name: 'g' });
+      await expect(
+        withUser(1, () =>
+          service.save({
+            name: 'g',
+            permissions: [{ type: 'column', ds_id: null, table_id: undefined }],
+            users: [],
+          }),
+        ),
+      ).resolves.toEqual({ id: 3, name: 'g' });
+      expect(prisma.datasource.count).not.toHaveBeenCalled();
+      expect(prisma.table.count).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createItems default client', () => {
+    it('falls back to the plain PrismaService when no transactional client is passed', async () => {
+      // Both save() call sites pass an explicit tx; the default parameter is
+      // exercised directly (private helper via cast) to pin the fallback.
+      prisma.dsPermission.createMany.mockResolvedValue({ count: 1 });
+      const createItems = (
+        service as unknown as {
+          createItems: (
+            rulesId: number,
+            items: { type: string }[],
+            client?: unknown,
+          ) => Promise<void>;
+        }
+      ).createItems.bind(service);
+      await createItems(12, [{ type: 'column' }], undefined);
+      expect(prisma.dsPermission.createMany).toHaveBeenCalledWith({
+        data: [expect.objectContaining({ rulesId: 12, type: 'column' })],
+      });
+    });
+  });
+
+  describe('workspace context', () => {
+    it('list without a resolved workspace (no user in ALS) → 404 ws_unresolved', async () => {
+      await expect(
+        requestContextStorage.run({}, () => service.list()),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
   });

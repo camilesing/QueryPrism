@@ -1,6 +1,7 @@
 import {
   appendLimit,
   hasTopLevelLimit,
+  stripOuterLimit,
   stripTrailingSemicolon,
 } from './limit-clause';
 
@@ -72,5 +73,48 @@ describe('limit-clause', () => {
         appendLimit('SELECT a FROM (SELECT a FROM t LIMIT 5) x', 500),
       ).toBe('SELECT a FROM (SELECT a FROM t LIMIT 5) x LIMIT 500');
     });
+  });
+});
+
+// ─────────────── residual branch arms (coverage tail) ──────────────────────
+
+describe('limit-clause — residual arms (coverage tail)', () => {
+  it('hasTopLevelLimit inspects only the FIRST statement of a multi-statement AST', () => {
+    // array AST: the LIMIT on the second statement is not the outer limit
+    expect(hasTopLevelLimit('SELECT a FROM t; SELECT b FROM u LIMIT 3')).toBe(
+      false,
+    );
+    // ...but a LIMIT on the first statement is
+    expect(hasTopLevelLimit('SELECT a FROM t LIMIT 4; SELECT b FROM u')).toBe(
+      true,
+    );
+  });
+
+  it('stripOuterLimit defaults the engine to the parser default dialect', () => {
+    // no engine argument → default-arg '' → unknown dialect → opt undefined
+    const out = stripOuterLimit('SELECT a FROM t LIMIT 10');
+    expect(out).not.toMatch(/limit/i);
+    // an unmapped engine name takes the same default-dialect path
+    expect(stripOuterLimit('SELECT a FROM t LIMIT 10', 'oracle')).toBe(out);
+    // sqlite maps to its own dialect
+    expect(stripOuterLimit('SELECT a FROM t LIMIT 10', 'sqlite')).not.toMatch(
+      /limit/i,
+    );
+  });
+
+  it('stripOuterLimit leaves a limit-free multi-statement input untouched', () => {
+    const sql = 'SELECT a FROM t; SELECT b FROM u';
+    expect(stripOuterLimit(sql, 'postgres')).toBe(sql);
+  });
+
+  it('stripOuterLimit strips the first statement limit of a multi-statement AST', () => {
+    // array AST with a limit on the first statement → the clone is re-serialized
+    // as a single-element array (known sqlify quirk: later statements drop)
+    const out = stripOuterLimit(
+      'SELECT a FROM t LIMIT 5; SELECT b FROM u',
+      'mysql',
+    );
+    expect(out).not.toMatch(/limit/i);
+    expect(out).toMatch(/FROM/i);
   });
 });

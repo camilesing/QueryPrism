@@ -320,3 +320,268 @@ describe('GeneratorService', () => {
     ).toBeNull();
   });
 });
+
+describe('GeneratorService parser arm sweep', () => {
+  let prompt: PromptService;
+  beforeAll(() => {
+    prompt = new PromptService();
+  });
+
+  const run = async (
+    chunks: Array<{ content?: string; reasoning?: string }>,
+    gen: (g: GeneratorService) => AsyncGenerator<LlmGenEvent>,
+  ) => collect(gen(new GeneratorService(mockLlm(chunks), prompt)));
+
+  const messagesEvent = (events: LlmGenEvent[]) =>
+    (events[0] as { messages: { type: string; content: string }[] }).messages;
+
+  // ---- extractKeywords (free TEXT, trimmed, sentinels pass through) --------
+  it('extractKeywords returns the trimmed raw text as keywords', async () => {
+    const events = await run([{ content: '  sale, revenue , 2024  ' }], (g) =>
+      g.extractKeywords(ctx()),
+    );
+    expect(result(events)).toEqual({ keywords: 'sale, revenue , 2024' });
+  });
+
+  it('extractKeywords forwards the ERROR:NOT_DATA_QUERY sentinel untouched', async () => {
+    const events = await run([{ content: 'ERROR:NOT_DATA_QUERY' }], (g) =>
+      g.extractKeywords(ctx()),
+    );
+    expect(result(events)).toEqual({ keywords: 'ERROR:NOT_DATA_QUERY' });
+  });
+
+  // ---- message building ----------------------------------------------------
+  it('injects history rounds as AIMessage/HumanMessage between system and task', async () => {
+    const events = await run([{ content: '{"questions":[]}' }], (g) =>
+      g.generateGuessQuestion(
+        ctx({
+          history: [
+            { role: 'user', content: 'first question' },
+            { role: 'assistant', content: 'first answer' },
+          ],
+        }),
+      ),
+    );
+    expect(messagesEvent(events).map((m) => m.type)).toEqual([
+      'system',
+      'human',
+      'ai',
+      'human',
+    ]);
+  });
+
+  it('serializes multimodal (non-string) message content as JSON', async () => {
+    const events = await run([{ content: '{"questions":[]}' }], (g) =>
+      g.generateGuessQuestion(
+        ctx({
+          history: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: 'blocks' }],
+            } as never,
+          ],
+        }),
+      ),
+    );
+    const human = messagesEvent(events).find((m) => m.type === 'human');
+    expect(human?.content).toContain('{"type":"text","text":"blocks"}');
+  });
+
+  it('renders an empty datasource list section when none is provided', async () => {
+    const events = await run([{ content: '{"datasource_id":1}' }], (g) =>
+      g.selectDatasource({ ...ctx(), datasourceList: undefined }),
+    );
+    // still parses; the {datasource_list} placeholder rendered as empty text
+    expect(result(events)).toEqual({ datasourceId: 1 });
+  });
+
+  it('appends each datasource description when present', async () => {
+    const events = await run([{ content: '{"datasource_id":2}' }], (g) =>
+      g.selectDatasource(
+        ctx({
+          datasourceList: [
+            { id: 1, name: 'plain' },
+            { id: 2, name: 'rich', description: 'sales database' },
+          ],
+        }),
+      ),
+    );
+    const human = messagesEvent(events).find((m) => m.type === 'human');
+    expect(human?.content).toContain('1. plain\n2. rich - sales database');
+    expect(result(events)).toEqual({ datasourceId: 2 });
+  });
+
+  // ---- parseSqlResult ------------------------------------------------------
+  it('need_clarify without a reason leaves reason undefined (not empty string)', async () => {
+    const events = await run(
+      [{ content: '{"need_clarify":true,"tables":["t"]}' }],
+      (g) => g.generateSql(ctx()),
+    );
+    expect(result(events)).toEqual({
+      success: true,
+      sql: '',
+      tables: ['t'],
+      chartType: '',
+      brief: '',
+      needClarify: true,
+    });
+  });
+
+  it('accepts camelCase needClarify and coerces numeric sql/brief to strings', async () => {
+    const events = await run(
+      [{ content: '{"needClarify":true,"reason":"r","sql":42,"brief":3}' }],
+      (g) => g.generateSql(ctx()),
+    );
+    expect(result(events)).toMatchObject({
+      needClarify: true,
+      reason: 'r',
+      sql: '42',
+      brief: '3',
+    });
+  });
+
+  it('accepts camelCase chartType and sql/table aliases', async () => {
+    const events = await run(
+      [
+        {
+          content:
+            '{"success":true,"sql":"SELECT 1","tables":"not-an-array","chartType":"line","brief":true}',
+        },
+      ],
+      (g) => g.generateSql(ctx()),
+    );
+    expect(result(events)).toEqual({
+      success: true,
+      sql: 'SELECT 1',
+      tables: [],
+      chartType: 'line',
+      brief: 'true',
+    });
+  });
+
+  // ---- parseChartResult ------------------------------------------------------
+  it('generateChart accepts the snake_case chart-type key', async () => {
+    const events = await run(
+      [{ content: '{"chart-type":"pie","xField":"a"}' }],
+      (g) => g.generateChart(ctx()),
+    );
+    expect(result(events)).toEqual({
+      chartType: 'pie',
+      config: { xField: 'a' },
+    });
+  });
+
+  it('generateChart yields null when the chart type is missing', async () => {
+    const events = await run(
+      [{ content: '{"xField":"a","yField":"b"}' }],
+      (g) => g.generateChart(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  it('generateChart yields null when no JSON is parseable', async () => {
+    const events = await run(
+      [{ content: 'The chart should be a bar chart.' }],
+      (g) => g.generateChart(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  // ---- parsePredictResult ----------------------------------------------------
+  it('generatePredict accepts camelCase predictData', async () => {
+    const events = await run(
+      [{ content: '{"predict":"stable","predictData":[{"label":"q2"}]}' }],
+      (g) => g.generatePredict(ctx()),
+    );
+    expect(result(events)).toEqual({
+      predict: 'stable',
+      predictData: [{ label: 'q2' }],
+    });
+  });
+
+  it('generatePredict defaults predictData to null and stringifies numeric predict', async () => {
+    const events = await run([{ content: '{"predict":7}' }], (g) =>
+      g.generatePredict(ctx()),
+    );
+    expect(result(events)).toEqual({ predict: '7', predictData: null });
+  });
+
+  it('generatePredict yields null when no JSON is parseable', async () => {
+    const events = await run([{ content: 'no prediction possible' }], (g) =>
+      g.generatePredict(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  // ---- parseGuessResult ------------------------------------------------------
+  it('generateGuessQuestion accepts a top-level questions array', async () => {
+    const events = await run([{ content: '["q1","q2"]' }], (g) =>
+      g.generateGuessQuestion(ctx()),
+    );
+    expect(result(events)).toEqual({ questions: ['q1', 'q2'] });
+  });
+
+  it('generateGuessQuestion yields null when questions is not an array', async () => {
+    const events = await run(
+      [{ content: '{"questions":"not-an-array"}' }],
+      (g) => g.generateGuessQuestion(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  it('generateGuessQuestion yields null when no JSON is parseable', async () => {
+    const events = await run([{ content: 'what would you ask?' }], (g) =>
+      g.generateGuessQuestion(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  // ---- parseSelectDsResult ---------------------------------------------------
+  it('selectDatasource accepts camelCase datasourceId', async () => {
+    const events = await run([{ content: '{"datasourceId":5}' }], (g) =>
+      g.selectDatasource(ctx()),
+    );
+    expect(result(events)).toEqual({ datasourceId: 5 });
+  });
+
+  it('selectDatasource yields null when the id is missing', async () => {
+    const events = await run([{ content: '{"other":1}' }], (g) =>
+      g.selectDatasource(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  it('selectDatasource yields null when the id is not numeric', async () => {
+    const events = await run([{ content: '{"datasource_id":"abc"}' }], (g) =>
+      g.selectDatasource(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  it('selectDatasource yields null when no JSON is parseable', async () => {
+    const events = await run([{ content: 'use db two' }], (g) =>
+      g.selectDatasource(ctx()),
+    );
+    expect(result(events)).toBeNull();
+  });
+
+  // ---- parseFilterResult -----------------------------------------------------
+  it('generateFilter defaults success to true and drops empty message', async () => {
+    const events = await run([{ content: '{"sql":"SELECT 1"}' }], (g) =>
+      g.generateFilter(ctx({ sql: 'SELECT 1' })),
+    );
+    expect(result(events)).toEqual({ success: true, sql: 'SELECT 1' });
+  });
+
+  it('generateFilter carries a failure message through', async () => {
+    const events = await run(
+      [{ content: '{"success":false,"message":"cannot merge"}' }],
+      (g) => g.generateFilter(ctx({ sql: 'SELECT 1' })),
+    );
+    expect(result(events)).toEqual({
+      success: false,
+      sql: '',
+      message: 'cannot merge',
+    });
+  });
+});

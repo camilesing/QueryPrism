@@ -406,3 +406,258 @@ describe('AssistantTokenGuard', () => {
     });
   });
 });
+
+describe('AssistantTokenGuard residual arms', () => {
+  const assistantRow = {
+    id: 42,
+    oid: 1,
+    type: 4,
+    appId: 'uuid-42',
+    appSecret: 'encrypted',
+    domain: null,
+    configuration: null,
+  };
+  const activeUser = {
+    id: 7,
+    account: 'member',
+    oid: 5,
+    status: 1,
+    language: 'en-US',
+  };
+
+  it('rejects a header with no scheme separator', async () => {
+    const m = makeGuard();
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Assistant',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.not_logged_in');
+  });
+
+  it('rejects a header whose token part is empty (trailing space)', async () => {
+    const m = makeGuard();
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded ',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.not_logged_in');
+  });
+
+  it('Assistant scheme: token without assistant_id claim is rejected', async () => {
+    const m = makeGuard();
+    m.jwtService.verifyAsync.mockResolvedValue({
+      id: 9,
+      account: 'a',
+      oid: 1,
+    });
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Assistant fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.not_logged_in');
+    expect(m.prisma.assistant.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('Assistant scheme: null id claim maps to virtual user id 0', async () => {
+    const m = makeGuard();
+    m.jwtService.verifyAsync.mockResolvedValue({
+      id: null,
+      account: 'queryprism-inner-assistant',
+      oid: 3,
+      assistant_id: 42,
+    });
+    m.prisma.assistant.findFirst.mockResolvedValue({
+      ...assistantRow,
+      type: 0,
+    });
+    const { ctx, req } = makeContext({
+      'x-queryprism-assistant-token': 'Assistant fake.jwt.token',
+    });
+    const { store } = await runInCtx(async () => m.guard.canActivate(ctx));
+    expect(req.user).toMatchObject({ id: 0, oid: 3 });
+    expect(store.assistant).toMatchObject({ id: 42 });
+  });
+
+  it('Embedded: undecodable token is rejected', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue(null);
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.not_logged_in');
+  });
+
+  it('Embedded: no id claim and no app_id → rejected before lookup', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ account: 'member' });
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.not_logged_in');
+    expect(m.prisma.assistant.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('Embedded: unknown assistant id is rejected', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ id: 42 });
+    m.prisma.assistant.findFirst.mockResolvedValue(null);
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.invalid_origin');
+  });
+
+  it('Embedded: second-pass signature failure is token_expired', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ id: 42 });
+    m.prisma.assistant.findFirst.mockResolvedValue(assistantRow);
+    m.assistantService.decryptAppSecret.mockReturnValue('secret');
+    m.jwtService.verifyAsync.mockRejectedValue(new Error('bad signature'));
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.token_expired');
+  });
+
+  it('Embedded: verified payload without account claim is rejected', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ id: 42 });
+    m.prisma.assistant.findFirst.mockResolvedValue(assistantRow);
+    m.assistantService.decryptAppSecret.mockReturnValue('secret');
+    m.jwtService.verifyAsync.mockResolvedValue({ id: 42 });
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.not_logged_in');
+    expect(m.prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('Embedded: unknown account in payload is rejected', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ id: 42 });
+    m.prisma.assistant.findFirst.mockResolvedValue(assistantRow);
+    m.assistantService.decryptAppSecret.mockReturnValue('secret');
+    m.jwtService.verifyAsync.mockResolvedValue({ id: 42, account: 'ghost' });
+    m.prisma.user.findUnique.mockResolvedValue(null);
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.account_missing_or_disabled');
+  });
+
+  it('Embedded: disabled account (status=0) is rejected', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ id: 42 });
+    m.prisma.assistant.findFirst.mockResolvedValue(assistantRow);
+    m.assistantService.decryptAppSecret.mockReturnValue('secret');
+    m.jwtService.verifyAsync.mockResolvedValue({ id: 42, account: 'member' });
+    m.prisma.user.findUnique.mockResolvedValue({ ...activeUser, status: 0 });
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    await expect(
+      runInCtx(async () => m.guard.canActivate(ctx)),
+    ).rejects.toThrow('auth.account_missing_or_disabled');
+  });
+
+  it('online header "1" is true and any other value is false', async () => {
+    const m = makeGuard();
+    m.jwtService.verifyAsync.mockResolvedValue({
+      id: 999,
+      account: 'queryprism-inner-assistant',
+      oid: 1,
+      assistant_id: 42,
+    });
+    m.prisma.assistant.findFirst.mockResolvedValue({
+      ...assistantRow,
+      type: 0,
+    });
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Assistant fake.jwt.token',
+      'x-queryprism-assistant-online': '1',
+    });
+    const { store } = await runInCtx(async () => m.guard.canActivate(ctx));
+    expect(store.assistant?.online).toBe(true);
+
+    const m2 = makeGuard();
+    m2.jwtService.verifyAsync.mockResolvedValue({
+      id: 999,
+      account: 'queryprism-inner-assistant',
+      oid: 1,
+      assistant_id: 42,
+    });
+    m2.prisma.assistant.findFirst.mockResolvedValue({
+      ...assistantRow,
+      type: 0,
+    });
+    const { ctx: ctx2 } = makeContext({
+      'x-queryprism-assistant-token': 'Assistant fake.jwt.token',
+      'x-queryprism-assistant-online': 'yes',
+    });
+    const { store: store2 } = await runInCtx(async () =>
+      m2.guard.canActivate(ctx2),
+    );
+    expect(store2.assistant?.online).toBe(false);
+  });
+
+  it('a malformed URL-escape certificate falls back to the base64-decoded text', async () => {
+    const m = makeGuard();
+    m.jwtService.verifyAsync.mockResolvedValue({
+      id: 999,
+      account: 'queryprism-inner-assistant',
+      oid: 1,
+      assistant_id: 42,
+    });
+    m.prisma.assistant.findFirst.mockResolvedValue({
+      ...assistantRow,
+      type: 0,
+    });
+    const certB64 = Buffer.from('100%-not-an-escape', 'utf8').toString(
+      'base64',
+    );
+    const { ctx } = makeContext({
+      'x-queryprism-assistant-token': 'Assistant fake.jwt.token',
+      'x-queryprism-assistant-certificate': certB64,
+    });
+    const { store } = await runInCtx(async () => m.guard.canActivate(ctx));
+    expect(store.assistant?.certificate).toBe('100%-not-an-escape');
+  });
+
+  it('populates req.user even without a running ALS store', async () => {
+    const m = makeGuard();
+    m.jwtService.decode.mockReturnValue({ id: 42 });
+    m.prisma.assistant.findFirst.mockResolvedValue(assistantRow);
+    m.assistantService.decryptAppSecret.mockReturnValue('secret');
+    m.jwtService.verifyAsync.mockResolvedValue({
+      id: 42,
+      account: 'member',
+    });
+    m.prisma.user.findUnique.mockResolvedValue(activeUser);
+    const { ctx, req } = makeContext({
+      'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+    });
+    // no requestContextStorage.run wrapper — the guard must not crash
+    await expect(m.guard.canActivate(ctx)).resolves.toBe(true);
+    expect(req.user).toEqual({
+      id: 7,
+      account: 'member',
+      oid: 5,
+      language: 'en-US',
+    });
+  });
+});

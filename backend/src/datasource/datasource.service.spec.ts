@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, UnauthorizedException } from '@nestjs/common';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import { DatasourceService } from './datasource.service';
@@ -11,6 +11,8 @@ import { EmbeddingService } from '../embedding/embedding.service';
 import { VectorService } from '../vector/vector.service';
 import { QueryCacheService } from '../quota/query-cache.service';
 import { encryptFrontendConfig } from './frontend-config-crypto';
+import { appendLimit } from './db-connector/limit-clause';
+import { effectiveSqlHash } from '../quota/quota-policy';
 import { requestContextStorage } from '../common/context/request-context';
 import { setI18n } from '../common/i18n/translate';
 import { createTestI18n } from '../common/i18n/test-i18n';
@@ -1664,6 +1666,815 @@ describe('DatasourceService', () => {
         .mockResolvedValue(mockDatasourceRow({ name: 'empty' }));
       jest.spyOn(prismaService.table, 'findMany').mockResolvedValue([]);
       await expect(service.exportDsSchema(1)).rejects.toThrow();
+    });
+  });
+
+  // ─── appended coverage: lifecycle arms, execSql funnel, degrade paths ────
+
+  /** Fresh throwaway SQLite file with the given DDL executed. */
+  function makeSqliteDb(ddl: string): string {
+    const path = `/tmp/test-ds-extra-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}.db`;
+    const db = new Database(path);
+    db.exec(ddl);
+    db.close();
+    return path;
+  }
+
+  /** The M7 query-cache provider mock (shared jest.fn object, never reset). */
+  const queryCacheMock = () =>
+    app.get<QueryCacheService>(QueryCacheService) as unknown as {
+      currentRevision: jest.Mock;
+      bumpRevision: jest.Mock;
+      lookup: jest.Mock;
+      store: jest.Mock;
+    };
+
+  /** Stub every Table/Field delegate a sync flow touches. */
+  function spySyncDelegates() {
+    jest.spyOn(prismaService.table, 'findFirst').mockResolvedValue(null);
+    jest
+      .spyOn(prismaService.table, 'create')
+      .mockResolvedValue({ id: 1 } as never);
+    jest.spyOn(prismaService.table, 'findMany').mockResolvedValue([] as never);
+    jest
+      .spyOn(prismaService.table, 'deleteMany')
+      .mockResolvedValue({ count: 0 });
+    jest.spyOn(prismaService.field, 'findMany').mockResolvedValue([] as never);
+    jest
+      .spyOn(prismaService.field, 'deleteMany')
+      .mockResolvedValue({ count: 0 });
+    jest
+      .spyOn(prismaService.field, 'create')
+      .mockResolvedValue({ id: 1 } as never);
+    jest.spyOn(prismaService.field, 'update').mockResolvedValue({} as never);
+    jest
+      .spyOn(prismaService.datasource, 'update')
+      .mockResolvedValue({} as never);
+  }
+
+  describe('create / findAll / findOne / update — row lifecycle + embed hooks', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('findAll returns the workspace datasources', async () => {
+      const findMany = jest
+        .spyOn(prismaService.datasource, 'findMany')
+        .mockResolvedValue([mockDatasourceRow({ id: 3 })]);
+      const rows = await service.findAll();
+      expect(rows[0].id).toBe(3);
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { oid: 1 } }),
+      );
+    });
+
+    it('findOne 404s a datasource outside the workspace', async () => {
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(null);
+      await expect(service.findOne(9)).rejects.toThrow('数据源 #9 不存在');
+    });
+
+    it('create syncs the incoming table selection immediately', async () => {
+      const testDbPath = makeSqliteDb(
+        'CREATE TABLE users (id INTEGER PRIMARY KEY)',
+      );
+      const conf = encryptFrontendConfig({ db: testDbPath });
+      jest
+        .spyOn(prismaService.datasource, 'create')
+        .mockResolvedValue(mockDatasourceRow({ id: 7, configuration: conf }));
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({ configuration: conf }));
+      spySyncDelegates();
+
+      await service.create({
+        name: 'x',
+        type: 'sqlite',
+        configuration: conf,
+        tables: [{ table_name: 'users', table_comment: '用户' }],
+      });
+
+      expect(prismaService.table.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          datasourceId: 7,
+          tableName: 'users',
+          tableComment: '用户',
+          checked: true,
+        }),
+      });
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    });
+
+    it('create embeds name+description and upserts the vector', async () => {
+      embeddingMock.available = true;
+      embeddingMock.embed.mockResolvedValue([0.3, 0.4]);
+      vectorMock.available = true;
+      jest
+        .spyOn(prismaService.datasource, 'create')
+        .mockResolvedValue(
+          mockDatasourceRow({ id: 5, name: 'shop', description: '门店' }),
+        );
+      const dsUpdate = jest
+        .spyOn(prismaService.datasource, 'update')
+        .mockResolvedValue({} as never);
+
+      await service.create({ name: 'shop', type: 'sqlite' });
+      // flush the fire-and-forget embedDatasource
+      await new Promise((r) => setImmediate(r));
+
+      expect(dsUpdate).toHaveBeenCalledWith({
+        where: { id: 5 },
+        data: { embedding: [0.3, 0.4] },
+      });
+      expect(vectorMock.upsert).toHaveBeenCalledWith(
+        'datasource',
+        5,
+        [0.3, 0.4],
+      );
+    });
+
+    it('create survives an embed failure (fire-and-forget warn only)', async () => {
+      embeddingMock.available = true;
+      embeddingMock.embed.mockRejectedValue(new Error('embed down'));
+      const created = jest
+        .spyOn(prismaService.datasource, 'create')
+        .mockResolvedValue(mockDatasourceRow({ id: 6, name: 'n' }));
+
+      const row = await service.create({ name: 'n', type: 'sqlite' });
+      await new Promise((r) => setImmediate(r));
+
+      expect(row.id).toBe(6);
+      expect(created).toHaveBeenCalledTimes(1);
+    });
+
+    it('update writes only provided fields; a rebind bumps the cache revision', async () => {
+      queryCacheMock().bumpRevision.mockClear();
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      const upd = jest
+        .spyOn(prismaService.datasource, 'update')
+        .mockResolvedValue(mockDatasourceRow({}));
+
+      // name only — no rebind, no cache bump
+      await service.update(1, { name: 'n2' });
+      expect(upd).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { name: 'n2' },
+      });
+      expect(queryCacheMock().bumpRevision).not.toHaveBeenCalled();
+
+      // type change IS a rebind → revision bump
+      await service.update(1, { type: 'mysql' });
+      expect(upd).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { type: 'mysql' },
+      });
+      expect(queryCacheMock().bumpRevision).toHaveBeenCalledTimes(1);
+
+      // status only — neither bump nor embed side effects
+      queryCacheMock().bumpRevision.mockClear();
+      await service.update(1, { status: 'error' });
+      expect(upd).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { status: 'error' },
+      });
+      expect(queryCacheMock().bumpRevision).not.toHaveBeenCalled();
+    });
+
+    it('update survives an embed failure on a name/description change', async () => {
+      embeddingMock.available = true;
+      embeddingMock.embed.mockRejectedValue(new Error('embed down'));
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      const upd = jest
+        .spyOn(prismaService.datasource, 'update')
+        .mockResolvedValue(mockDatasourceRow({}));
+
+      await expect(
+        service.update(1, { description: 'd' }),
+      ).resolves.toBeDefined();
+      expect(upd).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { description: 'd' },
+      });
+      await new Promise((r) => setImmediate(r));
+    });
+
+    it('a failed cache-revision bump never fails the cold path', async () => {
+      queryCacheMock().bumpRevision.mockRejectedValueOnce(
+        new Error('cache down'),
+      );
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      jest
+        .spyOn(prismaService.datasource, 'update')
+        .mockResolvedValue(mockDatasourceRow({}));
+
+      await expect(service.update(1, { type: 'mysql' })).resolves.toBeDefined();
+      await new Promise((r) => setImmediate(r)); // flush the warn
+    });
+  });
+
+  describe('findByOid — guard arms', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('rejects a non-positive / non-integer workspace id', async () => {
+      await expect(service.findByOid(0, { id: 2 } as never)).rejects.toThrow(
+        '无效的工作空间',
+      );
+      await expect(service.findByOid(1.5, { id: 2 } as never)).rejects.toThrow(
+        '无效的工作空间',
+      );
+    });
+
+    it('rejects a caller with no membership in the workspace', async () => {
+      jest.spyOn(prismaService.userWs, 'findUnique').mockResolvedValue(null);
+      await expect(service.findByOid(3, { id: 2 } as never)).rejects.toThrow(
+        '无权访问该工作空间',
+      );
+    });
+  });
+
+  describe('connector passthrough (getVersion / previewTable / withConnection)', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    let testDbPath: string;
+    beforeEach(() => {
+      testDbPath = makeSqliteDb(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO products (id, name) VALUES (1, 'apple')",
+      );
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          configuration: encryptFrontendConfig({ db: testDbPath }),
+        }),
+      );
+    });
+    afterEach(() => {
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    });
+
+    it('getVersion reports the engine version', async () => {
+      await expect(service.getVersion(1)).resolves.toContain('SQLite');
+    });
+
+    it('previewTable returns columns + sampled rows', async () => {
+      const out = await service.previewTable(1, 'products', 5);
+      expect(out.columns).toEqual(['id', 'name']);
+      expect(out.rows).toHaveLength(1);
+    });
+
+    it('withConnection runs the callback inside one connector session', async () => {
+      const out = await service.withConnection(1, (c) => c.getVersion());
+      expect(out).toContain('SQLite');
+    });
+  });
+
+  describe('execSql (M7 funnel: limit clamp + SQL result cache)', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    let testDbPath: string;
+    beforeEach(() => {
+      testDbPath = makeSqliteDb(
+        'CREATE TABLE nums (id INTEGER PRIMARY KEY); INSERT INTO nums (id) VALUES (1),(2),(3),(4),(5)',
+      );
+    });
+    afterEach(() => {
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    });
+
+    function stubDs() {
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          configuration: encryptFrontendConfig({ db: testDbPath }),
+        }),
+      );
+    }
+    function stubParams(rows: { name: string; value: unknown }[]) {
+      jest
+        .spyOn(prismaService.systemVariable, 'findMany')
+        .mockResolvedValue(
+          rows.map((r) => ({ type: 'parameter', ...r })) as never,
+        );
+    }
+
+    it('caps rows at quota.max_rows; a smaller caller limit wins, a larger is clamped', async () => {
+      stubDs();
+      stubParams([
+        { name: 'quota.max_rows', value: 3 },
+        { name: 'cache.enabled', value: false },
+      ]);
+      const sql = 'SELECT id FROM nums';
+
+      const noLimit = await service.execSql(1, sql);
+      expect(noLimit.columns).toEqual(['id']);
+      expect(noLimit.rows).toHaveLength(3); // quota cap applies
+
+      const smaller = await service.execSql(1, sql, 2);
+      expect(smaller.rows).toHaveLength(2); // caller's smaller limit wins
+
+      const larger = await service.execSql(1, sql, 50);
+      expect(larger.rows).toHaveLength(3); // clamped back to the quota cap
+    });
+
+    it('stores a miss under the hashed LIMIT-appended SQL and serves the hit', async () => {
+      stubDs();
+      stubParams([
+        { name: 'quota.max_rows', value: 3 },
+        { name: 'cache.enabled', value: true },
+        { name: 'cache.ttl_seconds', value: 120 },
+      ]);
+      const qc = queryCacheMock();
+      qc.currentRevision.mockResolvedValueOnce(7).mockResolvedValueOnce(7);
+      qc.lookup.mockResolvedValueOnce(null); // first exec: miss
+      const sql = 'SELECT id FROM nums';
+      const finalSql = appendLimit(sql, 3);
+
+      const first = await service.execSql(1, sql);
+      expect(first.rows).toHaveLength(3);
+      // keyed on sha256 of the LIMIT-appended effective SQL + revision/TTL
+      expect(qc.store).toHaveBeenCalledWith(
+        1,
+        1,
+        effectiveSqlHash(finalSql),
+        finalSql,
+        first,
+        7,
+        120,
+      );
+
+      const cached = { columns: ['id'], rows: [[9]] };
+      qc.lookup.mockResolvedValueOnce(cached); // second exec: hit
+      const second = await service.execSql(1, sql);
+      expect(second).toBe(cached);
+      expect(qc.store).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('syncTables — existing-table arm + dead connection', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('updates an existing Table row (custom comment survives) and survives an embed failure', async () => {
+      const testDbPath = makeSqliteDb(
+        'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)',
+      );
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          configuration: encryptFrontendConfig({ db: testDbPath }),
+        }),
+      );
+      jest
+        .spyOn(prismaService.table, 'findFirst')
+        .mockResolvedValue({ id: 50, customComment: '自定义备注' } as never);
+      const tblUpdate = jest
+        .spyOn(prismaService.table, 'update')
+        .mockResolvedValue({ id: 50 } as never);
+      jest
+        .spyOn(prismaService.field, 'findMany')
+        .mockResolvedValue([] as never);
+      jest
+        .spyOn(prismaService.field, 'deleteMany')
+        .mockResolvedValue({ count: 0 });
+      jest
+        .spyOn(prismaService.field, 'create')
+        .mockResolvedValue({ id: 1 } as never);
+      jest.spyOn(prismaService.field, 'update').mockResolvedValue({} as never);
+      embeddingMock.available = true;
+      embeddingMock.embed.mockRejectedValue(new Error('embed down'));
+
+      await expect(service.syncTables(1)).resolves.toMatchObject({
+        success: true,
+        tableCount: 1,
+      });
+      // sqlite exposes no table comments — sync still refreshes the column
+      expect(tblUpdate).toHaveBeenCalledWith({
+        where: { id: 50 },
+        data: { tableComment: null },
+      });
+      await new Promise((r) => setImmediate(r)); // flush the embed warn
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    });
+
+    it('throws 500 on a dead connection but still bumps the cache revision', async () => {
+      queryCacheMock().bumpRevision.mockClear();
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          oid: 1,
+          configuration: encryptFrontendConfig({
+            db: '/nonexistent-dir-does-not-exist/x.db',
+          }),
+        }),
+      );
+
+      await expect(service.syncTables(1)).rejects.toThrow('同步失败');
+      expect(queryCacheMock().bumpRevision).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('recallTables — outer degradation', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('returns [] when the table read itself fails (nothing is dropped)', async () => {
+      embeddingMock.available = true;
+      vectorMock.available = true;
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      jest
+        .spyOn(prismaService.table, 'findMany')
+        .mockRejectedValue(new Error('db down'));
+
+      await expect(
+        service.recallTables(1, '问', {
+          config: {
+            enabled: true,
+            terminologySimilarity: 0.4,
+            terminologyTopCount: 5,
+            dataTrainingSimilarity: 0.4,
+            dataTrainingTopCount: 5,
+            tableEnabled: true,
+            tableCount: 10,
+            tableAlpha: 0.4,
+            keywordEnabled: true,
+            datasourceCount: 10,
+            clarifyEnabled: true,
+            clarifyTableThreshold: 3,
+            clarifyMaxSelect: 3,
+            clarifyMaxRounds: 1,
+            semanticEnabled: true,
+            semanticMaxTables: 1,
+            semanticEnumMaxValues: 50,
+            semanticEnumScanRows: 10000,
+            semanticEnumCooldown: 60,
+            metricEnabled: true,
+            metricMaxDefinitions: 5,
+            metricSimilarityThreshold: 0.55,
+            namingEnabled: true,
+            quotaMaxRows: 1000,
+            cacheEnabled: false,
+            cacheTtlSeconds: 300,
+          },
+        }),
+      ).resolves.toEqual([]);
+    });
+  });
+
+  describe('getTableRelation / getTableRelationVersions', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('returns the saved edge list ([] when never saved)', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValueOnce(
+          mockDatasourceRow({
+            tableRelation: [
+              {
+                fromTable: 'orders',
+                fromField: 'user_id',
+                toTable: 'users',
+                toField: 'id',
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(mockDatasourceRow({ tableRelation: null }));
+      await expect(service.getTableRelation(1)).resolves.toEqual([
+        {
+          fromTable: 'orders',
+          fromField: 'user_id',
+          toTable: 'users',
+          toField: 'id',
+        },
+      ]);
+      await expect(service.getTableRelation(1)).resolves.toEqual([]);
+    });
+
+    it('paginates history with normalized bounds (page>=1, size<=100)', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      const findMany = jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findMany')
+        .mockResolvedValue([
+          {
+            id: 3,
+            version: 3,
+            snapshot: [],
+            changedBy: 1,
+            note: null,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+          },
+        ] as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'count')
+        .mockResolvedValue(25);
+      jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation((arg: unknown) =>
+          Array.isArray(arg)
+            ? Promise.all(arg as Promise<unknown>[])
+            : (arg as (c: unknown) => Promise<unknown>)(prismaService),
+        );
+
+      const out = await service.getTableRelationVersions(1, 0, 500);
+      expect(out).toMatchObject({
+        current_page: 1,
+        page_size: 100,
+        total_count: 25,
+      });
+      expect(out.data[0]).toMatchObject({ id: 3, version: 3 });
+      expect(findMany).toHaveBeenCalledWith({
+        where: { datasourceId: 1 },
+        orderBy: { version: 'desc' },
+        skip: 0,
+        take: 100,
+        select: {
+          id: true,
+          version: true,
+          snapshot: true,
+          changedBy: true,
+          note: true,
+          createdAt: true,
+        },
+      });
+    });
+  });
+
+  describe('relation restore / compare — ownership + missing-target arms', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('404s restoring when the datasource is outside the workspace', async () => {
+      const tx = {
+        datasource: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          update: jest.fn(),
+        },
+        datasourceRelationVersion: { findFirst: jest.fn(), create: jest.fn() },
+      };
+      jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation((arg: unknown) =>
+          (arg as (c: unknown) => Promise<unknown>)(tx),
+        );
+
+      await expect(service.restoreTableRelation(1, 2)).rejects.toThrow(
+        '数据源 #1 不存在',
+      );
+    });
+
+    it('404s compare when no snapshot exists at all', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findFirst')
+        .mockResolvedValue(null);
+
+      await expect(service.compareTableRelation(1, 2)).rejects.toThrow(
+        '数据源 #1 不存在关系版本 2',
+      );
+    });
+
+    it('404s compare when the to-version row is missing', async () => {
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(mockDatasourceRow({}));
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findFirst')
+        .mockResolvedValue({ version: 3 } as never);
+      jest
+        .spyOn(prismaService.datasourceRelationVersion, 'findMany')
+        .mockResolvedValue([{ version: 2, snapshot: [] }] as never);
+      jest
+        .spyOn(prismaService.table, 'findMany')
+        .mockResolvedValue([] as never);
+
+      await expect(service.compareTableRelation(1, 2)).rejects.toThrow(
+        '数据源 #1 不存在关系版本 3',
+      );
+    });
+  });
+
+  describe('editTable / editField — ownership + embed arms', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+    let txSpy: jest.SpyInstance;
+    beforeEach(() => {
+      txSpy = jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation(((fn: (tx: PrismaService) => unknown) =>
+          fn(prismaService)) as never);
+    });
+    afterEach(() => txSpy.mockRestore());
+
+    it('editTable 404s a table outside the workspace', async () => {
+      jest.spyOn(prismaService.table, 'findFirst').mockResolvedValue(null);
+      await expect(service.editTable({ id: 10 })).rejects.toThrow(
+        '表 #10 不存在',
+      );
+    });
+
+    it('editField 404s a field outside the workspace', async () => {
+      jest.spyOn(prismaService.field, 'findFirst').mockResolvedValue(null);
+      await expect(service.editField({ id: 20 })).rejects.toThrow(
+        '字段 #20 不存在',
+      );
+    });
+
+    it('editTable tolerates an embed failure (fire-and-forget warn only)', async () => {
+      embeddingMock.available = true;
+      embeddingMock.embed.mockRejectedValue(new Error('embed down'));
+      jest
+        .spyOn(prismaService.table, 'findFirst')
+        .mockResolvedValue({ id: 10 } as never);
+      const tblUpdate = jest
+        .spyOn(prismaService.table, 'update')
+        .mockResolvedValue({
+          id: 10,
+          tableName: 'orders',
+          tableComment: '销售',
+          customComment: null,
+        } as never);
+
+      await expect(
+        service.editTable({ id: 10, checked: true }),
+      ).resolves.toBeUndefined();
+      await new Promise((r) => setImmediate(r)); // flush the warn
+      expect(tblUpdate).toHaveBeenCalledWith({
+        where: { id: 10 },
+        data: { checked: true },
+      });
+    });
+
+    it('editTable re-embeds with the tableComment when customComment is null', async () => {
+      embeddingMock.available = true;
+      embeddingMock.embed.mockResolvedValue([0.1, 0.2]);
+      vectorMock.available = true;
+      jest
+        .spyOn(prismaService.table, 'findFirst')
+        .mockResolvedValue({ id: 10 } as never);
+      const tblUpdate = jest
+        .spyOn(prismaService.table, 'update')
+        .mockResolvedValue({
+          id: 10,
+          tableName: 'orders',
+          tableComment: '销售',
+          customComment: null,
+        } as never);
+
+      await service.editTable({ id: 10, custom_comment: null });
+      await new Promise((r) => setImmediate(r)); // flush the re-embed
+
+      expect(embeddingMock.embed).toHaveBeenCalledWith('orders\n销售');
+      expect(tblUpdate).toHaveBeenCalledWith({
+        where: { id: 10 },
+        data: { embedding: [0.1, 0.2] },
+      });
+      expect(vectorMock.upsert).toHaveBeenCalledWith('table', 10, [0.1, 0.2]);
+    });
+  });
+
+  describe('previewData / syncFieldsByTableId — missing-row guards', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('previewData 404s an unknown table id', async () => {
+      jest.spyOn(prismaService.table, 'findFirst').mockResolvedValue(null);
+      await expect(
+        service.previewData(1, { table: { id: 9 } }),
+      ).rejects.toThrow('表 #9 不存在');
+    });
+
+    it('syncFieldsByTableId 404s an unknown table id', async () => {
+      jest.spyOn(prismaService.table, 'findFirst').mockResolvedValue(null);
+      await expect(service.syncFieldsByTableId(9)).rejects.toThrow(
+        '表 #9 不存在',
+      );
+    });
+  });
+
+  describe('syncFieldsByTableId — field merge + embed degradation', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('deletes stale fields, updates survivors, creates new ones; embed failure tolerated', async () => {
+      const testDbPath = makeSqliteDb(
+        'CREATE TABLE items (id INTEGER PRIMARY KEY, sku TEXT)',
+      );
+      jest.spyOn(prismaService.table, 'findFirst').mockResolvedValue({
+        id: 9,
+        datasourceId: 1,
+        tableName: 'items',
+        customComment: null,
+        tableComment: '物',
+      } as never);
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          oid: 1,
+          configuration: encryptFrontendConfig({ db: testDbPath }),
+        }),
+      );
+      jest.spyOn(prismaService.field, 'findMany').mockResolvedValue([
+        { id: 1, fieldName: 'gone' },
+        { id: 2, fieldName: 'sku' },
+      ] as never);
+      const fieldDelete = jest
+        .spyOn(prismaService.field, 'deleteMany')
+        .mockResolvedValue({ count: 1 });
+      const fieldUpdate = jest
+        .spyOn(prismaService.field, 'update')
+        .mockResolvedValue({} as never);
+      const fieldCreate = jest
+        .spyOn(prismaService.field, 'create')
+        .mockResolvedValue({ id: 3 } as never);
+      embeddingMock.available = true;
+      embeddingMock.embed.mockRejectedValue(new Error('embed down'));
+
+      await expect(service.syncFieldsByTableId(9)).resolves.toBeUndefined();
+      // 'gone' no longer exists in the source; 'sku' refreshes in place;
+      // 'id' is new (created).
+      expect(fieldDelete).toHaveBeenCalledWith({ where: { id: { in: [1] } } });
+      expect(fieldUpdate).toHaveBeenCalledWith({
+        where: { id: 2 },
+        data: expect.objectContaining({ fieldType: 'TEXT' }),
+      });
+      expect(fieldCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({ fieldName: 'id', isPrimaryKey: true }),
+      });
+      await new Promise((r) => setImmediate(r)); // flush the embed warn
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    });
+  });
+
+  describe('syncTable — embed degradation', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('tolerates an embed failure during the selection sync (warn only)', async () => {
+      const testDbPath = makeSqliteDb(
+        'CREATE TABLE users (id INTEGER PRIMARY KEY)',
+      );
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          oid: 1,
+          configuration: encryptFrontendConfig({ db: testDbPath }),
+        }),
+      );
+      spySyncDelegates();
+      embeddingMock.available = true;
+      embeddingMock.embed.mockRejectedValue(new Error('embed down'));
+
+      await expect(
+        service.syncTable(1, [{ table_name: 'users', table_comment: '用户' }]),
+      ).resolves.toBeUndefined();
+      await new Promise((r) => setImmediate(r)); // flush the warn
+      expect(prismaService.table.create).toHaveBeenCalled();
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    });
+  });
+
+  describe('remove — non-excel datasource', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('deletes regression cases + the row in one tx and drops no physical tables', async () => {
+      excelStoreMock.dropTables.mockClear();
+      queryCacheMock().bumpRevision.mockClear();
+      jest
+        .spyOn(prismaService, '$transaction')
+        .mockImplementation((async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn(prismaService)) as never);
+      jest
+        .spyOn(prismaService.datasource, 'findFirst')
+        .mockResolvedValue(
+          mockDatasourceRow({ id: 5, oid: 1, type: 'sqlite' }),
+        );
+      const caseDelete = jest
+        .spyOn(prismaService.regressionCase, 'deleteMany')
+        .mockResolvedValue({ count: 0 });
+      jest
+        .spyOn(prismaService.datasource, 'delete')
+        .mockResolvedValue({} as never);
+
+      await service.remove(5);
+
+      expect(caseDelete).toHaveBeenCalledWith({
+        where: { oid: 1, datasourceId: 5 },
+      });
+      expect(excelStoreMock.dropTables).not.toHaveBeenCalled();
+      expect(queryCacheMock().bumpRevision).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('tableList — ownership guard', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('404s a datasource outside the workspace', async () => {
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(null);
+      await expect(service.tableList(5)).rejects.toThrow('数据源 #5 不存在');
+    });
+  });
+
+  describe('workspace resolution (ALS)', () => {
+    beforeEach(() => setI18n(createTestI18n()));
+
+    it('rejects with 401 when no request context is attached', async () => {
+      const raw = app.get(DatasourceService);
+      await expect(raw.findAll()).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 });

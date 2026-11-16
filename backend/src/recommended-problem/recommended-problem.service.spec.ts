@@ -4,6 +4,7 @@
 // RequestContext.getUser() reads the AsyncLocalStorage store; the `withUser`
 // helper establishes it for a test without spinning up the Nest middleware.
 import { requestContextStorage } from '../common/context/request-context';
+import { NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaService } from '../database/prisma.service';
 import {
@@ -253,6 +254,77 @@ describe('RecommendedProblemService', () => {
         { datasourceId: 7, question: 'q1' }, // id=999 + sort=5 stripped
         { datasourceId: 7, question: 'q2' },
       ]);
+    });
+  });
+});
+
+describe('RecommendedProblemService residual arms', () => {
+  let prisma: MockPrisma;
+  let service: RecommendedProblemService;
+
+  beforeEach(async () => {
+    prisma = makePrisma();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        RecommendedProblemService,
+        { provide: PrismaService, useValue: prisma },
+      ],
+    }).compile();
+    service = withContext(moduleRef.get(RecommendedProblemService));
+  });
+
+  it('listByDatasource returns [] for a datasource outside the workspace', async () => {
+    prisma.datasource.findFirst.mockResolvedValue(null);
+    await expect(service.listByDatasource(404)).resolves.toEqual([]);
+    expect(prisma.dsRecommendedProblem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('save treats a missing problemInfo array as empty', async () => {
+    const out = await withUser(1, () =>
+      service.save({
+        recommended_config: 2,
+        datasource_id: 10,
+        problemInfo: undefined as unknown as [],
+      }),
+    );
+    expect(prisma.dsRecommendedProblem.deleteMany).toHaveBeenCalled();
+    expect(prisma.dsRecommendedProblem.createMany).not.toHaveBeenCalled();
+    expect(out).toEqual({ datasource_id: 10, recommended_config: 2, count: 0 });
+  });
+
+  it('save rejects a datasource outside the workspace (404, no writes)', async () => {
+    prisma.datasource.findFirst.mockResolvedValue(null);
+    await expect(
+      withUser(1, () =>
+        service.save({
+          recommended_config: 2,
+          datasource_id: 404,
+          problemInfo: [{ question: 'q' }],
+        }),
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(prisma.datasource.update).not.toHaveBeenCalled();
+    expect(prisma.dsRecommendedProblem.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects calls with no user in the request context', async () => {
+    const bare = new RecommendedProblemService(prisma as never);
+    await expect(
+      requestContextStorage.run({}, () => bare.getBase(10)),
+    ).rejects.toThrow('common.ws_unresolved');
+    expect(prisma.datasource.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('coerces a non-numeric recommendedConfig Json value to 0', async () => {
+    prisma.datasource.findFirst.mockResolvedValue({
+      id: 10,
+      recommendedConfig: 'not-a-number',
+    });
+    const out = await service.getBase(10);
+    expect(out).toEqual({
+      datasource_id: 10,
+      recommended_config: 0,
+      questions: null,
     });
   });
 });

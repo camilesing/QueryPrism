@@ -4,7 +4,7 @@
 // inside-directory resolution.
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { ImportErrorFileService } from './import-error-file.service';
 import { setI18n } from '../i18n/translate';
@@ -102,5 +102,79 @@ describe('ImportErrorFileService', () => {
         service.delete('terminology_1_deadbeef_error.xlsx'),
       ).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('ImportErrorFileService residual arms', () => {
+  beforeEach(() => setI18n(createTestI18n()));
+  const service = makeService();
+
+  it('defaults the directory to uploads/import-errors when config has none', async () => {
+    const bare = new ImportErrorFileService({
+      get: () => undefined,
+    } as ConfigService);
+    const mkdirSpy = jest.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
+    const writeFileSpy = jest
+      .spyOn(fs, 'writeFile')
+      .mockResolvedValue(undefined);
+    try {
+      const filename = await bare.write({
+        prefix: 'terminology',
+        headers: ['word'],
+        rows: [['a']],
+        messages: ['boom'],
+      });
+      expect(mkdirSpy).toHaveBeenCalledWith(resolve('uploads/import-errors'), {
+        recursive: true,
+      });
+      expect(writeFileSpy).toHaveBeenCalledWith(
+        resolve('uploads/import-errors', filename),
+        expect.any(Buffer),
+      );
+    } finally {
+      mkdirSpy.mockRestore();
+      writeFileSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the "import" prefix for non-identifier prefixes', async () => {
+    const filename = await service.write({
+      prefix: 'bad prefix!',
+      headers: ['a'],
+      rows: [['x']],
+      messages: ['err'],
+    });
+    expect(filename).toMatch(/^import_\d+_[a-f0-9]{8}_error\.xlsx$/);
+    await service.delete(filename);
+  });
+
+  it('maps null row cells to empty workbook cells', async () => {
+    const filename = await service.write({
+      prefix: 'terminology',
+      headers: ['word', 'description'],
+      rows: [[null, 'kept']],
+      messages: [undefined as unknown as string],
+    });
+    // both write paths (nullish cell + missing message → '') succeed
+    expect(filename).toMatch(/^terminology_/);
+    await service.delete(filename);
+  });
+
+  it('delete swallows an unlink failure after the file resolved', async () => {
+    const filename = await service.write({
+      prefix: 'terminology',
+      headers: ['a'],
+      rows: [['x']],
+      messages: ['err'],
+    });
+    const unlinkSpy = jest
+      .spyOn(fs, 'unlink')
+      .mockRejectedValueOnce(new Error('EACCES'));
+    try {
+      await expect(service.delete(filename)).resolves.toBeUndefined();
+    } finally {
+      unlinkSpy.mockRestore();
+      await service.delete(filename);
+    }
   });
 });

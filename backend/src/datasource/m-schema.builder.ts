@@ -289,8 +289,7 @@ function edgesFromX6Cells(
       const portId = cellString(item, 'id');
       if (!portId) continue;
       const attrs = (item as Record<string, unknown>).attrs as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       const label = attrs?.portNameLabel as Record<string, unknown> | undefined;
       const text = typeof label?.text === 'string' ? label.text.trim() : '';
       const fromRow = names?.fieldByPort.get(`${id}:${portId}`);

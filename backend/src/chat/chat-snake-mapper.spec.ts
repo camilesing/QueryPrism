@@ -365,3 +365,133 @@ describe('toChatLogHistoryItemSnake', () => {
     expect(toChatLogHistoryItemSnake(local).local_operation).toBe(true);
   });
 });
+
+// ─────────────── residual branch arms (coverage tail) ──────────────────────
+
+describe('serializeChart / sqlResultColumns defensive arms (coverage tail)', () => {
+  const barRebuilt = {
+    type: 'bar',
+    title: '',
+    axis: {
+      x: { name: 'category', value: 'category' },
+      y: [{ name: 'value', value: 'value' }],
+    },
+  };
+
+  it('rebuilds with columns [] when sqlExecResult is null or not an object', () => {
+    const nullResult = toChatRecordSnake(
+      makeRecord({
+        chart: { xField: 'category', yField: 'value' },
+        sqlExecResult: null,
+      }),
+    );
+    expect(JSON.parse(nullResult.chart!)).toEqual(barRebuilt);
+
+    const nonObject = toChatRecordSnake(
+      makeRecord({
+        chart: { xField: 'category', yField: 'value' },
+        sqlExecResult: 'raw',
+      }),
+    );
+    expect(JSON.parse(nonObject.chart!)).toEqual(barRebuilt);
+  });
+
+  it('rebuilds with columns [] when sqlExecResult.columns is not an array', () => {
+    const out = toChatRecordSnake(
+      makeRecord({
+        chart: { xField: 'category', yField: 'value' },
+        sqlExecResult: { columns: 'oops' },
+      }),
+    );
+    expect(JSON.parse(out.chart!)).toEqual(barRebuilt);
+  });
+
+  it('keeps scalar/array chart Json as its serialized form', () => {
+    // a JSON string literal parses to a non-object → returned as stored
+    expect(toChatRecordSnake(makeRecord({ chart: '"plain text"' })).chart).toBe(
+      '"plain text"',
+    );
+    // non-string scalars are JSON.stringify'd back out
+    expect(toChatRecordSnake(makeRecord({ chart: 42 })).chart).toBe('42');
+    expect(toChatRecordSnake(makeRecord({ chart: [1, 2] })).chart).toBe(
+      '[1,2]',
+    );
+    // an unparseable legacy string is kept verbatim (catch arm)
+    expect(toChatRecordSnake(makeRecord({ chart: '{{{' })).chart).toBe('{{{');
+  });
+
+  it('falls back to a table chart object when chartType is null', () => {
+    const out = toChatRecordSnake(
+      makeRecord({
+        chartType: null,
+        chart: { xField: 'category', yField: 'value' },
+      }),
+    );
+    expect(JSON.parse(out.chart!)).toEqual({
+      type: 'table',
+      title: '',
+      columns: [
+        { name: 'category', value: 'category' },
+        { name: 'value', value: 'value' },
+      ],
+    });
+  });
+
+  it('nulls data for withData:true when sqlExecResult is null', () => {
+    const out = toChatRecordSnake(makeRecord({ sqlExecResult: null }), {
+      withData: true,
+    });
+    expect(out.data).toBeNull();
+  });
+});
+
+describe('toChatInfoSnake latest_record_time (coverage tail)', () => {
+  it('picks the max create_time across several records', () => {
+    const early = toChatRecordSnake(
+      makeRecord({ id: 10, createdAt: new Date('2026-07-25T00:00:10.000Z') }),
+    );
+    const late = toChatRecordSnake(
+      makeRecord({ id: 11, createdAt: new Date('2026-07-25T09:30:00.000Z') }),
+    );
+    const mid = toChatRecordSnake(
+      makeRecord({ id: 12, createdAt: new Date('2026-07-25T05:00:00.000Z') }),
+    );
+    const out = toChatInfoSnake(makeChat(), { records: [early, late, mid] });
+    expect(out.latest_record_time).toBe('2026-07-25T09:30:00.000Z');
+  });
+});
+
+describe('log mapper null-coalescing arms (coverage tail)', () => {
+  it('nulls total_tokens when tokenUsage is missing', () => {
+    const out = toChatLogHistoryItemSnake(makeLog({ tokenUsage: null }));
+    expect(out.total_tokens).toBeNull();
+    expect(out.duration).toBe(3); // endedAt still present
+  });
+
+  it('defaults null localOperation/error flags to false', () => {
+    const out = toChatLogHistoryItemSnake(
+      makeLog({ localOperation: null, error: null }),
+    );
+    expect(out.local_operation).toBe(false);
+    expect(out.error).toBe(false);
+  });
+
+  it('aggregate duration is null when no log ever finished', () => {
+    const out = toChatLogHistorySnake(makeRecord(), [
+      makeLog({ id: 201, endedAt: null, tokenUsage: { totalTokens: 5 } }),
+      makeLog({ id: 202, endedAt: null, tokenUsage: { totalTokens: 6 } }),
+    ]);
+    expect(out.duration).toBeNull();
+    expect(out.total_tokens).toBe(11);
+    expect(out.finish_time).toBeNull(); // last log never finished
+  });
+
+  it('aggregate total_tokens is null when no log reports usage', () => {
+    const out = toChatLogHistorySnake(makeRecord(), [
+      makeLog({ id: 201, tokenUsage: null }),
+      makeLog({ id: 202, tokenUsage: {} }),
+    ]);
+    expect(out.duration).toBe(6); // 3s + 3s
+    expect(out.total_tokens).toBeNull();
+  });
+});

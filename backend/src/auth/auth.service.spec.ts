@@ -20,6 +20,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
 import { AuthService } from './auth.service';
 import { DEFAULT_PWD } from '../user/user.service';
+import { decrypt } from '../common/utils/aes';
 
 // A complete-enough User row for the paths under test.
 const baseUser = {
@@ -202,5 +203,123 @@ describe('AuthService (#1355 initial-password policy)', () => {
       ).rejects.toThrow(BadRequestException);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('AuthService login failures + remaining helpers', () => {
+  let service: AuthService;
+  let prisma: {
+    user: { findUnique: jest.Mock; update: jest.Mock };
+    userWs: { findUnique: jest.Mock };
+    systemVariable: { findFirst: jest.Mock };
+  };
+
+  beforeEach(async () => {
+    prisma = {
+      user: { findUnique: jest.fn(), update: jest.fn() },
+      userWs: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ workspace: { archivedAt: null } }),
+      },
+      systemVariable: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: JwtService,
+          useValue: { signAsync: jest.fn().mockResolvedValue('jwt-token') },
+        },
+        { provide: ConfigService, useValue: { get: () => 'spec-aes-key' } },
+      ],
+    }).compile();
+    service = module.get(AuthService);
+  });
+
+  it('rejects an unknown account', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    await expect(service.login('ghost', 'x')).rejects.toThrow(
+      'auth.account_missing_or_disabled',
+    );
+  });
+
+  it('rejects a disabled user (status=0)', async () => {
+    prisma.user.findUnique.mockResolvedValue({ ...baseUser, status: 0 });
+    await expect(service.login('demo', 'Ir0nM@nPwd')).rejects.toThrow(
+      'auth.account_missing_or_disabled',
+    );
+  });
+
+  it('rejects a wrong password', async () => {
+    prisma.user.findUnique.mockResolvedValue({ ...baseUser });
+    await expect(service.login('demo', 'nope')).rejects.toThrow(
+      'auth.wrong_credentials',
+    );
+  });
+
+  it('rejects a non-admin user without a workspace membership', async () => {
+    prisma.user.findUnique.mockResolvedValue({ ...baseUser });
+    prisma.userWs.findUnique.mockResolvedValue(null);
+    await expect(service.login('demo', 'Ir0nM@nPwd')).rejects.toThrow(
+      'auth.no_workspace_bound',
+    );
+  });
+
+  it('rejects a non-admin user whose workspace is archived', async () => {
+    prisma.user.findUnique.mockResolvedValue({ ...baseUser });
+    prisma.userWs.findUnique.mockResolvedValue({
+      workspace: { archivedAt: new Date('2026-01-01') },
+    });
+    await expect(service.login('demo', 'Ir0nM@nPwd')).rejects.toThrow(
+      'auth.workspace_archived',
+    );
+  });
+
+  it('changePwd succeeds with the flag on and a different new password', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      ...baseUser,
+      password: DEFAULT_PWD,
+    });
+    prisma.systemVariable.findFirst.mockResolvedValue({
+      name: 'login.initial_pwd_disabled',
+      value: 'true',
+    });
+    await expect(
+      service.changePwd('demo', DEFAULT_PWD, 'NewP@ssw0rd'),
+    ).resolves.toEqual({ success: true });
+    expect(prisma.user.update).toHaveBeenCalled();
+  });
+
+  it('logout returns null (client-side discard)', () => {
+    expect(service.logout()).toBeNull();
+  });
+
+  it('info returns the safe profile of an existing user', async () => {
+    prisma.user.findUnique.mockResolvedValue({ ...baseUser });
+    await expect(service.info(5)).resolves.toEqual({
+      id: 5,
+      account: 'demo',
+      email: null,
+      oid: 1,
+      status: 1,
+      language: 'zh-CN',
+    });
+  });
+
+  it('info rejects an unknown id', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    await expect(service.info(404)).rejects.toThrow('user.not_found');
+  });
+
+  it('hashPassword delegates to bcrypt hashSync', () => {
+    expect(service.hashPassword('x')).toBe('hashed-new-pwd');
+  });
+
+  it('encryptSecret returns an AES payload that decrypts back', () => {
+    const payload = service.encryptSecret('super-secret');
+    expect(payload.split(':')).toHaveLength(3);
+    expect(decrypt(payload, 'spec-aes-key')).toBe('super-secret');
   });
 });

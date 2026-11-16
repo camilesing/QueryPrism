@@ -4,6 +4,7 @@
 // write-back (a concurrent edit or synchronous re-embed wins), in-flight
 // dedup, and vec0 sync skip when sqlite-vec is unavailable.
 import { Prisma } from '@prisma/client';
+import { Logger } from '@nestjs/common';
 import { EmbeddingBackfillService } from './embedding-backfill.service';
 
 const DB_NULL = { equals: Prisma.DbNull };
@@ -485,5 +486,152 @@ describe('EmbeddingBackfillService', () => {
       expect(updateMany).toHaveBeenCalledTimes(2);
       expect(vector.upsert).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('residual arm sweep', () => {
+  let vector: { available: boolean; upsert: jest.Mock };
+  let embedding: { available: boolean; embedBatch: jest.Mock };
+
+  beforeEach(() => {
+    vector = { available: true, upsert: jest.fn() };
+    embedding = { available: true, embedBatch: jest.fn() };
+  });
+
+  it('onModuleInit logs the Error message when the startup run rejects', async () => {
+    const prisma = makePrisma();
+    prisma.systemVariable.findMany.mockRejectedValue(new Error('config boom'));
+    const errorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      makeService(prisma, vector, embedding).onModuleInit();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(errorSpy).toHaveBeenCalledWith(
+        'embedding backfill failed: config boom',
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('onModuleInit stringifies a non-Error rejection reason', async () => {
+    const prisma = makePrisma();
+    prisma.systemVariable.findMany.mockRejectedValue('plain failure');
+    const errorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      makeService(prisma, vector, embedding).onModuleInit();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(errorSpy).toHaveBeenCalledWith(
+        'embedding backfill failed: plain failure',
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('runKnowledge returns early when embedding is unavailable', async () => {
+    embedding.available = false;
+    const prisma = makePrisma({
+      terminology: [{ id: 1, word: 'a', description: null }],
+    });
+    await makeService(prisma, vector, embedding).runKnowledge();
+    expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
+    expect(prisma.terminology.findMany).not.toHaveBeenCalled();
+  });
+
+  it('runKnowledge returns early when embedding.enabled=false', async () => {
+    const prisma = makePrisma({
+      terminology: [{ id: 1, word: 'a', description: null }],
+    });
+    prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'embedding.enabled', value: 'false' },
+    ]);
+    await makeService(prisma, vector, embedding).runKnowledge();
+    expect(prisma.terminology.findMany).not.toHaveBeenCalled();
+  });
+
+  it('runTablesAndDatasources fills both collections when table_enabled', async () => {
+    const prisma = makePrisma({
+      datasource: [{ id: 3, name: 'ds', description: null }],
+      table: [
+        { id: 4, tableName: 't', tableComment: 'c', customComment: null },
+      ],
+    });
+    embedding.embedBatch.mockResolvedValue([[0.5]]);
+    await makeService(prisma, vector, embedding).runTablesAndDatasources();
+    expect(prisma.datasource.findMany).toHaveBeenCalledTimes(2); // scan + re-read
+    expect(prisma.table.findMany).toHaveBeenCalledTimes(2);
+    expect(prisma.datasource.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.table.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('runTablesAndDatasources returns early when embedding is unavailable', async () => {
+    embedding.available = false;
+    const prisma = makePrisma();
+    await makeService(prisma, vector, embedding).runTablesAndDatasources();
+    expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
+    expect(prisma.datasource.findMany).not.toHaveBeenCalled();
+  });
+
+  it('runTablesAndDatasources returns early when table_enabled=false', async () => {
+    const prisma = makePrisma();
+    prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'embedding.table_enabled', value: 'false' },
+    ]);
+    await makeService(prisma, vector, embedding).runTablesAndDatasources();
+    expect(prisma.datasource.findMany).not.toHaveBeenCalled();
+  });
+
+  it('runMetrics returns early when embedding is unavailable', async () => {
+    embedding.available = false;
+    const prisma = makePrisma();
+    await makeService(prisma, vector, embedding).runMetrics();
+    expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
+    expect(prisma.metricDef.findMany).not.toHaveBeenCalled();
+  });
+
+  it('runMetrics returns early when metric.enabled=false', async () => {
+    const prisma = makePrisma();
+    prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'metric.enabled', value: 'false' },
+    ]);
+    await makeService(prisma, vector, embedding).runMetrics();
+    expect(prisma.metricDef.findMany).not.toHaveBeenCalled();
+  });
+
+  it('skips the embed call entirely when every re-read row is blank', async () => {
+    const prisma = makePrisma();
+    const blank = { id: 1, word: '  ', description: null };
+    prisma.terminology.findMany
+      .mockResolvedValueOnce([blank]) // scan
+      .mockResolvedValueOnce([blank]); // batch re-read: still NULL but blank
+    await makeService(prisma, vector, embedding).runKnowledge();
+    expect(embedding.embedBatch).not.toHaveBeenCalled();
+    expect(prisma.terminology.updateMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('stringifies a non-Error batch failure in the final warn', async () => {
+    const prisma = makePrisma({
+      terminology: [{ id: 1, word: 'a', description: null }],
+    });
+    embedding.embedBatch.mockRejectedValue('provider exploded');
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      await makeService(prisma, vector, embedding).runKnowledge();
+      expect(embedding.embedBatch).toHaveBeenCalledTimes(3);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('provider exploded'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

@@ -94,3 +94,65 @@ describe('CHAT_MODEL_FACTORIES', () => {
     expect(intl.region).toBe('singapore');
   });
 });
+
+// ─────────────── tail-sweep: name fallback, tongyi us region, apiDomain arms ───────────────
+
+describe('CHAT_MODEL_FACTORIES (tail-sweep)', () => {
+  it('falls back to name when baseModel is null', () => {
+    const factory = CHAT_MODEL_FACTORIES['3'];
+    const chat = factory(
+      row({ baseModel: null }),
+      'sk-test',
+    ) as unknown as ChatZhipuAI;
+    expect(chat.model).toBe('display-name');
+  });
+
+  it('maps the dashscope-us domain to the us region', () => {
+    const factory = CHAT_MODEL_FACTORIES['15'];
+    const us = factory(
+      row({ apiDomain: 'https://dashscope-us.aliyuncs.com' }),
+      'sk',
+    ) as unknown as { region: string };
+    expect(us.region).toBe('us');
+  });
+
+  it('a null apiDomain omits every URL override without breaking construction', () => {
+    // the false arms of each `...(m.apiDomain ? {...} : {})` — default row()
+    // already has apiDomain null; instantiate every URL-overridable factory.
+    for (const protocol of ['4', '5', '6', '7', '8', '9', '10', '11', '19']) {
+      const chat = CHAT_MODEL_FACTORIES[protocol](row({ protocol }), 'sk-test');
+      expect(chat).toBeTruthy();
+    }
+  });
+
+  it('passes apiDomain to each URL-overridable native class (true arms)', () => {
+    const domain = 'https://gateway.internal/v1';
+    // anthropic
+    const anthropic = CHAT_MODEL_FACTORIES['4'](
+      row({ protocol: '4', apiDomain: domain }),
+      'sk-test',
+    ) as unknown as Record<string, unknown>;
+    expect(anthropic.constructor.name).toBe('ChatAnthropic');
+    // the URL override is held on the client config (not a public field) —
+    // construction with the domain set is the observable contract here.
+
+    // xai / groq / mistral / ollama / deepseek / fireworks / friendli —
+    // construction with a domain set is the contract; the classes hold the
+    // override on differing (partly internal) fields, so assert the class.
+    for (const [protocol, className] of [
+      ['6', 'ChatXAI'],
+      ['7', 'ChatGroq'],
+      ['8', 'ChatMistralAI'],
+      ['9', 'ChatOllama'],
+      ['10', 'ChatDeepSeek'],
+      ['11', 'ChatFireworks'],
+      ['19', 'ChatFriendli'],
+    ] as [string, string][]) {
+      const chat = CHAT_MODEL_FACTORIES[protocol](
+        row({ protocol, apiDomain: domain }),
+        'sk-test',
+      );
+      expect(chat.constructor.name).toBe(className);
+    }
+  });
+});

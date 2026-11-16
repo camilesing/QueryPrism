@@ -428,3 +428,168 @@ describe('EmbeddedSignService', () => {
     });
   });
 });
+
+// ─────────────── residual branch arms (coverage tail) ──────────────────────
+import { EMBEDDED_SIGN_DEV_SECRET } from '../common/constants/embedded-sign-dev-secret';
+
+describe('EmbeddedSignService — residual arms (coverage tail)', () => {
+  const assistant = { id: 42, domain: 'https://embed.example.com' };
+
+  describe('getOriginFromReferer edge shapes', () => {
+    it('returns "" for an opaque-scheme referer (no hostname)', () => {
+      expect(getOriginFromReferer('custom-scheme:whatever')).toBe('');
+    });
+
+    it('returns "" for a null-origin scheme (data:/blob:)', () => {
+      expect(getOriginFromReferer('data:text/plain,hi')).toBe('');
+      expect(getOriginFromReferer('file:///etc/hosts')).toBe('');
+    });
+
+    it('returns "" when a non-special scheme has a host but an opaque origin', () => {
+      // foo://bar has hostname "bar" yet origin "null" (non-special scheme)
+      expect(getOriginFromReferer('foo://bar.example.com/path')).toBe('');
+    });
+  });
+
+  describe('bootstrap origin fallback chain', () => {
+    it('derives the request origin from Referer when Origin is absent', async () => {
+      const m = makeService();
+      m.prisma.assistant.findFirst.mockResolvedValue({
+        id: 42,
+        oid: 1,
+        domain: 'https://embed.example.com',
+      });
+      const sign = makeSign(validPayload());
+      const result = await m.service.bootstrap(
+        42,
+        999,
+        sign,
+        'Mozilla/5.0 test',
+        undefined,
+        'https://embed.example.com/embedded/page',
+      );
+      expect(result.token).toBe('assistant-jwt');
+    });
+
+    it('rejects when both Origin and Referer are unusable', async () => {
+      const m = makeService();
+      m.prisma.assistant.findFirst.mockResolvedValue({
+        id: 42,
+        oid: 1,
+        domain: 'https://embed.example.com',
+      });
+      const sign = makeSign(validPayload());
+      await expect(
+        m.service.bootstrap(
+          42,
+          999,
+          sign,
+          'Mozilla/5.0 test',
+          undefined,
+          'not-a-url',
+        ),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('secret fallback', () => {
+    it('falls back to EMBEDDED_SIGN_DEV_SECRET when config has no key', () => {
+      const jwtService = { signAsync: jest.fn().mockResolvedValue('t') };
+      const config = { get: jest.fn(() => undefined) };
+      const service = new EmbeddedSignService(
+        {} as unknown as PrismaService,
+        jwtService as unknown as JwtService,
+        config as unknown as ConfigService,
+      );
+      const sign = signEnvelope(validPayload(), EMBEDDED_SIGN_DEV_SECRET);
+      expect(() =>
+        service.verifyAndRunChecks(sign, 42, assistant, 'Mozilla/5.0 test'),
+      ).not.toThrow();
+      // ...and a sign made with any other secret no longer verifies
+      expect(() =>
+        service.verifyAndRunChecks(
+          makeSign(validPayload()),
+          42,
+          assistant,
+          'Mozilla/5.0 test',
+        ),
+      ).toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('runChecks residual arms', () => {
+    it('throws when payload.target is missing entirely', () => {
+      const m = makeService();
+      const sign = makeSign(
+        validPayload({ target: undefined as unknown as string }),
+      );
+      expect(() =>
+        m.service.verifyAndRunChecks(sign, 42, assistant, 'Mozilla/5.0 test'),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('throws when the assistant has no domain whitelist', () => {
+      const m = makeService();
+      const sign = makeSign(validPayload());
+      expect(() =>
+        m.service.verifyAndRunChecks(
+          sign,
+          42,
+          { id: 42, domain: null },
+          'Mozilla/5.0 test',
+        ),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('throws on an unparseable sign_time', () => {
+      const m = makeService();
+      const sign = makeSign(validPayload({ sign_time: 'not-a-date' }));
+      expect(() =>
+        m.service.verifyAndRunChecks(sign, 42, assistant, 'Mozilla/5.0 test'),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('throws when sign_time carries no offset suffix', () => {
+      const m = makeService();
+      // LOCAL wall clock (Date.parse must succeed and stay within skew in any
+      // host timezone), but without a Z / ±HH:MM suffix the tz check fails
+      const localWall = new Date(
+        Date.now() - new Date().getTimezoneOffset() * 60_000,
+      )
+        .toISOString()
+        .slice(0, 19);
+      const sign = makeSign({
+        ...validPayload(),
+        sign_time: localWall,
+      });
+      expect(() =>
+        m.service.verifyAndRunChecks(sign, 42, assistant, 'Mozilla/5.0 test'),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('accepts a negative-offset zone (Etc/GMT+5 is UTC-05:00)', () => {
+      const m = makeService();
+      // Etc zones are POSIX-signed and fixed (no DST): Etc/GMT+5 === -05:00
+      const wall = new Date(Date.now() - 5 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 19);
+      const sign = makeSign(
+        validPayload({
+          sign_time: `${wall}-05:00`,
+          timezone: 'Etc/GMT+5',
+        }),
+      );
+      expect(() =>
+        m.service.verifyAndRunChecks(sign, 42, assistant, 'Mozilla/5.0 test'),
+      ).not.toThrow();
+    });
+
+    it('throws on an unknown IANA timezone', () => {
+      const m = makeService();
+      const sign = makeSign(validPayload({ timezone: 'Not/AZone' }));
+      expect(() =>
+        m.service.verifyAndRunChecks(sign, 42, assistant, 'Mozilla/5.0 test'),
+      ).toThrow(UnauthorizedException);
+    });
+  });
+});

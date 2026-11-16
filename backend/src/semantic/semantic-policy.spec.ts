@@ -99,3 +99,64 @@ describe('scopeOwnership', () => {
     });
   });
 });
+
+// ─────────────── residual branch arms (coverage tail) ──────────────────────
+
+describe('isWorkspaceAdmin without an explicit weight (coverage tail)', () => {
+  it('treats a missing weight as 0 (plain member)', () => {
+    expect(canEditDirect({ id: 7, oid: 1 }, 'WORKSPACE')).toBe(false);
+    expect(canReview({ id: 7, oid: 1 }, 'WORKSPACE')).toBe(false);
+    // uid 1 still passes without a weight (system-admin short-circuit)
+    expect(canEditDirect({ id: ADMIN_UID, oid: 1 }, 'WORKSPACE')).toBe(true);
+  });
+});
+
+describe('pickEffectiveRow tie-breaks + unknown scopes (coverage tail)', () => {
+  type Row = { scope: string; updatedAt: unknown };
+
+  it('same-scope ties resolve to the newest updatedAt (Date objects)', () => {
+    const picked = pickEffectiveRow([
+      { scope: 'PERSONAL', updatedAt: new Date('2026-01-01T00:00:00Z') },
+      { scope: 'PERSONAL', updatedAt: new Date('2026-02-01T00:00:00Z') },
+    ]);
+    expect((picked as { updatedAt: Date }).updatedAt.toISOString()).toBe(
+      '2026-02-01T00:00:00.000Z',
+    );
+  });
+
+  it('same-scope ties resolve on string timestamps; unusable ones sort last', () => {
+    const picked = pickEffectiveRow<Row>([
+      { scope: 'PERSONAL', updatedAt: '2026-03-01' },
+      { scope: 'PERSONAL', updatedAt: '2026-04-01' },
+    ]);
+    expect(picked?.updatedAt).toBe('2026-04-01');
+    // updatedAt that is neither Date nor string coerces to '' (oldest)
+    const weird = pickEffectiveRow<Row>([
+      { scope: 'PERSONAL', updatedAt: 42 },
+      { scope: 'PERSONAL', updatedAt: '2026-01-01' },
+    ]);
+    expect(weird?.updatedAt).toBe('2026-01-01');
+  });
+
+  it('unknown scopes rank below GLOBAL', () => {
+    const picked = pickEffectiveRow<Row>([
+      { scope: 'WEIRD', updatedAt: '2026-01-01' },
+      { scope: 'GLOBAL', updatedAt: '2026-01-01' },
+    ]);
+    expect(picked?.scope).toBe('GLOBAL');
+  });
+
+  it('two unknown scopes tie-break on updatedAt', () => {
+    const picked = pickEffectiveRow<Row>([
+      { scope: 'WEIRD_A', updatedAt: '2026-01-01' },
+      { scope: 'WEIRD_B', updatedAt: '2026-05-01' },
+    ]);
+    expect(picked?.scope).toBe('WEIRD_B');
+  });
+});
+
+describe('scopeOwnership unknown scope (coverage tail)', () => {
+  it('returns null for a scope outside the enum', () => {
+    expect(scopeOwnership(member, 'bogus' as unknown as 'PERSONAL')).toBeNull();
+  });
+});

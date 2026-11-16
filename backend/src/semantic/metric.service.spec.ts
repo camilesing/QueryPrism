@@ -731,3 +731,705 @@ describe('DataStandardService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
+
+// ---- appended: reviewShared inbox dispatch, page/versions reads, the
+// ---- update/remove/toggle write arms, payload mapping and vector hooks ----
+
+/** Full MetricDef-shaped row for the read/apply paths. */
+const defRow = (
+  over: Partial<MetricDef> & Record<string, unknown>,
+): MetricDef => ({
+  id: 1,
+  kind: 'atomic',
+  code: 'x',
+  name: 'x',
+  aliases: null,
+  embedding: null,
+  description: null,
+  unit: null,
+  definition: {},
+  scope: 'WORKSPACE',
+  oid: 1,
+  ownerUid: null,
+  enabled: true,
+  version: 1,
+  createBy: null,
+  createdAt: new Date('2026-01-01T00:00:00Z'),
+  updatedAt: new Date('2026-01-02T00:00:00Z'),
+  ...over,
+});
+
+const ATOMIC_DEF = {
+  datasource_id: 3,
+  table_name: 'orders',
+  field_name: 'pay_amount',
+  aggregation: 'SUM',
+};
+
+describe('MetricService.reviewShared', () => {
+  it('rejects unknown or non-pending requests', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue(null);
+    await expect(
+      withUser(WS_ADMIN, () => metric.reviewShared(55, true)),
+    ).rejects.toThrow('该变更提案不在待审批状态');
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      entityType: 'metric',
+      status: 'approved',
+    });
+    await expect(
+      withUser(WS_ADMIN, () => metric.reviewShared(55, true)),
+    ).rejects.toThrow('该变更提案不在待审批状态');
+  });
+
+  it('dispatches a standard request to the standard dictionary', async () => {
+    const { metric, standard, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      entityType: 'standard',
+      status: 'pending',
+    });
+    const review = jest.spyOn(standard, 'review').mockResolvedValue();
+    await withUser(WS_ADMIN, () => metric.reviewShared(57, true, 'go'));
+    expect(review).toHaveBeenCalledWith(57, true, 'go');
+  });
+
+  it('handles a metric request itself', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      entityType: 'metric',
+      status: 'pending',
+    });
+    const review = jest.spyOn(metric, 'review').mockResolvedValue();
+    await withUser(WS_ADMIN, () => metric.reviewShared(58, false, 'no'));
+    expect(review).toHaveBeenCalledWith(58, false, 'no');
+  });
+});
+
+describe('MetricService.page', () => {
+  it('flags dangling ds bindings and keeps reference-free kinds at true', async () => {
+    const { metric, prisma } = makeServices();
+    // the prisma mock ignores `where`, so the fixture carries only atomic rows
+    prisma.metricDef.findMany.mockResolvedValue([
+      defRow({ id: 1, code: 'pay_amount', definition: ATOMIC_DEF }),
+      defRow({ id: 3, code: 'corrupt', definition: 'hand-corrupted' }),
+      defRow({
+        id: 5,
+        code: 'other_ds',
+        definition: { ...ATOMIC_DEF, datasource_id: 9 },
+      }),
+    ]);
+    prisma.table.findFirst.mockResolvedValue(null); // the binding dangles
+    const page = await withUser(WS_ADMIN, () =>
+      metric.page('atomic', 1, 10, { datasourceId: 3 }),
+    );
+    // the datasource filter drops the ds9 row, keeps the unparseable one
+    expect(page.total_count).toBe(2);
+    expect((page.data as Array<{ code: string }>).map((r) => r.code)).toEqual([
+      'pay_amount',
+      'corrupt',
+    ]);
+    expect(page.data[0].table_exists).toBe(false);
+    expect(page.data[1].table_exists).toBe(true); // unparseable def → no binding → true
+    expect(prisma.table.findFirst).toHaveBeenCalledWith({
+      where: {
+        datasourceId: 3,
+        tableName: 'orders',
+        datasource: { oid: 1 },
+      },
+      select: { id: true },
+    });
+  });
+
+  it('marks table_exists true when the synced Table row still exists', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findMany.mockResolvedValue([
+      defRow({ id: 1, code: 'pay_amount', definition: ATOMIC_DEF }),
+    ]);
+    prisma.table.findFirst.mockResolvedValue({ id: 99 });
+    const page = await withUser(WS_ADMIN, () => metric.page('atomic', 1, 10));
+    expect(page.data[0].table_exists).toBe(true);
+  });
+
+  it('the datasourceId filter keeps other kinds and same-ds rows only', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findMany.mockResolvedValue([
+      defRow({
+        id: 1,
+        kind: 'modifier',
+        code: 'mod_ds3',
+        definition: {
+          datasource_id: 3,
+          table_name: 't',
+          field_name: 'f',
+          operator: '=',
+          values: ['v'],
+        },
+      }),
+      defRow({
+        id: 2,
+        kind: 'modifier',
+        code: 'mod_ds9',
+        definition: {
+          datasource_id: 9,
+          table_name: 't',
+          field_name: 'f',
+          operator: '=',
+          values: ['v'],
+        },
+      }),
+      defRow({
+        id: 3,
+        kind: 'period',
+        code: 'free_p',
+        definition: { mode: 'anchor', anchor: 'ytd' },
+      }),
+      defRow({
+        id: 4,
+        kind: 'modifier',
+        code: 'corrupt_mod',
+        definition: 'oops',
+      }),
+    ]);
+    const page = await withUser(WS_ADMIN, () =>
+      metric.page('modifier', 1, 10, { datasourceId: 3 }),
+    );
+    expect((page.data as Array<{ code: string }>).map((r) => r.code)).toEqual([
+      'mod_ds3',
+      'free_p',
+      'corrupt_mod',
+    ]);
+  });
+
+  it('narrows by keyword + scope inside the visible layers and clamps paging', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findMany.mockResolvedValue(
+      Array.from({ length: 12 }, (_, i) =>
+        defRow({
+          id: i + 1,
+          kind: 'period',
+          code: `p${String(i + 1).padStart(2, '0')}`,
+          definition: { mode: 'anchor', anchor: 'ytd' },
+        }),
+      ),
+    );
+    const page = await withUser(WS_ADMIN, () =>
+      metric.page('period', 2, 5, { keyword: '  p1  ', scope: 'PERSONAL' }),
+    );
+    expect(prisma.metricDef.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          kind: 'period',
+          scope: 'PERSONAL',
+          AND: [
+            {
+              OR: [
+                { scope: 'GLOBAL' },
+                { scope: 'WORKSPACE', oid: 1 },
+                { scope: 'PERSONAL', oid: 1, ownerUid: 5 },
+              ],
+            },
+            {
+              OR: [
+                { code: { contains: 'p1', mode: 'insensitive' } },
+                { name: { contains: 'p1', mode: 'insensitive' } },
+              ],
+            },
+          ],
+        },
+        orderBy: [{ code: 'asc' }],
+      }),
+    );
+    // pageSize floors at 10 → 12 rows = 2 pages; page 2 holds the last 2
+    expect(page.page_size).toBe(10);
+    expect(page.total_pages).toBe(2);
+    expect(page.current_page).toBe(2);
+    expect((page.data as Array<{ code: string }>).map((r) => r.code)).toEqual([
+      'p11',
+      'p12',
+    ]);
+    // a non-positive page clamps to 1
+    const first = await withUser(WS_ADMIN, () => metric.page('period', 0, 10));
+    expect(first.current_page).toBe(1);
+  });
+});
+
+describe('MetricService.versions', () => {
+  it('maps version history to the snake wire shape after the visibility check', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findUnique.mockResolvedValue(
+      defRow({ id: 9, scope: 'WORKSPACE', oid: 1, ownerUid: null }),
+    );
+    const when = new Date('2026-02-03T04:05:06.000Z');
+    prisma.metricDefVersion.findMany.mockResolvedValue([
+      {
+        id: 31,
+        version: 3,
+        snapshot: { code: 'x', source: 'edit' },
+        changedBy: 5,
+        note: 'ok',
+        createdAt: when,
+      },
+      {
+        id: 30,
+        version: 2,
+        snapshot: { code: 'x', source: 'create' },
+        changedBy: null,
+        note: null,
+        createdAt: when,
+      },
+    ]);
+    const out = await withUser(WS_ADMIN, () => metric.versions(9));
+    expect(out).toEqual([
+      {
+        id: 31,
+        version: 3,
+        snapshot: { code: 'x', source: 'edit' },
+        changed_by: 5,
+        note: 'ok',
+        create_time: when.toISOString(),
+      },
+      {
+        id: 30,
+        version: 2,
+        snapshot: { code: 'x', source: 'create' },
+        changed_by: null,
+        note: null,
+        create_time: when.toISOString(),
+      },
+    ]);
+    expect(prisma.metricDefVersion.findMany).toHaveBeenCalledWith({
+      where: { entityId: 9 },
+      orderBy: { version: 'desc' },
+    });
+  });
+
+  it('hides version history of a foreign workspace row', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findUnique.mockResolvedValue(
+      defRow({ id: 9, scope: 'WORKSPACE', oid: 2, ownerUid: null }),
+    );
+    await expect(withUser(WS_ADMIN, () => metric.versions(9))).rejects.toThrow(
+      '指标条目不存在',
+    );
+  });
+});
+
+describe('MetricService.validateInfo / payload mapping', () => {
+  it('rejects unknown kinds and missing names', async () => {
+    const { metric } = makeServices();
+    await expect(
+      withUser(WS_ADMIN, () =>
+        metric.upsert({
+          ...ATOMIC_INFO,
+          kind: 'bogus' as never,
+        }),
+      ),
+    ).rejects.toThrow('未知的指标类型');
+    await expect(
+      withUser(WS_ADMIN, () => metric.upsert({ ...ATOMIC_INFO, name: '   ' })),
+    ).rejects.toThrow('指标编码与名称为必填');
+  });
+
+  it('carries trimmed aliases/description/unit and the enabled flag into proposals', async () => {
+    const { metric, prisma } = makeServices();
+    await withUser(MEMBER, () =>
+      metric.upsert({
+        ...ATOMIC_INFO,
+        aliases: [' 支付 ', '', '付款 '],
+        description: ' 描述 ',
+        unit: ' 元 ',
+        enabled: false,
+      }),
+    );
+    expect(prisma.semanticChangeRequest.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({
+          kind: 'atomic',
+          code: 'pay_amount',
+          aliases: ['支付', '付款'],
+          description: '描述',
+          unit: '元',
+          enabled: false,
+        }),
+      }),
+    });
+  });
+
+  it('blocks a duplicate pending proposal on the same natural key, passes different keys', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findFirst.mockResolvedValue({
+      id: 900,
+      payload: { kind: 'atomic', code: 'pay_amount' },
+    });
+    await expect(
+      withUser(MEMBER, () => metric.upsert(ATOMIC_INFO)),
+    ).rejects.toThrow('该条目已存在待审批的变更提案');
+    expect(prisma.semanticChangeRequest.create).not.toHaveBeenCalled();
+
+    prisma.semanticChangeRequest.findFirst.mockResolvedValue({
+      id: 901,
+      payload: { kind: 'atomic', code: 'another' },
+    });
+    const ok = await withUser(MEMBER, () =>
+      metric.upsert({ ...ATOMIC_INFO, code: 'pay_amount' }),
+    );
+    expect(ok).toEqual({ applied: false, request_id: 999 });
+  });
+
+  it('rejects malformed change-request payloads on approval', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      id: 55,
+      status: 'pending',
+      action: 'upsert',
+      targetType: 'WORKSPACE',
+      oid: 1,
+      payload: null,
+    });
+    await expect(
+      withUser(WS_ADMIN, () => metric.review(55, true)),
+    ).rejects.toThrow('变更提案的载荷格式非法');
+    expect(prisma.metricDef.create).not.toHaveBeenCalled();
+
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      id: 55,
+      status: 'pending',
+      action: 'upsert',
+      targetType: 'WORKSPACE',
+      oid: 1,
+      payload: { kind: 'bogus', code: 'x', name: 'x' },
+    });
+    await expect(
+      withUser(WS_ADMIN, () => metric.review(55, true)),
+    ).rejects.toThrow('变更提案的载荷格式非法');
+    expect(prisma.metricDef.create).not.toHaveBeenCalled();
+  });
+
+  it('approves a period payload with default enabled and filters non-string aliases', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      id: 55,
+      status: 'pending',
+      action: 'upsert',
+      targetType: 'WORKSPACE',
+      oid: 1,
+      payload: {
+        kind: 'period',
+        code: 'last_30d',
+        name: '最近30天',
+        aliases: ['近一月', 5, null],
+        definition: { mode: 'recent', time_unit: 'day', count: 30 },
+      },
+    });
+    prisma.metricDef.findFirst.mockResolvedValue(null);
+    prisma.metricDef.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 61,
+        version: 1,
+        ...data,
+      }),
+    );
+    await withUser(WS_ADMIN, () => metric.review(55, true));
+    expect(prisma.metricDef.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        kind: 'period',
+        code: 'last_30d',
+        aliases: ['近一月'],
+        definition: { mode: 'recent', time_unit: 'day', count: 30 },
+        enabled: true, // payload carried no boolean → default
+        scope: 'WORKSPACE',
+        oid: 1,
+        ownerUid: null,
+      }),
+    });
+  });
+});
+
+describe('MetricService direct-write arms', () => {
+  it('updates an existing row in place and snapshots the edit (enabled preserved)', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findFirst.mockResolvedValue({
+      id: 44,
+      enabled: false,
+      version: 2,
+    });
+    prisma.metricDef.update.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        ...data,
+        id: 44,
+        version: 3,
+      }),
+    );
+    const result = await withUser(WS_ADMIN, () =>
+      metric.upsert({ ...ATOMIC_INFO, aliases: ['x'] }),
+    );
+    expect(result).toEqual({ applied: true, id: 44 });
+    expect(prisma.metricDef.update).toHaveBeenCalledWith({
+      where: { id: 44 },
+      data: expect.objectContaining({
+        name: '支付金额',
+        aliases: ['x'],
+        enabled: false, // edit omitted the flag → stored value kept
+        version: { increment: 1 },
+      }),
+    });
+    expect(prisma.metricDefVersion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        entityId: 44,
+        version: 3,
+        snapshot: expect.objectContaining({ source: 'edit' }),
+        changedBy: 5,
+      }),
+    });
+
+    // an explicit enabled overrides the stored flag
+    await withUser(WS_ADMIN, () =>
+      metric.upsert({ ...ATOMIC_INFO, enabled: true }),
+    );
+    expect(prisma.metricDef.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ enabled: true }),
+      }),
+    );
+  });
+
+  it('applies an approved remove request and stays idempotent when the row is gone', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      id: 56,
+      status: 'pending',
+      action: 'remove',
+      targetType: 'WORKSPACE',
+      oid: 1,
+      payload: {
+        kind: 'atomic',
+        code: 'pay_amount',
+        name: 'x',
+        definition: ATOMIC_DEF,
+      },
+    });
+    prisma.metricDef.findFirst.mockResolvedValueOnce({ id: 77 });
+    await withUser(WS_ADMIN, () => metric.review(56, true));
+    expect(prisma.metricDef.delete).toHaveBeenCalledWith({
+      where: { id: 77 },
+    });
+
+    // approving the same removal again: the row is already gone → no write
+    prisma.metricDef.findFirst.mockResolvedValueOnce(null);
+    await withUser(WS_ADMIN, () => metric.review(56, true));
+    expect(prisma.metricDef.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejecting a request claims it, applies nothing and skips the index refresh', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      id: 57,
+      status: 'pending',
+      action: 'upsert',
+      targetType: 'WORKSPACE',
+      oid: 1,
+      payload: {
+        kind: 'period',
+        code: 'p',
+        name: 'p',
+        definition: { mode: 'anchor', anchor: 'ytd' },
+      },
+    });
+    await withUser(WS_ADMIN, () => metric.review(57, false, 'nope'));
+    expect(prisma.semanticChangeRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: 57, status: 'pending' },
+      data: expect.objectContaining({ status: 'rejected', reviewerUid: 5 }),
+    });
+    expect(prisma.metricDef.create).not.toHaveBeenCalled();
+    expect(prisma.metricDef.update).not.toHaveBeenCalled();
+  });
+
+  it('setEnabled bumps the version and snapshots a toggle', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findUnique.mockResolvedValue(
+      defRow({ id: 9, scope: 'WORKSPACE', oid: 1, ownerUid: null }),
+    );
+    prisma.metricDef.update.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 9,
+        kind: 'atomic',
+        code: 'pay_amount',
+        name: '支付金额',
+        aliases: null,
+        description: null,
+        unit: null,
+        definition: ATOMIC_DEF,
+        ...data,
+        version: 4,
+      }),
+    );
+    await withUser(WS_ADMIN, () => metric.setEnabled(9, false));
+    expect(prisma.metricDef.update).toHaveBeenCalledWith({
+      where: { id: 9 },
+      data: { enabled: false, version: { increment: 1 } },
+    });
+    expect(prisma.metricDefVersion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        entityId: 9,
+        version: 4,
+        snapshot: expect.objectContaining({ source: 'toggle', enabled: false }),
+        changedBy: 5,
+      }),
+    });
+  });
+});
+
+describe('MetricService vector recall + index hooks (extra arms)', () => {
+  const vecAtomic = (over: Partial<MetricDef>): MetricDef =>
+    defRow({
+      code: 'pay_amount',
+      name: '支付金额',
+      definition: ATOMIC_DEF,
+      ...over,
+    });
+
+  it('degrades with reason "disabled" when metric matching is off', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findMany.mockResolvedValue([vecAtomic({ id: 11 })]);
+    const r = await withUser(MEMBER, () =>
+      metric.matchDefinitions(3, '支付金额趋势', 5, {
+        ...CONFIG,
+        metricEnabled: false,
+      }),
+    );
+    expect(r.degradeReason).toBe('disabled');
+    expect(r.matched).toBe(1);
+  });
+
+  it('degrades with reason "no_vector" when pgvector is unavailable', async () => {
+    const services = makeServices();
+    const { metric, prisma } = services;
+    prisma.metricDef.findMany.mockResolvedValue([vecAtomic({ id: 11 })]);
+    services.embedding.available = true;
+    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
+    services.vector.available = false;
+    const r = await withUser(MEMBER, () =>
+      metric.matchDefinitions(3, '支付金额趋势', 5, CONFIG),
+    );
+    expect(r.degradeReason).toBe('no_vector');
+    expect(services.vector.search).not.toHaveBeenCalled();
+  });
+
+  it('drops non-integer and invisible vector hits without degrading', async () => {
+    const services = makeServices();
+    const { metric, prisma } = services;
+    prisma.metricDef.findMany
+      .mockResolvedValueOnce([]) // no enabled rows at all
+      .mockResolvedValueOnce([]); // re-read drops the hit id → invisible
+    services.embedding.available = true;
+    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
+    services.vector.available = true;
+    services.vector.search.mockResolvedValue([
+      { id: 11.5, distance: 0.1 }, // non-integer id filtered
+      { id: 11, distance: 0.2 }, // similarity 0.8 but invisible to this actor
+    ]);
+    const r = await withUser(MEMBER, () =>
+      metric.matchDefinitions(3, '完全无关的问题', 5, CONFIG),
+    );
+    expect(r.matched).toBe(0);
+    expect(r.text).toBe('');
+    expect(r.degradeReason).toBeUndefined(); // keys were empty, not an error
+  });
+
+  it('caps fuzzy keys at max (saturation) in similarity order', async () => {
+    const services = makeServices();
+    const { metric, prisma } = services;
+    prisma.metricDef.findMany
+      .mockResolvedValueOnce([
+        vecAtomic({ id: 11 }),
+        vecAtomic({ id: 12, code: 'refund_amount', name: '退款金额' }),
+      ])
+      .mockResolvedValueOnce([
+        { id: 11, kind: 'atomic', code: 'pay_amount' },
+        { id: 12, kind: 'atomic', code: 'refund_amount' },
+      ]);
+    services.embedding.available = true;
+    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
+    services.vector.available = true;
+    services.vector.search.mockResolvedValue([
+      { id: 11, distance: 0.2 },
+      { id: 12, distance: 0.1 },
+    ]);
+    const r = await withUser(MEMBER, () =>
+      metric.matchDefinitions(3, '完全不相关的另一个问题', 1, CONFIG),
+    );
+    expect(r.matched).toBe(1);
+    expect(r.text).toContain('支付金额 (pay_amount)');
+    expect(r.text).not.toContain('refund_amount');
+  });
+
+  it('skips indexing rows whose embed text is empty', async () => {
+    const { metric, prisma, embedding, vector } = makeServices();
+    embedding.available = true;
+    vector.available = true;
+    prisma.metricDef.findFirst.mockResolvedValue(null);
+    prisma.metricDef.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 11,
+        version: 1,
+        ...data,
+      }),
+    );
+    prisma.metricDef.findMany.mockResolvedValue([
+      { id: 11, name: '   ', aliases: null, description: null },
+    ]);
+    await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(embedding.embedBatch).not.toHaveBeenCalled();
+    expect(vector.upsert).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a short embedding batch: nothing commits, the write survives', async () => {
+    const { metric, prisma, embedding, vector } = makeServices();
+    embedding.available = true;
+    embedding.embedBatch.mockResolvedValue([[0.3, 0.4]]); // 1 of 2 vectors
+    vector.available = true;
+    prisma.metricDef.findFirst.mockResolvedValue(null);
+    prisma.metricDef.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 11,
+        version: 1,
+        ...data,
+      }),
+    );
+    prisma.metricDef.findMany.mockResolvedValue([
+      { id: 11, name: '支付金额', aliases: null, description: null },
+      { id: 12, name: '退款金额', aliases: null, description: null },
+    ]);
+    const result = await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
+    expect(result).toEqual({ applied: true, id: 11 }); // index failure never fails the write
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(prisma.metricDef.update).not.toHaveBeenCalled();
+    expect(vector.upsert).not.toHaveBeenCalled();
+  });
+
+  it('writes the Json embedding even when the vector store is offline', async () => {
+    const { metric, prisma, embedding, vector } = makeServices();
+    embedding.available = true;
+    embedding.embedBatch.mockResolvedValue([[0.3, 0.4]]);
+    vector.available = false; // pgvector gone: Json column still commits
+    prisma.metricDef.findFirst.mockResolvedValue(null);
+    prisma.metricDef.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 11,
+        version: 1,
+        ...data,
+      }),
+    );
+    prisma.metricDef.findMany.mockResolvedValue([
+      { id: 11, name: '支付金额', aliases: ['付款'], description: 'd' },
+    ]);
+    await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(prisma.metricDef.update).toHaveBeenCalledWith({
+      where: { id: 11 },
+      data: { embedding: [0.3, 0.4] },
+    });
+    expect(vector.upsert).not.toHaveBeenCalled();
+  });
+});

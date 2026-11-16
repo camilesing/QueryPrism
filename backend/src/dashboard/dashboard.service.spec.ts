@@ -15,7 +15,10 @@
 // Per plan: `tree()`/`saveCanvas(id, dto)` signatures preserved. `tree()` is a
 // thin wrapper over listResource(). saveCanvas stays (version-bump path) even
 // though the new controller routes through updateCanvas instead.
-import { requestContextStorage } from '../common/context/request-context';
+import {
+  requestContextStorage,
+  type CurrentUserInfo,
+} from '../common/context/request-context';
 import { DashboardService } from './dashboard.service';
 import type { CoreDashboard, Prisma } from '@prisma/client';
 import type { User } from '@prisma/client';
@@ -566,6 +569,232 @@ describe('DashboardService', () => {
           version: { increment: 1 },
         },
       });
+    });
+  });
+
+  // --- appended branch-sweep tests ---------------------------------------
+
+  describe('normalizePid / parseCanvasJson edges', () => {
+    it('normalizes a non-numeric or non-positive pid to null (root level 0)', async () => {
+      prisma.coreDashboard.create.mockResolvedValue(dash({ id: 20 }));
+      const svc = makeService(prisma);
+      await withUser(1, () => svc.createResource({ name: 'a', pid: 'abc' }));
+      await withUser(1, () => svc.createResource({ name: 'b', pid: '-3' }));
+      expect(prisma.coreDashboard.create.mock.calls[0][0].data.pid).toBeNull();
+      expect(prisma.coreDashboard.create.mock.calls[1][0].data.pid).toBeNull();
+    });
+
+    it('defaults node_type to leaf on createResource/createCanvas', async () => {
+      prisma.coreDashboard.create.mockResolvedValue(dash({ id: 21 }));
+      const svc = makeService(prisma);
+      await withUser(1, () => svc.createResource({ name: 'n' }));
+      await withUser(1, () => svc.createCanvas({ name: 'c' }));
+      expect(prisma.coreDashboard.create.mock.calls[0][0].data.nodeType).toBe(
+        'leaf',
+      );
+      expect(prisma.coreDashboard.create.mock.calls[1][0].data.nodeType).toBe(
+        'leaf',
+      );
+    });
+
+    it('stores a legacy object canvas field as-is and skips invalid JSON strings', async () => {
+      prisma.coreDashboard.create.mockResolvedValue(dash({ id: 22 }));
+      const svc = makeService(prisma);
+      await withUser(1, () =>
+        svc.createCanvas({
+          name: 'n',
+          component_data: [{ id: 'c1' }] as never, // legacy Phase 6 object body
+          canvas_style_data: '{oops',
+        }),
+      );
+      const data = prisma.coreDashboard.create.mock.calls[0][0].data as Record<
+        string,
+        unknown
+      >;
+      expect(data.componentData).toEqual([{ id: 'c1' }]);
+      expect(data).not.toHaveProperty('canvasStyleData');
+    });
+
+    it('updateCanvas with name only leaves canvas fields untouched', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 23, createBy: 1 }),
+      );
+      prisma.coreDashboard.update.mockResolvedValue(dash({ id: 23 }));
+      const svc = makeService(prisma);
+      await withUser(1, () => svc.updateCanvas(23, { name: 'renamed' }));
+      expect(prisma.coreDashboard.update).toHaveBeenCalledWith({
+        where: { id: 23 },
+        data: { name: 'renamed', updateBy: 1 },
+      });
+    });
+  });
+
+  describe('loadResource edges', () => {
+    it('falls back to null create_name when the creator row was deleted', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 30, createBy: 1, updateBy: null }),
+      );
+      prisma.user.findUnique.mockResolvedValue(null);
+      const svc = makeService(prisma);
+      const row = await withUser(1, () => svc.loadResource(30));
+      expect(row.createName).toBeNull();
+      expect(row.updateName).toBeNull();
+    });
+
+    it('404s when the parent folder vanished between pick and create', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(null);
+      const svc = makeService(prisma);
+      await expect(
+        withUser(1, () => svc.createResource({ name: 'orphan', pid: 77 })),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(prisma.coreDashboard.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('injectCanvasData (load_resource refresh)', () => {
+    const execSql = jest.fn();
+
+    function chartService(p: MockPrisma) {
+      return new DashboardService(
+        p as unknown as never,
+        {
+          execSql,
+        } as never,
+      );
+    }
+
+    it('returns non-object canvas_view_info verbatim (string / array)', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValueOnce(
+        dash({ id: 31, createBy: 1, canvasViewInfo: 'plain-string' }),
+      );
+      prisma.coreDashboard.findFirst.mockResolvedValueOnce(
+        dash({ id: 31, createBy: 1, canvasViewInfo: [1, 2] }),
+      );
+      const svc = chartService(prisma);
+      expect(
+        (await withUser(1, () => svc.loadResource(31))).canvasViewInfo,
+      ).toBe('plain-string');
+      expect(
+        (await withUser(1, () => svc.loadResource(31))).canvasViewInfo,
+      ).toEqual([1, 2]);
+      expect(execSql).not.toHaveBeenCalled();
+    });
+
+    it('skips null/scalar/array items and charts without a usable datasource/sql', async () => {
+      const view = {
+        c1: null,
+        c2: 'text',
+        c3: ['arr'],
+        c4: { datasource: 'abc', sql: 'SELECT 1' },
+        c5: { datasource: 1, sql: 42 },
+        c6: { datasource: 1, sql: '   ' },
+      };
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 32, createBy: 1, canvasViewInfo: view }),
+      );
+      const svc = chartService(prisma);
+      const row = await withUser(1, () => svc.loadResource(32));
+      expect(row.canvasViewInfo).toEqual(view); // untouched
+      expect(execSql).not.toHaveBeenCalled();
+    });
+
+    it('refreshes valid charts: keeps data meta, defaults missing data, records failures', async () => {
+      execSql.mockImplementation((_id: number, sql: string) => {
+        if (sql.includes('nine')) return Promise.reject(new Error('db nine'));
+        // deliberate non-Error rejection: exercises the String(e) fallback arm
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        if (sql.includes('raw')) return Promise.reject('raw failure');
+        return Promise.resolve({ columns: ['v'], rows: [[sql]] });
+      });
+      const view = {
+        okWithMeta: { datasource: 1, sql: 'SELECT 7', data: { meta: 'keep' } },
+        okNoData: { datasource: 1, sql: 'SELECT 8' },
+        failError: { datasource: 1, sql: 'SELECT nine' },
+        failRaw: { datasource: 1, sql: 'SELECT raw' },
+      };
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 33, createBy: 1, canvasViewInfo: view }),
+      );
+      const svc = chartService(prisma);
+      const row = await withUser(1, () => svc.loadResource(33));
+      const out = row.canvasViewInfo as Record<string, Record<string, unknown>>;
+
+      expect(out.okWithMeta.status).toBe('success');
+      expect(out.okWithMeta.message).toBe('');
+      expect(out.okWithMeta.data).toEqual({
+        meta: 'keep',
+        data: [{ v: 'SELECT 7' }],
+      });
+
+      expect(out.okNoData.status).toBe('success');
+      expect(out.okNoData.data).toEqual({ data: [{ v: 'SELECT 8' }] });
+
+      expect(out.failError.status).toBe('failed');
+      expect(out.failError.message).toBe('db nine');
+      expect(out.failRaw.status).toBe('failed');
+      expect(out.failRaw.message).toBe('raw failure');
+    });
+  });
+
+  describe('validateName guards', () => {
+    it('400s on empty opt and non-integer rename id', async () => {
+      const svc = makeService(prisma);
+      await expect(
+        withUser(1, () => svc.validateName({ name: 'x', opt: '' })),
+      ).rejects.toMatchObject({ status: 400 });
+      await expect(
+        withUser(1, () =>
+          svc.validateName({ name: 'x', opt: 'rename', id: 'abc' }),
+        ),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(prisma.coreDashboard.count).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove / tree edges', () => {
+    it('deletes an empty folder (child-count guard passes)', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 40, nodeType: 'folder', createBy: 1 }),
+      );
+      prisma.coreDashboard.count.mockResolvedValue(0);
+      prisma.coreDashboard.delete.mockResolvedValue(dash({ id: 40 }));
+      const svc = makeService(prisma);
+      await expect(withUser(1, () => svc.remove(40))).resolves.toEqual({
+        success: true,
+      });
+      expect(prisma.coreDashboard.delete).toHaveBeenCalledWith({
+        where: { id: 40 },
+      });
+    });
+
+    it('surfaces an orphan (deleted parent) as a root node', async () => {
+      prisma.coreDashboard.findMany.mockResolvedValue([
+        dash({ id: 41, pid: 99 }), // parent 99 not in the row set
+      ]);
+      const svc = makeService(prisma);
+      const tree = await withUser(1, () => svc.listResource());
+      expect(tree).toHaveLength(1);
+      expect(tree[0].id).toBe(41);
+      expect(tree[0].children).toEqual([]);
+    });
+  });
+
+  describe('currentUser guards', () => {
+    it('401s without a user and when the user has no workspace binding', async () => {
+      const svc = makeService(prisma);
+      await expect(
+        requestContextStorage.run({}, () => svc.listResource()),
+      ).rejects.toMatchObject({ status: 401 });
+      // assistant-token paths construct CurrentUserInfo without oid
+      await expect(
+        requestContextStorage.run(
+          {
+            user: { id: 5, account: 'a', language: 'zh-CN' } as CurrentUserInfo,
+          },
+          () => svc.listResource(),
+        ),
+      ).rejects.toMatchObject({ status: 401 });
+      expect(prisma.coreDashboard.findMany).not.toHaveBeenCalled();
     });
   });
 });

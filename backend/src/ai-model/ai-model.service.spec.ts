@@ -68,6 +68,7 @@ describe('AiModelService', () => {
       aiModelWorkspaceMapping: {
         findMany: jest.fn(),
         deleteMany: jest.fn(),
+        createMany: jest.fn(),
         upsert: jest.fn(),
       },
     };
@@ -116,6 +117,24 @@ describe('AiModelService', () => {
         where: { name: { contains: 'qwen', mode: 'insensitive' } },
         orderBy: [{ defaultModel: 'desc' }, { createdAt: 'desc' }],
       });
+    });
+  });
+
+  describe('findDefault (GET /default)', () => {
+    it('returns the default model row (or null) straight from findFirst', async () => {
+      prisma.aiModel.findFirst.mockResolvedValue(
+        mockRow({ defaultModel: true }),
+      );
+      const row = await service.findDefault();
+      expect(prisma.aiModel.findFirst).toHaveBeenCalledWith({
+        where: { defaultModel: true },
+      });
+      expect(row.defaultModel).toBe(true);
+    });
+
+    it('returns null when no default model is set', async () => {
+      prisma.aiModel.findFirst.mockResolvedValue(null);
+      await expect(service.findDefault()).resolves.toBeNull();
     });
   });
 
@@ -187,6 +206,24 @@ describe('AiModelService', () => {
       };
       expect(call.data.apiKey).toBeUndefined();
     });
+
+    it('persists provided config + status verbatim', async () => {
+      prisma.aiModel.create.mockResolvedValue(mockRow());
+      const configJson = { maxTokens: 4096 };
+      await service.create({
+        supplier: 1,
+        name: 'x',
+        modelType: 0,
+        protocol: 1,
+        config: configJson,
+        status: 'inactive',
+      } as never);
+      const call = prisma.aiModel.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(call.data.config).toBe(configJson);
+      expect(call.data.status).toBe('inactive');
+    });
   });
 
   describe('update (PUT / body-id — only provided fields)', () => {
@@ -216,6 +253,42 @@ describe('AiModelService', () => {
       await expect(service.update(99, { name: 'x' })).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+
+    it('writes every provided optional field (supplier/modelType/baseModel/apiDomain/config/status)', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      prisma.aiModel.update.mockResolvedValue(mockRow());
+      const configJson = { temperature: 0.2 };
+      await service.update(7, {
+        supplier: 3,
+        modelType: 1,
+        baseModel: 'qwen-turbo',
+        apiDomain: 'https://rotated',
+        config: configJson,
+        status: 'disabled',
+      } as never);
+      const call = prisma.aiModel.update.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(call.data.supplier).toBe('3');
+      expect(call.data.modelType).toBe('1');
+      expect(call.data.baseModel).toBe('qwen-turbo');
+      expect(call.data.apiDomain).toBe('https://rotated');
+      expect(call.data.config).toBe(configJson);
+      expect(call.data.status).toBe('disabled');
+      // fields absent from the dto stay unset
+      expect(call.data.name).toBeUndefined();
+      expect(call.data.apiKey).toBeUndefined();
+    });
+
+    it('empty-string apiKey is NOT re-encrypted (falsy arm of if (dto.apiKey))', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      prisma.aiModel.update.mockResolvedValue(mockRow({ apiKey: null }));
+      await service.update(7, { apiKey: '' });
+      const call = prisma.aiModel.update.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(call.data.apiKey).toBeUndefined();
     });
   });
 
@@ -288,6 +361,107 @@ describe('AiModelService', () => {
       await expect(service.testStatus(99)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  describe('listMappingsByModel (GET /:id/ws_mapping)', () => {
+    it('returns oids as string[] (frontend uses string includes)', async () => {
+      prisma.aiModelWorkspaceMapping.findMany.mockResolvedValue([
+        { oid: 3 },
+        { oid: 10 },
+      ]);
+      const oids = await service.listMappingsByModel(1);
+      expect(prisma.aiModelWorkspaceMapping.findMany).toHaveBeenCalledWith({
+        where: { modelId: 1 },
+        select: { oid: true },
+        orderBy: [{ weight: 'desc' }, { createdAt: 'desc' }],
+      });
+      expect(oids).toEqual(['3', '10']);
+    });
+  });
+
+  describe('addMappings (POST /:id/ws_mapping)', () => {
+    it('no-ops without a findMany/createMany when oids is empty', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      const result = await service.addMappings(1, []);
+      expect(result).toEqual({ success: true });
+      expect(prisma.aiModelWorkspaceMapping.findMany).not.toHaveBeenCalled();
+      expect(prisma.aiModelWorkspaceMapping.createMany).not.toHaveBeenCalled();
+    });
+
+    it('creates only the oids not already bound', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      prisma.aiModelWorkspaceMapping.findMany.mockResolvedValue([{ oid: 3 }]);
+      await service.addMappings(1, ['3', '7']);
+      expect(prisma.aiModelWorkspaceMapping.findMany).toHaveBeenCalledWith({
+        where: { modelId: 1, oid: { in: [3, 7] } },
+        select: { oid: true },
+      });
+      expect(prisma.aiModelWorkspaceMapping.createMany).toHaveBeenCalledWith({
+        data: [{ modelId: 1, oid: 7, weight: 0 }],
+        skipDuplicates: true,
+      });
+    });
+
+    it('skips createMany entirely when every oid already exists', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      prisma.aiModelWorkspaceMapping.findMany.mockResolvedValue([{ oid: 3 }]);
+      await service.addMappings(1, ['3']);
+      expect(prisma.aiModelWorkspaceMapping.createMany).not.toHaveBeenCalled();
+    });
+
+    it('throws 404 when the model is not found', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(null);
+      await expect(service.addMappings(99, ['3'])).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('setMappings (PUT /:id/ws_mapping — bulk replace)', () => {
+    it('wipes + recreates inside one transaction (non-empty oids)', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      await service.setMappings(1, ['3', '7']);
+      expect(prisma.aiModelWorkspaceMapping.deleteMany).toHaveBeenCalledWith({
+        where: { modelId: 1 },
+      });
+      expect(prisma.aiModelWorkspaceMapping.createMany).toHaveBeenCalledWith({
+        data: [
+          { modelId: 1, oid: 3, weight: 0 },
+          { modelId: 1, oid: 7, weight: 0 },
+        ],
+      });
+      const ops = (prisma.$transaction as jest.Mock).mock
+        .calls[0][0] as unknown[];
+      expect(ops).toHaveLength(2);
+    });
+
+    it('empty oids only wipes (no createMany op in the transaction)', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(mockRow());
+      await service.setMappings(1, []);
+      expect(prisma.aiModelWorkspaceMapping.deleteMany).toHaveBeenCalledWith({
+        where: { modelId: 1 },
+      });
+      expect(prisma.aiModelWorkspaceMapping.createMany).not.toHaveBeenCalled();
+      const ops = (prisma.$transaction as jest.Mock).mock
+        .calls[0][0] as unknown[];
+      expect(ops).toHaveLength(1);
+    });
+
+    it('throws 404 when the model is not found', async () => {
+      prisma.aiModel.findUnique.mockResolvedValue(null);
+      await expect(service.setMappings(99, ['3'])).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('removeMappings (DELETE /:id/ws_mapping)', () => {
+    it('deletes the given oids mapped to numbers (idempotent)', async () => {
+      await service.removeMappings(1, ['3', '7']);
+      expect(prisma.aiModelWorkspaceMapping.deleteMany).toHaveBeenCalledWith({
+        where: { modelId: 1, oid: { in: [3, 7] } },
+      });
     });
   });
 });

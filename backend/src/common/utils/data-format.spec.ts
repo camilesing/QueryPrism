@@ -2,6 +2,9 @@
 // be preserved exactly when expanding scientific notation).
 import {
   convertLargeNumbersInObjectArray,
+  formatNumber,
+  isBlank,
+  normalizeColumnKey,
   toPlainDecimal,
 } from './data-format';
 import {
@@ -120,5 +123,77 @@ describe('queryprism-data-shape applies the numeric normalization', () => {
     expect(toQueryPrismListShape([{ label: 'a', value: 1e-7 }])).toEqual([
       { label: 'a', value: '0.0000001' },
     ]);
+  });
+});
+
+describe('toPlainDecimal — positive-exponent arms (coverage tail)', () => {
+  it.each([
+    [1.23e21, '1230000000000000000000'],
+    [-1.23e21, '-1230000000000000000000'],
+    [1e21, '1000000000000000000000'],
+  ])('expands %p (String uses an exponent from 1e21)', (value, expected) => {
+    // point = 1 + 21 >= digits.length → the zero-padded arm, no '.' to trim
+    expect(toPlainDecimal(value)).toBe(expected);
+  });
+});
+
+describe('convertLargeNumbersInObjectArray — non-finite passthrough (coverage tail)', () => {
+  it('returns NaN / Infinity untouched (JSON.stringify renders them null)', () => {
+    const out = convertLargeNumbersInObjectArray([
+      { nan: NaN, inf: Infinity, ninf: -Infinity },
+    ]);
+    expect(out).toEqual([{ nan: NaN, inf: Infinity, ninf: -Infinity }]);
+    expect(typeof out[0].nan).toBe('number');
+    expect(typeof out[0].inf).toBe('number');
+  });
+});
+
+describe('normalizeColumnKey (coverage tail)', () => {
+  it('prefixes keys starting with a digit and rewrites unsafe characters', () => {
+    expect(normalizeColumnKey('1st_order')).toBe('_1st_order');
+    expect(normalizeColumnKey('2024sales')).toBe('_2024sales');
+    expect(normalizeColumnKey(' Count% ')).toBe('Count_');
+    expect(normalizeColumnKey('user-name#id')).toBe('user_name_id');
+    expect(normalizeColumnKey('name')).toBe('name');
+  });
+
+  it('falls back to underscore when the key trims to nothing', () => {
+    expect(normalizeColumnKey('')).toBe('_');
+    expect(normalizeColumnKey('   ')).toBe('_');
+    expect(normalizeColumnKey('***')).toBe('___'); // per-char rewrite keeps length
+  });
+});
+
+describe('formatNumber (coverage tail)', () => {
+  it('formats with thousands separators and capped fraction digits', () => {
+    expect(formatNumber(1234567.891)).toBe('1,234,567.89'); // default arg 2
+    expect(formatNumber(1234567.8, 1)).toBe('1,234,567.8');
+    expect(formatNumber(1000)).toBe('1,000'); // no forced fraction digits
+    expect(formatNumber(-1234.5)).toBe('-1,234.5');
+    expect(formatNumber(0.5)).toBe('0.5');
+  });
+
+  it('stringifies null / undefined / non-finite instead of formatting', () => {
+    expect(formatNumber(null as unknown as number)).toBe('null');
+    expect(formatNumber(undefined as unknown as number)).toBe('undefined');
+    expect(formatNumber(NaN)).toBe('NaN');
+    expect(formatNumber(Infinity)).toBe('Infinity');
+  });
+});
+
+describe('isBlank (coverage tail)', () => {
+  it('treats null, undefined, empty string and empty array as blank', () => {
+    expect(isBlank(null)).toBe(true);
+    expect(isBlank(undefined)).toBe(true);
+    expect(isBlank('')).toBe(true);
+    expect(isBlank([])).toBe(true);
+  });
+
+  it('treats present values (including 0, false, non-empty arrays) as not blank', () => {
+    expect(isBlank('x')).toBe(false);
+    expect(isBlank(0)).toBe(false);
+    expect(isBlank(false)).toBe(false);
+    expect(isBlank([1])).toBe(false);
+    expect(isBlank({})).toBe(false);
   });
 });

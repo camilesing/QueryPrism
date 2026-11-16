@@ -4,7 +4,7 @@
 // resolve stays inside the configured directory).
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { AppearanceFileService } from './appearance-file.service';
 import { setI18n } from '../common/i18n/translate';
@@ -86,5 +86,58 @@ describe('AppearanceFileService.resolve (public GET guard)', () => {
 
   it('delete is a no-op for invalid ids (never unlinks outside the dir)', async () => {
     await expect(service.delete('../../etc/passwd')).resolves.toBeUndefined();
+  });
+});
+
+describe('AppearanceFileService residual arms', () => {
+  beforeEach(() => setI18n(createTestI18n()));
+  const dir = join(
+    tmpdir(),
+    `appearance-spec-tail-${Date.now()}-${Math.random()}`,
+  );
+  const service = makeService(dir);
+
+  it('falls back to the default upload dir when config has none', () => {
+    const bare = new AppearanceFileService({
+      get: () => undefined,
+    } as ConfigService);
+    expect(bare.pathFor(`${'a'.repeat(32)}.png`)).toBe(
+      resolve('uploads/appearance', `${'a'.repeat(32)}.png`),
+    );
+  });
+
+  it('treats a missing originalname as an empty name (no extension)', async () => {
+    await expect(
+      service.save({ originalname: undefined, size: 8, buffer: PNG } as never),
+    ).rejects.toThrow('Only png/jpg/jpeg/svg/webp/gif');
+  });
+
+  it('accepts an originalname without a flag suffix', async () => {
+    const fileId = await service.save(upload('plainlogo.png'));
+    expect(fileId).toMatch(/^[a-f0-9]{32}\.png$/);
+  });
+
+  it('deletes a previously saved file and swallows missing-file errors', async () => {
+    const fileId = await service.save(upload('gone.png,web'));
+    await expect(service.delete(fileId)).resolves.toBeUndefined();
+    await expect(fs.access(join(dir, fileId))).rejects.toThrow();
+    // well-formed id that was never written: unlink ENOENT is swallowed
+    await expect(
+      service.delete(`${'c'.repeat(32)}.png`),
+    ).resolves.toBeUndefined();
+  });
+
+  it('exists() is false for a well-formed id whose file is missing', async () => {
+    await expect(service.exists(`${'d'.repeat(32)}.png`)).resolves.toBe(false);
+  });
+
+  it('maps every allowed extension to its media type', () => {
+    const id = (ext: string) => `${'a'.repeat(32)}${ext}`;
+    expect(service.mediaType(id('.png'))).toBe('image/png');
+    expect(service.mediaType(id('.svg'))).toBe('image/svg+xml');
+    expect(service.mediaType(id('.webp'))).toBe('image/webp');
+    expect(service.mediaType(id('.gif'))).toBe('image/gif');
+    expect(service.mediaType(id('.jpg'))).toBe('image/jpeg');
+    expect(service.mediaType(id('.jpeg'))).toBe('image/jpeg');
   });
 });

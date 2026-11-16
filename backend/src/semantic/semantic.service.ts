@@ -72,8 +72,7 @@ export interface SemanticUpsertInfo {
 }
 
 export type SemanticUpsertResult =
-  | { applied: true; id: number }
-  | { applied: false; request_id: number };
+  { applied: true; id: number } | { applied: false; request_id: number };
 
 /** One dimension field handled by an enum-collection run (snake wire). */
 export interface EnumCollectItem {

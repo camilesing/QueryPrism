@@ -101,8 +101,7 @@ export class MetadataSyncFetchService {
         deadline,
       );
       const content = result.content as
-        | Array<{ type?: string; text?: string }>
-        | undefined;
+        Array<{ type?: string; text?: string }> | undefined;
       const text = content?.find(
         (c) => c.type === 'text' && typeof c.text === 'string',
       )?.text;

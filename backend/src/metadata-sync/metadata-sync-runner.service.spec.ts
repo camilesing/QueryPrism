@@ -335,3 +335,173 @@ describe('MetadataSyncRunnerService', () => {
     expect(m.semanticImport.importJson).not.toHaveBeenCalled();
   });
 });
+
+// ─────────────── tail-sweep: resolution + persistence-failure arms ───────────────
+
+describe('MetadataSyncRunnerService (tail-sweep)', () => {
+  beforeEach(() => setI18n(createTestI18n()));
+
+  it('404s a manual trigger for a source in another workspace (no cross-tenant oracle)', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(
+      source({ id: 5, oid: 2 }),
+    );
+    await expect(m.runner.run(5, 'manual', 1)).rejects.toThrow(/not found/i);
+    expect(m.fetchService.fetchRows).not.toHaveBeenCalled();
+  });
+
+  it('404s a missing source outright', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(null);
+    await expect(m.runner.run(99, 'manual')).rejects.toThrow(/not found/i);
+  });
+
+  it('a matching expectedOid proceeds (manual trigger, same workspace)', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(
+      source({ id: 5, oid: 2 }),
+    );
+    m.prisma.user.findUnique.mockResolvedValue(ADMIN);
+    m.fetchService.fetchRows.mockResolvedValue([]);
+    m.semanticImport.importJson.mockResolvedValue({ applied: 0, failed: [] });
+    await expect(m.runner.run(5, 'manual', 2)).resolves.toMatchObject({
+      status: 'success',
+    });
+  });
+
+  it('rejects the run-as resolution when the workspace is archived', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.workspace.findUnique.mockResolvedValue({
+      archivedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow(
+      'The sync source owner is no longer a workspace admin',
+    );
+    expect(m.fetchService.fetchRows).not.toHaveBeenCalled();
+  });
+
+  it('rejects the run-as resolution when the workspace is gone', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.workspace.findUnique.mockResolvedValue(null);
+    await expect(m.runner.run(1, 'cron')).rejects.toThrow(
+      'The sync source owner is no longer a workspace admin',
+    );
+  });
+
+  it('rejects the run-as resolution when the creator is disabled', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.user.findUnique.mockResolvedValue({ ...ADMIN, status: 0 });
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow(
+      'The sync source owner is no longer a workspace admin',
+    );
+  });
+
+  it('rejects the run-as resolution when the creator is missing', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.user.findUnique.mockResolvedValue(null);
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow(
+      'The sync source owner is no longer a workspace admin',
+    );
+  });
+
+  it('rejects a non-admin member whose membership weight is 0', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(
+      source({ createdBy: 9, oid: 2 }),
+    );
+    m.prisma.user.findUnique.mockResolvedValue({
+      id: 9,
+      account: 'member',
+      language: 'en',
+      status: 1,
+      userWorkspaces: [{ oid: 2, weight: 0 }],
+    });
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow(
+      'no longer a workspace admin',
+    );
+  });
+
+  it('a workspace-admin member (weight > 0) may run the sync', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(
+      source({ createdBy: 9, oid: 2 }),
+    );
+    m.prisma.user.findUnique.mockResolvedValue({
+      id: 9,
+      account: 'wsadmin',
+      language: 'en',
+      status: 1,
+      userWorkspaces: [{ oid: 2, weight: 100 }],
+    });
+    m.fetchService.fetchRows.mockResolvedValue([]);
+    m.semanticImport.importJson.mockResolvedValue({ applied: 0, failed: [] });
+    await expect(m.runner.run(1, 'cron')).resolves.toMatchObject({
+      status: 'success',
+    });
+  });
+
+  it('rejects an unknown sync target before any import', async () => {
+    const m = makeRunner();
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(
+      source({ target: 'bogus' }),
+    );
+    m.prisma.user.findUnique.mockResolvedValue(ADMIN);
+    m.fetchService.fetchRows.mockResolvedValue([{ x: 1 }]);
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow('不支持的同步目标');
+    expect(m.semanticImport.importJson).not.toHaveBeenCalled();
+    expect(m.metricImport.importJsonMetrics).not.toHaveBeenCalled();
+    expect(m.metricImport.importJsonStandards).not.toHaveBeenCalled();
+  });
+
+  it('a failure of the failure-persistence itself only logs (Error shape)', async () => {
+    const m = makeRunner();
+    const errorSpy = jest
+      .spyOn(
+        (
+          m.runner as unknown as {
+            logger: { error: (msg: string) => void };
+          }
+        ).logger,
+        'error',
+      )
+      .mockImplementation(() => undefined);
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.user.findUnique.mockResolvedValue(ADMIN);
+    m.fetchService.fetchRows.mockRejectedValue(new Error('HTTP 500'));
+    m.prisma.metadataSyncRun.create.mockRejectedValue(
+      new Error('FK cascade: source deleted'),
+    );
+
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow('HTTP 500');
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('FK cascade: source deleted'),
+    );
+  });
+
+  it('a failure of the failure-persistence itself only logs (non-Error shape)', async () => {
+    const m = makeRunner();
+    const errorSpy = jest
+      .spyOn(
+        (
+          m.runner as unknown as {
+            logger: { error: (msg: string) => void };
+          }
+        ).logger,
+        'error',
+      )
+      .mockImplementation(() => undefined);
+    m.prisma.metadataSyncSource.findUnique.mockResolvedValue(source());
+    m.prisma.user.findUnique.mockResolvedValue(ADMIN);
+    m.fetchService.fetchRows.mockRejectedValue(new Error('HTTP 502'));
+    m.prisma.metadataSyncRun.create.mockRejectedValue('plain persistence fail');
+
+    await expect(m.runner.run(1, 'manual')).rejects.toThrow('HTTP 502');
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('plain persistence fail'),
+    );
+  });
+});

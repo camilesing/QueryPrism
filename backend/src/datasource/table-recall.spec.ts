@@ -7,6 +7,7 @@ import {
   needsClarify,
   rankTables,
   selectTables,
+  type KeywordField,
 } from './table-recall';
 
 describe('calcKeywordScore', () => {
@@ -280,5 +281,125 @@ describe('matchSuggestedTableIds (need_clarify tables)', () => {
 
   it('returns [] when nothing matches', () => {
     expect(matchSuggestedTableIds(['nope'], candidates)).toEqual([]);
+  });
+
+  it('skips suggested names and candidates that normalize to empty', () => {
+    // a suggested entry that is blank after trim/quote-stripping is skipped
+    expect(
+      matchSuggestedTableIds(['  ', '``', 'sales_order'], candidates),
+    ).toEqual([1]);
+    // a candidate whose tableName strips to empty never enters the lookup map
+    expect(
+      matchSuggestedTableIds(
+        ['sales_order'],
+        [...candidates, { id: 9, tableName: '``', comment: '' }],
+      ),
+    ).toEqual([1]);
+  });
+
+  it('keeps the first candidate when two share a normalized name', () => {
+    // duplicate candidate names: the second never overwrites the first
+    expect(
+      matchSuggestedTableIds(
+        ['dup'],
+        [
+          { id: 1, tableName: 'dup', comment: '' },
+          { id: 2, tableName: 'DUP', comment: '' },
+        ],
+      ),
+    ).toEqual([1]);
+  });
+});
+
+// ───────────────────── residual branch arms (coverage tail) ────────────────
+
+describe('edge inputs (coverage tail)', () => {
+  it('mentionSpans returns [] for an empty name', () => {
+    expect(mentionSpans('any question', '')).toEqual([]);
+  });
+
+  it('selectTables tolerates an empty question and blank table names', () => {
+    const ranked = [
+      { id: 1, tableName: '', comment: '' },
+      { id: 2, tableName: 'a', comment: '' },
+    ];
+    // empty question → nothing explicitly mentioned, rank order preserved
+    expect(selectTables(ranked, '', 2).map((t) => t.id)).toEqual([1, 2]);
+    // a blank-named candidate is never treated as mentioned (name '' is not
+    // inserted into the mention maps)
+    expect(selectTables(ranked, '查', 2).map((t) => t.id)).toEqual([1, 2]);
+  });
+
+  it('duplicate candidate names are mentioned together (first wins the map)', () => {
+    const ranked = [
+      { id: 1, tableName: 'orders', comment: '' },
+      { id: 2, tableName: 'orders', comment: '' },
+      { id: 3, tableName: 'x', comment: '' },
+    ];
+    const out = selectTables(ranked, '查 orders', 1);
+    // BOTH duplicate-named rows are explicit mentions (set keyed by name)
+    expect(out.map((t) => t.id)).toEqual([1, 2]);
+  });
+
+  it('calcKeywordScore tolerates blank table names and missing fields', () => {
+    // tableName '' → tn '' and empty tnParts; keyword falls through to 0
+    expect(calcKeywordScore('销售', '', '', [])).toBe(0);
+    // fields undefined / null → treated as []
+    expect(
+      calcKeywordScore(
+        '用户表',
+        'users',
+        '用户表',
+        undefined as unknown as KeywordField[],
+      ),
+    ).toBe(0.9);
+    expect(
+      calcKeywordScore(
+        '用户表',
+        'users',
+        '用户表',
+        null as unknown as KeywordField[],
+      ),
+    ).toBe(0.9);
+    // a field with an empty fieldName contributes no name parts
+    expect(
+      calcKeywordScore('订单', 'so', '', [
+        { fieldName: '', fieldComment: '订单' },
+      ]),
+    ).toBe(0.5);
+    // blank tableName AND a scoring keyword: the tnParts block is skipped
+    // entirely (size 0) yet the field-comment score survives
+    expect(
+      calcKeywordScore('订单', '', '', [
+        { fieldName: '', fieldComment: '订单' },
+      ]),
+    ).toBe(0.5);
+  });
+
+  it('keyword inside table comment (not equal) scores 0.7', () => {
+    expect(calcKeywordScore('销售', 'so', '销售订单', [])).toBe(0.7);
+    // a repeated keyword re-reads the existing map entry on the 0.7 arm
+    expect(calcKeywordScore('销售,销售', 'so', '销售订单', [])).toBe(0.35);
+  });
+
+  it('keyword substring of a field comment scores 0.4 (no break, re-reads map)', () => {
+    // two field comments both containing the keyword → second pass finds the
+    // existing 0.4 entry and keeps the max
+    expect(
+      calcKeywordScore('金额', 't', '', [
+        { fieldName: 'a', fieldComment: '订单金额' },
+        { fieldName: 'b', fieldComment: '退款金额' },
+      ]),
+    ).toBe(0.4);
+  });
+
+  it('a partial table-name score never lowers an existing field-comment score', () => {
+    // 'sales' matches both a table-name part (0.38) and a field comment (0.5)
+    // — the later tnScore pass re-reads the stored 0.5 and keeps it
+    expect(
+      calcKeywordScore('sales', 'sales_order', '', [
+        { fieldName: 'x', fieldComment: 'sales' },
+      ]),
+    ).toBe(0.5);
   });
 });

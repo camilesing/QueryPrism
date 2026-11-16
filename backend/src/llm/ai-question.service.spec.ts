@@ -407,3 +407,77 @@ describe('AiQuestionService', () => {
     expect(ctx.sqlResult).toBe('[[]]');
   });
 });
+
+// ─────────────── tail-sweep: residual fallback arms ───────────────
+
+describe('AiQuestionService (tail-sweep)', () => {
+  it('§110: customPromptType outside a request context falls back to oid 0', async () => {
+    const { svc, customPromptService } = makeService();
+    // NOT wrapped in run() — RequestContext.getUser() is undefined
+    const ctx = await svc.buildSqlContext({
+      question: 'q',
+      datasourceId: 1,
+      engine: 'MySQL',
+      customPromptType: 'GENERATE_SQL',
+    });
+    expect(customPromptService.findCustomPrompts).toHaveBeenCalledWith(
+      'GENERATE_SQL',
+      0,
+      1,
+    );
+    expect(ctx.customPrompt).toBe('be concise');
+  });
+
+  it('buildFilterContext falls back to the profile language when lang is omitted', async () => {
+    const { svc } = makeService();
+    const ctx = await run(() =>
+      Promise.resolve(
+        svc.buildFilterContext({
+          engine: 'MySQL',
+          sql: 'SELECT 1',
+          filter: '[]',
+        }),
+      ),
+    );
+    expect(ctx.lang).toBe('zh-CN');
+  });
+
+  it('an undefined env default with no saved row enables sample data (?? true)', async () => {
+    const { svc, datasourceService } = makeService({
+      envDefault: undefined,
+      savedRow: null,
+    });
+    const ctx = await run(() =>
+      svc.buildSqlContext({ question: 'q', datasourceId: 1, engine: 'MySQL' }),
+    );
+    expect(ctx.sampleData).toContain('Table: users');
+    expect(datasourceService.previewTable).toHaveBeenCalled();
+  });
+
+  it('stringifies a non-Error sample failure in the skip warning', async () => {
+    const { svc, datasourceService } = makeService();
+    datasourceService.previewTable.mockImplementation(() =>
+      // Intentionally rejects with a non-Error: the skip warning must stringify it.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      Promise.reject('plain preview failure'),
+    );
+    const ctx = await run(() =>
+      svc.buildSqlContext({ question: 'q', datasourceId: 1, engine: 'MySQL' }),
+    );
+    // every table skipped, but the context still resolves
+    expect(ctx.sampleData).toBe('');
+  });
+
+  it('defaults queryprismName to QueryPrism when config omits it', async () => {
+    const { svc } = makeService();
+    // swap the config answer for one that returns undefined everywhere
+    const internals = svc as unknown as { config: { get: jest.Mock } };
+    internals.config.get.mockImplementation(() => undefined);
+    const ctx = await run(() =>
+      svc.buildSqlContext({ question: 'q', datasourceId: 1, engine: 'MySQL' }),
+    );
+    expect(ctx.queryprismName).toBe('QueryPrism');
+    // chat.sampleDataEnabled also undefined here → sample data still on
+    expect(ctx.sampleData).toContain('Table: users');
+  });
+});

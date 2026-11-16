@@ -316,4 +316,200 @@ describe('LlmService.chat / testConnection', () => {
     const res = await svc.testConnection(1);
     expect(res).toEqual({ success: false, message: 'upstream down' });
   });
+
+  it('reports failure when no model is configured at all', async () => {
+    ChatOpenAI.mockImplementation(() => fakeChat([chunk('x')]));
+    const { svc, aiModel } = makeService({ config: { 'llm.apiKey': '' } });
+    aiModel.findUnique.mockResolvedValue(null);
+    aiModel.findFirst.mockResolvedValue(null);
+    const res = await svc.testConnection(1);
+    expect(res.success).toBe(false);
+  });
+
+  it('reports empty-response failure when the stream yields no chunks', async () => {
+    ChatOpenAI.mockImplementation(() => fakeChat([]));
+    const { svc, aiModel } = makeService({});
+    aiModel.findUnique.mockResolvedValue(fakeModel());
+    const res = await svc.testConnection(1);
+    expect(res).toEqual({ success: false, message: expect.any(String) });
+    expect(res.success).toBe(false);
+  });
+
+  it('stringifies a non-Error rejection in the failure message', async () => {
+    ChatOpenAI.mockImplementation(() => ({
+      // Intentionally rejects with a non-Error: the failure message must stringify it.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      stream: () => Promise.reject('plain string failure'),
+    }));
+    const { svc, aiModel } = makeService({});
+    aiModel.findUnique.mockResolvedValue(fakeModel());
+    const res = await svc.testConnection(1);
+    expect(res).toEqual({
+      success: false,
+      message: 'plain string failure',
+    });
+  });
+});
+
+// ─────────────────── tail-sweep: residual routing arms ───────────────────
+
+describe('LlmService tail-sweep', () => {
+  beforeEach(() => {
+    ChatOpenAI.mockReset();
+    AzureChatOpenAI.mockReset();
+    ChatOpenAI.mockImplementation(() => fakeChat([chunk('ok')]));
+  });
+
+  it('streamWith maps non-string (multimodal) chunk content to empty text', async () => {
+    const { svc } = makeService({});
+    const out = { content: '', reasoning: '' };
+    for await (const c of svc.streamWith(
+      fakeChat([{ content: [{ type: 'text', text: 'ignored' }] }, chunk('t')]),
+      [],
+    )) {
+      out.content += c.content;
+      out.reasoning += c.reasoning;
+    }
+    expect(out).toEqual({ content: 't', reasoning: '' });
+  });
+
+  it('streamWith emits reasoning-only chunks without a content yield', async () => {
+    const { svc } = makeService({});
+    const chunks: LlmStreamChunk[] = [];
+    for await (const c of svc.streamWith(
+      fakeChat([chunk(`${OPEN_TAG}only reasoning${CLOSE_TAG}`)]),
+      [],
+    )) {
+      chunks.push(c);
+    }
+    expect(chunks).toEqual([{ content: '', reasoning: 'only reasoning' }]);
+  });
+
+  it('usage_metadata with missing fields defaults to 0 / derived total', async () => {
+    const { svc } = makeService({});
+    const chunks: LlmStreamChunk[] = [];
+    for await (const c of svc.streamWith(
+      fakeChat([{ content: '', usage_metadata: { output_tokens: 5 } }]),
+      [],
+    )) {
+      chunks.push(c);
+    }
+    expect(chunks.find((c) => c.usage)?.usage).toEqual({
+      promptTokens: 0,
+      completionTokens: 5,
+      totalTokens: 5,
+    });
+  });
+
+  it('stream() throws when nothing resolves (no model, no env key)', async () => {
+    const { svc, aiModel } = makeService({ config: { 'llm.apiKey': '' } });
+    aiModel.findUnique.mockResolvedValue(null);
+    aiModel.findFirst.mockResolvedValue(null);
+    await expect(async () => {
+      for await (const c of svc.stream([], 5)) void c;
+    }).rejects.toThrow();
+  });
+
+  it('getChatModel uses model.name when baseModel is empty', () => {
+    const { svc } = makeService({});
+    svc.getChatModel(fakeModel({ baseModel: '', name: 'fallback-name' }), 'k');
+    expect(ChatOpenAI).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'fallback-name' }),
+    );
+  });
+
+  it('resolveModel fails loud when aes.key is missing (P2-5)', async () => {
+    const { svc, aiModel } = makeService({
+      config: { 'aes.key': undefined, 'llm.apiKey': '' },
+    });
+    aiModel.findUnique.mockResolvedValue(fakeModel());
+    await expect(svc.resolveModel(1)).rejects.toThrow();
+  });
+
+  it('resolveModel falls through a row whose decrypted key is empty', async () => {
+    const decryptMock = jest.requireMock('../common/utils/aes')
+      .decrypt as jest.Mock;
+    decryptMock.mockReturnValueOnce('');
+    const { svc, aiModel } = makeService({
+      config: { 'llm.apiKey': 'sk-env' },
+    });
+    aiModel.findUnique.mockResolvedValue(fakeModel());
+    const resolved = await svc.resolveModel(1);
+    // env fallback used instead of the unusable DB row
+    expect(resolved?.model.id).toBe(0);
+    expect(resolved?.model.protocol).toBe('openai');
+    decryptMock.mockReturnValue('decrypted-key');
+  });
+
+  it('resolveModel ignores a DB row without an apiKey (env fallback wins)', async () => {
+    const { svc, aiModel } = makeService({
+      config: { 'llm.apiKey': 'sk-env' },
+    });
+    aiModel.findFirst.mockResolvedValue(fakeModel({ apiKey: null }));
+    const resolved = await svc.resolveModel();
+    expect(resolved?.model.id).toBe(0);
+  });
+
+  it('env-fabricated model defaults every optional field when config omits them', async () => {
+    const aiModel: AiModelDelegateMock = {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(null),
+    };
+    const config = {
+      // ONLY llm.apiKey set — apiDomain/defaultModel/defaultSupplier/aes.key
+      // all undefined → ?? / || default arms.
+      get: jest.fn((k: string) => (k === 'llm.apiKey' ? 'sk-env' : undefined)),
+    } as unknown as jest.Mocked<ConfigService>;
+    const svc = new LlmService({ aiModel } as unknown as PrismaService, config);
+    const resolved = await svc.resolveModel();
+    expect(resolved?.model).toMatchObject({
+      id: 0,
+      supplier: 'openai',
+      name: 'gpt-4o-mini',
+      baseModel: 'gpt-4o-mini',
+      apiDomain: null,
+      apiKey: 'sk-env',
+    });
+  });
+
+  it('usage_metadata with only input_tokens derives the rest', async () => {
+    const { svc } = makeService({});
+    const chunks: LlmStreamChunk[] = [];
+    for await (const c of svc.streamWith(
+      fakeChat([{ content: '', usage_metadata: { input_tokens: 3 } }]),
+      [],
+    )) {
+      chunks.push(c);
+    }
+    expect(chunks.find((c) => c.usage)?.usage).toEqual({
+      promptTokens: 3,
+      completionTokens: 0,
+      totalTokens: 3,
+    });
+  });
+
+  it('undefined llm.apiKey config (not just empty string) → resolveModel null', async () => {
+    const aiModel: AiModelDelegateMock = {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(null),
+    };
+    const config = {
+      get: jest.fn(() => undefined),
+    } as unknown as jest.Mocked<ConfigService>;
+    const svc = new LlmService({ aiModel } as unknown as PrismaService, config);
+    await expect(svc.resolveModel()).resolves.toBeNull();
+  });
+
+  it('azure routing resolves through resolveModel too', async () => {
+    AzureChatOpenAI.mockImplementation(() => fakeChat([chunk('az')]));
+    const { svc, aiModel } = makeService({});
+    aiModel.findUnique.mockResolvedValue(
+      fakeModel({ protocol: 'azure', baseModel: 'gpt-35' }),
+    );
+    const resolved = await svc.resolveModel(1);
+    expect(AzureChatOpenAI).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-35', streaming: true }),
+    );
+    expect(resolved).not.toBeNull();
+  });
 });

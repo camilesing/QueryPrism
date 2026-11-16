@@ -256,6 +256,163 @@ describe('VectorService (pgvector)', () => {
       /EMBEDDING_DIMENSION=3/,
     );
   });
+
+  // ─────────────── tail-sweep: degradation + dimension-recovery arms ───────────────
+
+  it('remove and clear are silent no-ops when the service is disabled', async () => {
+    prisma.$queryRawUnsafe.mockImplementation((sql: string) =>
+      Promise.resolve(sql.includes('pg_extension') ? [] : []),
+    );
+    const disabled = new VectorService(prisma as unknown as PrismaService);
+    await disabled.onModuleInit();
+    expect(disabled.available).toBe(false);
+
+    await expect(disabled.remove('terminology', 1)).resolves.toBeUndefined();
+    await expect(disabled.clear('terminology')).resolves.toBeUndefined();
+    expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
+  });
+
+  it('remove rethrows non-missing-table errors', async () => {
+    prisma.$executeRawUnsafe.mockRejectedValueOnce(
+      new Error('connection lost'),
+    );
+    await expect(service.remove('terminology', 7)).rejects.toThrow(
+      'connection lost',
+    );
+  });
+
+  it('remove rethrows a non-object rejection (isUndefinedTable guard)', async () => {
+    prisma.$executeRawUnsafe.mockRejectedValueOnce('raw string failure');
+    await expect(service.remove('terminology', 7)).rejects.toBe(
+      'raw string failure',
+    );
+  });
+
+  it('onModuleInit catches a non-Error probe failure and disables the service', async () => {
+    prisma.$queryRawUnsafe.mockRejectedValueOnce('probe blew up');
+    const degraded = new VectorService(prisma as unknown as PrismaService);
+    await expect(degraded.onModuleInit()).resolves.toBeUndefined();
+    expect(degraded.available).toBe(false);
+  });
+
+  it('onModuleInit catches an Error probe failure (schema read) and disables the service', async () => {
+    prisma.$queryRawUnsafe.mockImplementation((sql: string) =>
+      sql.includes('pg_extension')
+        ? Promise.resolve([{ extversion: '0.8.7' }])
+        : Promise.reject(new Error('catalog read failed')),
+    );
+    const degraded = new VectorService(prisma as unknown as PrismaService);
+    await expect(degraded.onModuleInit()).resolves.toBeUndefined();
+    expect(degraded.available).toBe(false);
+  });
+
+  it('ensureTable rejects a non-positive / non-integer dimension', async () => {
+    const ensure = (
+      service as unknown as {
+        ensureTable: (c: string, dim: number) => Promise<void>;
+      }
+    ).ensureTable.bind(service);
+    await expect(ensure('terminology', 0)).rejects.toThrow(
+      /Invalid embedding dimension/,
+    );
+    await expect(ensure('terminology', 2.5)).rejects.toThrow(
+      /Invalid embedding dimension/,
+    );
+  });
+
+  it('a repeat upsert with the same dimension skips the DDL entirely', async () => {
+    await service.upsert('terminology', 1, [0.1, 0.2, 0.3]);
+    const ddlAfterFirst = sqlCalls(prisma.$executeRawUnsafe).filter((sql) =>
+      sql.includes('CREATE'),
+    ).length;
+    await service.upsert('terminology', 2, [0.4, 0.5, 0.6]);
+    const ddlAfterSecond = sqlCalls(prisma.$executeRawUnsafe).filter((sql) =>
+      sql.includes('CREATE'),
+    ).length;
+    expect(ddlAfterSecond).toBe(ddlAfterFirst); // cached dim → no new DDL
+    const inserts = sqlCalls(prisma.$executeRawUnsafe).filter((sql) =>
+      sql.includes('ON CONFLICT (id)'),
+    );
+    expect(inserts).toHaveLength(2);
+  });
+
+  it('upsert routes the INSERT through an explicit transaction client', async () => {
+    const txExecute = jest.fn(() => Promise.resolve(1));
+    const tx = { $executeRawUnsafe: txExecute };
+    await service.upsert('terminology', 9, [0.1, 0.2], tx as never);
+    expect(txExecute).toHaveBeenCalledTimes(1);
+    expect(String(txExecute.mock.calls[0][0])).toContain('ON CONFLICT (id)');
+    expect(txExecute.mock.calls[0][1]).toBe(9);
+  });
+
+  it('init recovers an existing table dimension and guards later upserts', async () => {
+    prisma.$queryRawUnsafe.mockImplementation((sql: string) => {
+      if (sql.includes('pg_extension'))
+        return Promise.resolve([{ extversion: '0.8.7' }]);
+      if (sql.includes('information_schema.schemata'))
+        return Promise.resolve([{ ok: 1 }]);
+      if (sql.includes('pg_attribute'))
+        return Promise.resolve([{ type: 'vector(7)' }]);
+      return Promise.resolve([]);
+    });
+    const recovered = new VectorService(prisma as unknown as PrismaService);
+    await recovered.onModuleInit();
+    // recovered dim (=7) mismatches the upsert vector (=2)
+    await expect(
+      recovered.upsert('terminology', 1, [0.1, 0.2]),
+    ).rejects.toThrow(/column expects 7/);
+  });
+
+  it('a table that already exists with the same dim skips CREATE TABLE (index still ensured)', async () => {
+    // init sees NO table (nothing recovered into the dims cache); the table
+    // only appears for ensureTable's in-transaction lookup
+    let tableExists = false;
+    prisma.$queryRawUnsafe.mockImplementation((sql: string) => {
+      if (sql.includes('pg_extension'))
+        return Promise.resolve([{ extversion: '0.8.7' }]);
+      if (sql.includes('information_schema.schemata'))
+        return Promise.resolve([{ ok: 1 }]);
+      if (sql.includes('pg_attribute'))
+        return Promise.resolve(tableExists ? [{ type: 'vector(2)' }] : []);
+      return Promise.resolve([]);
+    });
+    const fresh = new VectorService(prisma as unknown as PrismaService);
+    await fresh.onModuleInit();
+    tableExists = true;
+
+    await fresh.upsert('terminology', 1, [0.5, 0.5]);
+
+    const executed = sqlCalls(prisma.$executeRawUnsafe);
+    expect(
+      executed.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS')),
+    ).toBe(false);
+    expect(
+      executed.some((sql) => sql.includes('CREATE INDEX IF NOT EXISTS')),
+    ).toBe(true);
+    expect(executed.some((sql) => sql.includes('ON CONFLICT (id)'))).toBe(true);
+  });
+
+  it('a table appearing between init and upsert with a different dim is rejected in the DDL transaction', async () => {
+    // init sees NO table (dims stays empty), then the pg_attribute lookup
+    // inside ensureTable's transaction finds an existing vector(3) column
+    let tableExists = false;
+    prisma.$queryRawUnsafe.mockImplementation((sql: string) => {
+      if (sql.includes('pg_extension'))
+        return Promise.resolve([{ extversion: '0.8.7' }]);
+      if (sql.includes('information_schema.schemata'))
+        return Promise.resolve([{ ok: 1 }]);
+      if (sql.includes('pg_attribute'))
+        return Promise.resolve(tableExists ? [{ type: 'vector(3)' }] : []);
+      return Promise.resolve([]);
+    });
+    const fresh = new VectorService(prisma as unknown as PrismaService);
+    await fresh.onModuleInit(); // no table yet → nothing recovered
+    tableExists = true; // the table appears before the upsert's DDL check
+
+    await expect(fresh.upsert('terminology', 1, [0.1, 0.2])).rejects.toThrow(
+      /column expects 3, got 2/,
+    );
+  });
 });
 
 /** Integration test against a real PostgreSQL+pgvector database.

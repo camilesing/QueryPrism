@@ -208,3 +208,160 @@ describe('MetadataSyncFetchService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('MetadataSyncFetchService residual arms', () => {
+  beforeEach(() => {
+    setI18n(createTestI18n());
+    sdkMock.connect.mockReset().mockResolvedValue(undefined);
+    sdkMock.callTool.mockReset();
+    sdkMock.close.mockReset().mockResolvedValue(undefined);
+    fetchMock = jest.fn();
+    globalThis.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('rethrows non-timeout fetch errors unchanged', async () => {
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(makeService().fetchRows(source())).rejects.toThrow(
+      'ECONNREFUSED',
+    );
+  });
+
+  it('POST without a stored body sends an empty JSON object', async () => {
+    const spy = fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    await makeService().fetchRows(
+      source({ httpMethod: 'POST', httpBody: null }),
+    );
+    expect(spy).toHaveBeenCalledWith(
+      'https://meta.example.com/rows',
+      expect.objectContaining({ method: 'POST', body: '{}' }),
+    );
+  });
+
+  it('POST keeps a Content-Type supplied by the auth headers', async () => {
+    const spy = fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    const authJson = encryptJson(
+      { headers: { 'Content-Type': 'application/vnd.api+json' } },
+      AES_KEY,
+    );
+    await makeService().fetchRows(source({ httpMethod: 'POST', authJson }));
+    expect(spy).toHaveBeenCalledWith(
+      'https://meta.example.com/rows',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/vnd.api+json',
+        }),
+      }),
+    );
+  });
+
+  it('rejects a 2xx response whose body is not JSON', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+    });
+    await expect(makeService().fetchRows(source())).rejects.toThrow(
+      'must return a JSON array',
+    );
+  });
+
+  it('rejects stored auth when no AES key is configured', async () => {
+    const keyless = new MetadataSyncFetchService({
+      get: () => undefined,
+    } as unknown as ConfigService);
+    const authJson = encryptJson({ headers: { 'X-API-Key': 'k' } }, AES_KEY);
+    await expect(keyless.fetchRows(source({ authJson }))).rejects.toThrow(
+      'Invalid authentication configuration',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects MCP tool output that is not valid JSON', async () => {
+    sdkMock.callTool.mockResolvedValue({
+      content: [{ type: 'text', text: 'not json {' }],
+    });
+    await expect(
+      makeService().fetchRows(
+        source({
+          kind: 'MCP',
+          endpoint: 'https://mcp.example.com/mcp',
+          mcpTool: 'get_metadata',
+        }),
+      ),
+    ).rejects.toThrow('must return a JSON array');
+    expect(sdkMock.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows a failing MCP close and still returns rows', async () => {
+    sdkMock.callTool.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ rows: [1] }) }],
+    });
+    sdkMock.close.mockRejectedValue(new Error('close failed'));
+    await expect(
+      makeService().fetchRows(
+        source({
+          kind: 'MCP',
+          endpoint: 'https://mcp.example.com/mcp',
+          mcpTool: 'get_metadata',
+        }),
+      ),
+    ).resolves.toEqual([1]);
+  });
+
+  it('fails fast when the deadline is already exhausted (no time left to race)', async () => {
+    let call = 0;
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockImplementation(() => (call++ === 0 ? 0 : 30000));
+    try {
+      await expect(
+        makeService().fetchRows(
+          source({
+            kind: 'MCP',
+            endpoint: 'https://mcp.example.com/mcp',
+            mcpTool: 'get_metadata',
+          }),
+        ),
+      ).rejects.toThrow('did not respond within 30 seconds');
+      expect(sdkMock.callTool).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }, 10000);
+
+  it('a hanging MCP connect is cut by the deadline timer and close is awaited with its own budget', async () => {
+    sdkMock.connect.mockImplementation(() => new Promise(() => {}));
+    sdkMock.close.mockImplementation(() => new Promise(() => {}));
+    let call = 0;
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockImplementation(() => (call++ === 0 ? 0 : 29999));
+    try {
+      await expect(
+        makeService().fetchRows(
+          source({
+            kind: 'MCP',
+            endpoint: 'https://mcp.example.com/mcp',
+            mcpTool: 'get_metadata',
+          }),
+        ),
+      ).rejects.toThrow('did not respond within 30 seconds');
+      // the hanging close was raced against a 1s timer and abandoned
+      expect(sdkMock.close).toHaveBeenCalledTimes(1);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }, 10000);
+});

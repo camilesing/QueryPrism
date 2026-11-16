@@ -307,3 +307,138 @@ describe('McpIntegrationService.authenticateBearer', () => {
     });
   });
 });
+
+describe('McpIntegrationService residual arms', () => {
+  beforeEach(() => setI18n(createTestI18n()));
+
+  it('rejects admin calls when no user is attached to the request context', async () => {
+    const { service, prisma } = makeService();
+    await expect(
+      requestContextStorage.run({}, () => service.list()),
+    ).rejects.toThrow('Cannot determine the current workspace');
+    expect(prisma.mcpIntegration.findMany).not.toHaveBeenCalled();
+  });
+
+  it('lists without a keyword filter (and trims a blank keyword to none)', async () => {
+    const { service, prisma } = makeService();
+    prisma.mcpIntegration.findMany.mockResolvedValue([]);
+    await withUser(() => service.list(), 2);
+    expect(prisma.mcpIntegration.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { oid: 2 } }),
+    );
+    await withUser(() => service.list('   '), 2);
+    expect(prisma.mcpIntegration.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { oid: 2 } }),
+    );
+  });
+
+  it('create defaults description to null and falls back to createdBy 1 without a user id', async () => {
+    const { service, prisma } = makeService();
+    prisma.mcpIntegration.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 9,
+        ...data,
+        lastUsedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }),
+    );
+    // a user row without an id (type-loose cast): currentOid uses oid, the
+    // createdBy fallback kicks in
+    await requestContextStorage.run(
+      { user: { account: 'ghost', oid: 4, language: 'zh-CN' } as never },
+      () => service.create({ name: 'noid' }),
+    );
+    const data = prisma.mcpIntegration.create.mock.calls[0][0].data as {
+      description: string | null;
+      createdBy: number;
+    };
+    expect(data.description).toBeNull();
+    expect(data.createdBy).toBe(1);
+  });
+
+  it('update requires an id and a non-blank name', async () => {
+    const { service, prisma } = makeService();
+    await expect(withUser(() => service.update({ name: 'x' }))).rejects.toThrow(
+      'id is required',
+    );
+    await expect(
+      withUser(() => service.update({ id: '', name: 'x' })),
+    ).rejects.toThrow('id is required');
+    await expect(
+      withUser(() => service.update({ id: 1, name: '   ' })),
+    ).rejects.toThrow('name cannot be empty');
+    expect(prisma.mcpIntegration.update).not.toHaveBeenCalled();
+  });
+
+  it('update applies description-only and empty-body edits', async () => {
+    const { service, prisma } = makeService();
+    prisma.mcpIntegration.findFirst.mockResolvedValue({ id: 1 });
+    prisma.mcpIntegration.update.mockResolvedValue(row({ oid: 2 }));
+
+    await withUser(() => service.update({ id: 1, description: 'new desc' }), 2);
+    expect(prisma.mcpIntegration.update).toHaveBeenLastCalledWith({
+      where: { id: 1 },
+      data: { description: 'new desc' },
+    });
+
+    // nothing to change: the write still runs with an empty data object
+    await withUser(() => service.update({ id: 1 }), 2);
+    expect(prisma.mcpIntegration.update).toHaveBeenLastCalledWith({
+      where: { id: 1 },
+      data: {},
+    });
+  });
+
+  it('revealToken and rotateToken reject rows outside the workspace', async () => {
+    const { service, prisma } = makeService();
+    prisma.mcpIntegration.findFirst.mockResolvedValue(null);
+    await expect(withUser(() => service.revealToken(1))).rejects.toThrow(
+      'MCP 集成 #1 不存在',
+    );
+    await expect(withUser(() => service.rotateToken(1))).rejects.toThrow(
+      'MCP 集成 #1 不存在',
+    );
+  });
+
+  it('authenticateBearer tolerates a nullish raw token', async () => {
+    const { service } = makeService();
+    await expect(
+      service.authenticateBearer(null as unknown as string),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      service.authenticateBearer(undefined as unknown as string),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('authenticateBearer rejects a prefixed token without a secret part', async () => {
+    const { service } = makeService();
+    await expect(
+      service.authenticateBearer('qp_nodotsecret'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('authenticateBearer rejects when the stored secret cannot be decrypted', async () => {
+    const { service, prisma } = makeService();
+    prisma.mcpIntegration.findUnique.mockResolvedValue(
+      row({ secretKey: 'not-a-valid-aes-payload' }),
+    );
+    await expect(
+      service.authenticateBearer('qp_abc123.secret-1'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('a failing lastUsedAt stamp never fails the tool call', async () => {
+    const { service, prisma } = makeService();
+    const owned = row({ oid: 7, createdBy: 42, name: 'Cursor' });
+    prisma.mcpIntegration.findUnique.mockResolvedValue(owned);
+    prisma.workspace.findUnique.mockResolvedValue({ archivedAt: null });
+    prisma.mcpIntegration.update.mockRejectedValue(new Error('db hiccup'));
+
+    const auth = await service.authenticateBearer('qp_abc123.secret-1');
+    expect(auth.integration).toBe(owned);
+    // let the fire-and-forget rejection hit its catch
+    await new Promise((r) => setImmediate(r));
+    expect(prisma.mcpIntegration.update).toHaveBeenCalled();
+  });
+});

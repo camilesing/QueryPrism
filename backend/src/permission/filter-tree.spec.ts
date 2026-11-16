@@ -409,3 +409,94 @@ describe('transFilterTree (AND-join across multiple trees)', () => {
     expect(transFilterTree(trees, c)).toBe("(`a` = '1')");
   });
 });
+
+// ─────────────── residual branch arms (coverage tail) ──────────────────────
+
+describe('filter-tree — residual arms (coverage tail)', () => {
+  it('escapeSqlValue maps null/undefined to an empty string', () => {
+    expect(escapeSqlValue(null)).toBe('');
+    expect(escapeSqlValue(undefined)).toBe('');
+  });
+
+  it('transFilterTree skips null tree entries', () => {
+    const c = ctx({ 10: 'a' }, 'mysql');
+    const trees = [
+      null, // corrupted row → skipped
+      {
+        logic: 'AND',
+        items: [{ type: 'item', field_id: 10, term: 'eq', value: '1' }],
+      },
+    ] as unknown as FilterTree[];
+    expect(transFilterTree(trees, c)).toBe("(`a` = '1')");
+  });
+
+  it('transTreeToWhere returns null for a null tree', () => {
+    expect(
+      transTreeToWhere(null as unknown as FilterTree, ctx({}, 'mysql')),
+    ).toBeNull();
+  });
+
+  it('a subtree that yields null is dropped from the parent group', () => {
+    const c = ctx({ 10: 'a' }, 'mysql');
+    const tree: FilterTree = {
+      logic: 'AND',
+      items: [
+        { type: 'item', field_id: 10, term: 'eq', value: '1' },
+        // empty subtree → null → NOT pushed (no dangling AND)
+        { type: 'tree', sub_tree: { logic: 'AND', items: [] } },
+      ],
+    };
+    expect(transTreeToWhere(tree, c)).toBe("(`a` = '1')");
+  });
+
+  it('DENIES an enum filter_type whose enum_value key is missing', () => {
+    const c = ctx({ 10: 'status' }, 'mysql');
+    const item = {
+      type: 'item',
+      field_id: 10,
+      term: 'eq',
+      filter_type: 'enum',
+    } as const;
+    expect(transTreeItem(item, c)).toBe(DENY_FRAGMENT);
+  });
+
+  it('a variable LIKE uses the first resolved value as the pattern', () => {
+    const c = ctx({ 10: 'name' }, 'sqlite');
+    const item = {
+      type: 'item',
+      field_id: 10,
+      term: 'like',
+      value_type: 'variable',
+      variable_id: 1,
+    } as const;
+    expect(
+      transTreeItem(item, { ...c, resolveVariable: () => ['bob', 'amy'] }),
+    ).toBe(`"name" LIKE '%bob%' ESCAPE '\\'`);
+  });
+});
+
+describe('filter-tree — degenerate shapes (coverage tail)', () => {
+  it('transFilterTree returns null when every tree yields null', () => {
+    const c = ctx({}, 'mysql');
+    const trees: FilterTree[] = [{ logic: 'AND', items: [] }];
+    expect(transFilterTree(trees, c)).toBeNull();
+  });
+
+  it('transTreeToWhere treats a missing items list as empty', () => {
+    expect(
+      transTreeToWhere({ logic: 'AND' } as FilterTree, ctx({}, 'mysql')),
+    ).toBeNull();
+  });
+
+  it('a tree child without sub_tree is skipped', () => {
+    const c = ctx({ 10: 'a' }, 'mysql');
+    const tree: FilterTree = {
+      logic: 'AND',
+      items: [
+        { type: 'item', field_id: 10, term: 'eq', value: '1' },
+        { type: 'tree' } as never, // corrupted child → skipped
+      ],
+    };
+    expect(transTreeToWhere(tree, c)).toBe("(`a` = '1')");
+  });
+});

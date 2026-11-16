@@ -112,7 +112,20 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
+    "coveragePathIgnorePatterns": [
+      "main\\.ts$",
+      "\\.module\\.ts$",
+      "/dto/",
+      "/dtos/"
+    ],
     "coverageDirectory": "../coverage",
+    "coverageThreshold": {
+      "global": {
+        "lines": 80,
+        "functions": 85,
+        "branches": 90
+      }
+    },
     "testEnvironment": "node"
   }
 }

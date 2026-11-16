@@ -496,3 +496,153 @@ describe('diffRelationEdges (relation version compare)', () => {
     expect(diff.removed).toHaveLength(1);
   });
 });
+
+// ─────────────── residual branch arms (coverage tail) ──────────────────────
+
+describe('semanticFieldNote residual arms (coverage tail)', () => {
+  const noteTable = {
+    tableName: 't',
+    tableComment: null,
+    customComment: null,
+    checked: true,
+    fields: [
+      {
+        fieldName: 'f',
+        fieldType: 'TEXT',
+        fieldComment: null,
+        customComment: null,
+        isPrimaryKey: false,
+        fieldIndex: 0,
+        checked: true,
+      },
+    ],
+  };
+  const build = (note: Record<string, unknown>): string =>
+    buildMSchema({
+      datasourceName: 'ds',
+      tables: [noteTable],
+      semantics: {
+        tableMeanings: {},
+        fieldNotes: note as never,
+      },
+    });
+
+  it('renders an unmapped role without a bracketed tag', () => {
+    const out = build({ 't.f': { role: 'other', meaning: '普通备注' } });
+    expect(out).toContain('f TEXT # 普通备注');
+    expect(out).not.toContain('[');
+  });
+
+  it('keeps the tag and tails when meaning is missing', () => {
+    const out = build({
+      't.f': { role: 'metric', meaning: undefined, unit: '元' },
+    });
+    expect(out).toContain('f TEXT # [指标] (单位: 元)');
+  });
+
+  it('drops blank/unvalued enums and omits the tail when nothing remains', () => {
+    const out = build({
+      't.f': {
+        role: 'dimension',
+        meaning: '状态',
+        enums: [
+          { value: '', label: '空值' },
+          { label: '无值' } as unknown as { value: string },
+        ],
+      },
+    });
+    expect(out).toContain('f TEXT # [维度] 状态');
+    expect(out).not.toContain('枚举');
+  });
+
+  it('renders a bare role+meaning note without any tail', () => {
+    const out = build({ 't.f': { role: 'time', meaning: '下单时间' } });
+    expect(out).toContain('f TEXT # [时间] 下单时间');
+    expect(out).not.toContain('(');
+  });
+});
+
+describe('edgesFromX6Cells defensive arms (coverage tail)', () => {
+  it('drops edges whose source/target metadata is missing or a primitive', () => {
+    const cells = [
+      ...x6Cells,
+      // no source/target at all → cellString(undefined, 'cell') === ''
+      { id: 'edge-no-src', shape: 'edge' },
+      // source is a primitive, not an object cell ref
+      {
+        id: 'edge-raw-src',
+        shape: 'edge',
+        source: 'orders',
+        target: { cell: 12, port: 121 },
+      },
+    ];
+    const edges = normalizeTableRelation(cells);
+    expect(edges).toHaveLength(1); // only edge-1 survives
+    expect(edges[0].toTable).toBe('users');
+  });
+
+  it('ignores node cells whose id is missing or a non-finite number', () => {
+    const cells = [
+      ...x6Cells,
+      { shape: 'er-rect', label: 'no-id' }, // id absent → '' → skipped
+      { id: NaN, shape: 'er-rect', label: 'nan-id' }, // number, not finite → ''
+    ];
+    expect(normalizeTableRelation(cells)).toHaveLength(1);
+  });
+
+  it('skips malformed port items; a port without a label resolves to empty', () => {
+    const cells = [
+      {
+        id: 11,
+        shape: 'er-rect',
+        label: 'orders',
+        attrs: { label: { text: 'orders' } },
+        ports: {
+          items: [
+            'garbage', // primitive item → skipped
+            null, // null item → skipped
+            { group: 'list' }, // no port id → skipped
+            { id: 113, group: 'list' }, // id present, no label text → ''
+          ],
+        },
+      },
+      x6Cells[1], // users node with port 121
+      {
+        id: 'edge-port-113',
+        shape: 'edge',
+        source: { cell: 11, port: 113 }, // resolves to field '' → dropped
+        target: { cell: 12, port: 121 },
+      },
+    ];
+    // both tables resolve but fromField is '' → the edge is dropped
+    expect(normalizeTableRelation(cells)).toEqual([]);
+  });
+});
+
+describe('buildMSchema residual arms (coverage tail)', () => {
+  it('renders fieldType unknown when the column type is null', () => {
+    const out = buildMSchema({
+      datasourceName: 'ds',
+      tables: [
+        {
+          tableName: 't',
+          tableComment: null,
+          customComment: null,
+          checked: true,
+          fields: [
+            {
+              fieldName: 'f',
+              fieldType: null,
+              fieldComment: null,
+              customComment: null,
+              isPrimaryKey: false,
+              fieldIndex: 0,
+              checked: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).toContain('f unknown');
+  });
+});

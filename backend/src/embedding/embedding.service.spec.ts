@@ -122,3 +122,88 @@ describe('EmbeddingService', () => {
     expect(mocks.embedDocuments).toHaveBeenCalledWith(['a', 'b']);
   });
 });
+
+// The local (transformers.js) first-load path needs a real dynamic
+// `import('@xenova/transformers')` (native under module:nodenext — jest's
+// CJS runtime cannot intercept it), so it stays uncovered. The local paths
+// are exercised by pre-seeding the cached pipeline below instead.
+function localService(
+  pipe: (text: string, opts: unknown) => Promise<{ data: Float32Array }>,
+) {
+  const svc = new EmbeddingService(
+    makeConfig({
+      'embedding.provider': 'local',
+      'embedding.localModel': 'Xenova/test-model',
+    }),
+  );
+
+  svc['localPipe'] = pipe;
+  return svc;
+}
+
+describe('EmbeddingService residual arms', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('defaults the provider to openai when config has none', async () => {
+    const svc = new EmbeddingService(
+      makeConfig({ 'embedding.apiKey': 'sk-x' }),
+    );
+    expect(svc.available).toBe(true);
+    const mocks = embedMocks();
+    mocks.embedQuery.mockResolvedValue([0.5]);
+    await expect(svc.embed('hi')).resolves.toEqual([0.5]);
+  });
+
+  it('embedBatch throws when not configured', async () => {
+    const svc = new EmbeddingService(
+      makeConfig({ 'embedding.provider': 'openai', 'embedding.apiKey': '' }),
+    );
+    await expect(svc.embedBatch(['a'])).rejects.toThrow('not configured');
+  });
+
+  it('reuses the constructed OpenAIEmbeddings client across calls', async () => {
+    const mocks = embedMocks();
+    mocks.embedQuery.mockResolvedValue([0.1]);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { OpenAIEmbeddings } = require('@langchain/openai') as {
+      OpenAIEmbeddings: jest.Mock;
+    };
+    const svc = new EmbeddingService(
+      makeConfig({ 'embedding.provider': 'openai', 'embedding.apiKey': 'sk' }),
+    );
+    await svc.embed('one');
+    await svc.embed('two');
+    expect(OpenAIEmbeddings).toHaveBeenCalledTimes(1);
+    expect(mocks.embedQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('embed routes to the local pipeline with mean pooling + normalize', async () => {
+    const pipe = jest.fn(() =>
+      Promise.resolve({ data: new Float32Array([0.25, 0.75]) }),
+    );
+    const svc = localService(pipe);
+    await expect(svc.embed('hello')).resolves.toEqual([0.25, 0.75]);
+    expect(pipe).toHaveBeenCalledWith('hello', {
+      pooling: 'mean',
+      normalize: true,
+    });
+    // the cached pipeline is reused (no second load)
+    await expect(svc.embed('again')).resolves.toEqual([0.25, 0.75]);
+    expect(pipe).toHaveBeenCalledTimes(2);
+  });
+
+  it('embedBatch embeds local texts one-at-a-time', async () => {
+    const pipe = jest.fn((text: string) =>
+      Promise.resolve({ data: new Float32Array([text.charCodeAt(0) / 100]) }),
+    );
+    const svc = localService(pipe);
+    const vecs = await svc.embedBatch(['a', 'b', 'c']);
+    // Float32Array→number[] conversion, one pipe call per text
+    expect(vecs.map((v) => v[0])).toEqual(
+      [0.97, 0.98, 0.99].map((x) => Math.fround(x)),
+    );
+    expect(pipe).toHaveBeenCalledTimes(3);
+  });
+});
