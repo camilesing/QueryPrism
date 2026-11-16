@@ -534,6 +534,7 @@ describe('CustomPromptService — extended', () => {
   let prisma: MockPrisma;
   let importWrite: jest.Mock;
 
+  beforeEach(() => setI18n(createTestI18n()));
   beforeEach(() => {
     prisma = makePrisma();
     importWrite = jest.fn().mockResolvedValue('custom-prompt_x_error.xlsx');
