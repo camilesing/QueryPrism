@@ -261,7 +261,10 @@ function openEdit(row: MetricRow | StandardRow) {
 }
 
 function submitForm() {
-  if (!form.code.trim() || !form.name.trim()) {
+  // The data-standard form fills `term` + `standard_name` instead of `name`
+  // (checked in its own branch below); the generic check must not run there,
+  // or no standard can ever be created from this page.
+  if (activeTab.value !== 'standard' && (!form.code.trim() || !form.name.trim())) {
     ElMessage.error(t('metric.form_required'))
     return
   }
