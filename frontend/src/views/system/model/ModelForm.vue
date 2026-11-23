@@ -189,18 +189,34 @@ const initForm = (item?: any) => {
   modelRef.value.clearValidate()
   tempConfigMap = new Map<string, Array<any>>()
   if (item) {
-    Object.assign(modelForm, { ...item })
-    if (item?.config_list?.length) {
-      advancedSetting.value = item.config_list
-      advancedSetting.value.forEach((ele: any) => {
-        if (!ele.id) {
-          ele.id = curId
-          curId += 1
-        }
-      })
-    } else {
-      advancedSetting.value = []
-    }
+    // Only the form's own fields. `GET /:id` also returns the stored
+    // parameters (as `config`), status and timestamps; copying them into the
+    // form made the backend prefer the stored `config` over the edited
+    // `config_list` on save, so every parameter edit was silently dropped.
+    Object.assign(modelForm, {
+      id: item.id,
+      supplier: item.supplier,
+      name: item.name,
+      model_type: item.model_type,
+      base_model: item.base_model,
+      api_key: item.api_key,
+      api_domain: item.api_domain,
+      protocol: item.protocol,
+    })
+    // The stored parameters arrive as `config` ({key, name, val} rows);
+    // `config_list` is only what this form emits.
+    const stored: any[] = Array.isArray(item.config_list)
+      ? item.config_list
+      : Array.isArray(item.config)
+        ? item.config
+        : []
+    advancedSetting.value = stored.map((ele: any) => ({ ...ele }))
+    advancedSetting.value.forEach((ele: any) => {
+      if (!ele.id) {
+        ele.id = curId
+        curId += 1
+      }
+    })
     tempConfigMap.set(`${modelForm.supplier}-${modelForm.base_model}`, [...advancedSetting.value])
   }
 }
