@@ -158,7 +158,7 @@ RESTful, prefix `/api/v1`:
 - Prefer extending the existing module/service over adding a parallel abstraction. A new layer must name what it replaces; otherwise edit the original.
 - Prefer the smallest change that preserves observable API/DB contracts. A rewrite needs a product reason, not a shortcut around reading existing code.
 - Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
-- Treat this file as durable guidance: derive versions, commands, ports, and paths from `package.json`, configs, and migrations — README/plan prose drifts (e.g. the stale TS 6 / Vite 8 claim).
+- Treat this file as durable guidance: derive versions, commands, ports, and paths from `package.json`, configs, and migrations — README/plan prose drifts.
 - Misconfiguration should fail loud at startup/load. Silent fallback is allowed only where explicitly designed (e.g. vector recall degrading to keyword-only).
 - Write down a feature's known limitations next to the code that owns it, so the next reader does not assume an unbuilt capability.
 - A user-facing feature or API change lands with its docs and i18n keys in the same change. `README.md` and `README_zh.md` are a bilingual pair — update both.
@@ -172,7 +172,6 @@ RESTful, prefix `/api/v1`:
 
 ## Common Issues
 
-- **Stale README stack:** `README.md` claims TypeScript 6.x / Vite 8.x; actual `frontend/package.json` is TypeScript ~5.7 and Vite 6. Trust package.json
 - **Prisma migration:** Run `prisma:generate` after schema changes; `prisma migrate dev` for new migrations
 - **pnpm native builds:** `backend/pnpm-workspace.yaml` keeps `allowBuilds` and `onlyBuiltDependencies` in sync (pnpm ≤10 ignores `allowBuilds`). If `better-sqlite3` / `sharp` / Prisma engines fail to build, check both lists
 - **pgvector missing:** The baseline migration runs `CREATE EXTENSION vector` and creates schema `vector_store`; the DB role needs permission to create the extension. If the app log says vector search is disabled, run `pnpm prisma:deploy`

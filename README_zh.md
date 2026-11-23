@@ -26,8 +26,8 @@
 
 ### Frontend
 - **框架**: Vue 3.5.x
-- **语言**: TypeScript 6.x
-- **构建工具**: Vite 8.x
+- **语言**: TypeScript 5.x
+- **构建工具**: Vite 6.x
 - **UI组件**: Element Plus
 - **图表库**: AntV G2
 - **状态管理**: Pinia

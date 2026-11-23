@@ -28,8 +28,8 @@ An intelligent data-visualization chatbot — connect your databases, ask questi
 ### Frontend
 
 - **Framework**: Vue 3.5.x
-- **Language**: TypeScript 6.x
-- **Build tool**: Vite 8.x
+- **Language**: TypeScript 5.x
+- **Build tool**: Vite 6.x
 - **UI components**: Element Plus
 - **Charts**: AntV G2
 - **State management**: Pinia
