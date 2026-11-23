@@ -11,15 +11,16 @@
 //     seeded); sets `createTime`/`createBy` on create only. Name uniqueness
 //     check (400 on conflict — semantically correct for a client-input
 //     conflict; the frontend handles 400 or 500 alike).
-//   - `listAll`: no name → ALL ordered by `type desc, name asc` (system vars
-//     sort first since 'system' > 'custom' lexically); with name →
-//     `name contains kw AND type != 'system'` (system vars excluded from
-//     name searches). Returns bare array.
+//   - `listAll`: no name → system + custom ordered by `type desc, name asc`
+//     (system vars sort first since 'system' > 'custom' lexically); with name
+//     → `name contains kw` among custom rows (system vars excluded from name
+//     searches). Returns bare array.
 //   - `listPage`: same filter, paginated → `{items, total}`.
-//   - `delete`: bare array `ids` → `deleteMany where id in ids`. No type check
-//     (frontend variables/index.vue:33 hardcodes
+//   - `delete`: bare array `ids` → `deleteMany where id in ids AND type =
+//     'custom'`. The frontend (variables/index.vue:33 hardcodes
 //     `![1,2,3].includes(row.id)` as non-selectable + :90 early-returns on
-//     `row.type === 'system'` — client-side prevention of system-var deletion).
+//     `row.type === 'system'`) only prevents system-var deletion client-side;
+//     the type in the WHERE keeps every other row safe server-side too.
 //   - `value` is ALWAYS a Json array (text=string[], number=[min,max],
 //     datetime=[start,end]). Stored as Prisma Json, passes through verbatim.
 //   - `var_type` (snake on the wire) ↔ `varType` (Prisma camelCase column).
@@ -37,6 +38,15 @@ import { tr } from '../common/i18n/translate';
  *  The frontend (variables/index.vue:236-256) sends `{name, var_type, value}`
  *  on create (id deleted when falsy) or `{id, name, var_type, value}` on
  *  update. `id` may arrive as string|number; coerced via Number(). */
+/** The row types this module owns: the seeded system variables (Name /
+ *  Account / Email, read by row-permission filters) and the user-defined
+ *  ones. `SystemVariable` is a shared key-value table — the runtime
+ *  parameters (`parameter`), appearance entries (`appearance`) and the
+ *  query-cache revisions (`cache_rev`, see QueryCacheService) live in it too.
+ *  Those are internal to their modules: listing must not surface them on the
+ *  variables page, and save/delete must not touch them. */
+const OWNED_TYPES = ['system', 'custom'];
+
 export interface SysVariableSaveBody {
   id?: string | number | null;
   name: string;
@@ -49,9 +59,11 @@ export class SystemVariableService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** P3-3: the listAll/listPage filter + sort, shared (was duplicated
-   *  verbatim in both — destined to drift). No name → all (system + custom);
-   *  with name → `name contains kw AND type != system` (system vars excluded
-   *  from name searches; the filter is a case-insensitive contains). */
+   *  verbatim in both — destined to drift). No name → system + custom; with
+   *  name → `name contains kw` among custom rows (system vars excluded from
+   *  name searches; the filter is a case-insensitive contains). Other
+   *  modules' row types are never listed (an unfiltered `{}` surfaced them
+   *  as deletable "variables"). */
   private listFilter(name?: string): {
     where: Prisma.SystemVariableWhereInput;
     orderBy: Prisma.SystemVariableOrderByWithRelationInput[];
@@ -60,9 +72,9 @@ export class SystemVariableService {
       where: name
         ? {
             name: { contains: name, mode: 'insensitive' },
-            type: { not: 'system' },
+            type: 'custom',
           }
-        : {},
+        : { type: { in: OWNED_TYPES } },
       orderBy: [{ type: 'desc' }, { name: 'asc' }],
     };
   }
@@ -97,8 +109,9 @@ export class SystemVariableService {
   }
 
   /** save — upsert by id presence. Server forces `type='custom'` on create
-   *  (system vars are seeded, not user-editable). Name uniqueness check → 400
-   *  on conflict (excluding self on update). Review P1-1: the dup check and
+   *  and updates custom rows only (system vars are seeded, not user-editable;
+   *  a non-custom or missing id → 400). Name uniqueness check → 400 on
+   *  conflict (excluding self on update). Review P1-1: the dup check and
    *  the write run in ONE $transaction — the old check-then-write raced two
    *  concurrent same-name saves past the check (name IS @unique, so the
    *  loser surfaced as an opaque unique-constraint 500 instead of the 400). */
@@ -141,26 +154,32 @@ export class SystemVariableService {
           },
         });
       } else {
-        await tx.systemVariable.update({
-          where: { id: idNum },
+        // `type` in the WHERE: a system variable or another module's row
+        // (parameter / appearance / cache_rev) must not be renamed or have
+        // its value rewritten from the variables form.
+        const { count } = await tx.systemVariable.updateMany({
+          where: { id: idNum, type: 'custom' },
           data: {
             name: body.name,
             varType: body.var_type,
             value: body.value as Prisma.InputJsonValue,
           },
         });
+        if (count === 0) {
+          throw new BadRequestException(tr('system-variable.not_editable'));
+        }
       }
     });
     return { success: true };
   }
 
-  /** delete — bare array of ids. No type check (frontend prevents system-var
-   *  deletion client-side). */
+  /** delete — bare array of ids, custom rows only (non-custom ids match 0
+   *  rows; deleteMany stays idempotent). */
   async delete(ids: number[]): Promise<{ success: true }> {
     const idNums = ids.map(Number);
     if (idNums.length > 0) {
       await this.prisma.systemVariable.deleteMany({
-        where: { id: { in: idNums } },
+        where: { id: { in: idNums }, type: 'custom' },
       });
     }
     return { success: true };

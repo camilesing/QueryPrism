@@ -1,9 +1,11 @@
 // system-variable e2e — Phase 10c cycle 2 §82/§88/§91/§101. Covers the 4
 // action-style POST /sys_variable routes + the 401 guard + name-uniqueness
 // 400 + the polymorphic listAll/listPage filter (system vars excluded from
-// name searches). The 3 seeded system vars (Name/Account/Email, ids 1-3,
-// type=system) are non-deletable from the UI but the backend doesn't enforce
-// (the frontend variables/index.vue:33 hardcodes
+// name searches). The variables API owns system + custom rows only: the 3
+// seeded system vars (Name/Account/Email, ids 1-3, type=system) cannot be
+// edited or deleted through it, and rows other modules keep in the same
+// table (parameter / appearance / cache_rev) are neither listed nor
+// writable (the frontend variables/index.vue:33 hardcodes
 // `![1,2,3].includes(row.id)` + :90 early-returns on `type === 'system'`).
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
@@ -277,5 +279,72 @@ describe('SystemVariable /sys_variable (e2e)', () => {
     expect((res.body as ApiEnvelope<{ success: true }>).data.success).toBe(
       true,
     );
+  });
+
+  it('rows of other modules and the system vars stay out of reach: not listed, not editable, not deletable', async () => {
+    const prisma = app.get(PrismaService);
+    // What QueryCacheService writes on a datasource rebind (M7). It used to
+    // show up on the variables page as a deletable "variable" with a
+    // non-array value.
+    const foreign = await prisma.systemVariable.create({
+      data: {
+        name: 'cache.rev.99',
+        varType: 'number',
+        type: 'cache_rev',
+        value: 6,
+      },
+    });
+    try {
+      const page = await request(app.getHttpServer())
+        .post('/api/v1/sys_variable/listPage/1/100')
+        .set(TOKEN_HEADER, token)
+        .send({});
+      const items = (page.body as ApiEnvelope<{ items: SysVariableSnake[] }>)
+        .data.items;
+      expect(items.map((v) => v.type)).not.toContain('cache_rev');
+      expect(items.map((v) => v.id)).not.toContain(foreign.id);
+
+      // A name search reaches custom rows only.
+      const search = await request(app.getHttpServer())
+        .post('/api/v1/sys_variable/listPage/1/10')
+        .set(TOKEN_HEADER, token)
+        .send({ name: 'cache.rev.99' });
+      expect((search.body as ApiEnvelope<{ total: number }>).data.total).toBe(
+        0,
+      );
+
+      const edit = await request(app.getHttpServer())
+        .post('/api/v1/sys_variable/save')
+        .set(TOKEN_HEADER, token)
+        .send({
+          id: foreign.id,
+          name: 'renamed',
+          var_type: 'number',
+          value: [0, 1],
+        });
+      expect(edit.status).toBe(400);
+
+      const del = await request(app.getHttpServer())
+        .post('/api/v1/sys_variable/delete')
+        .set(TOKEN_HEADER, token)
+        .send([foreign.id, 1, 2, 3]);
+      expect(del.status).toBe(200);
+
+      const kept = await prisma.systemVariable.findMany({
+        where: { id: { in: [foreign.id, 1, 2, 3] } },
+        select: { id: true, name: true, type: true },
+        orderBy: { id: 'asc' },
+      });
+      expect(kept).toEqual([
+        { id: 1, name: 'Name', type: 'system' },
+        { id: 2, name: 'Account', type: 'system' },
+        { id: 3, name: 'Email', type: 'system' },
+        { id: foreign.id, name: 'cache.rev.99', type: 'cache_rev' },
+      ]);
+    } finally {
+      await prisma.systemVariable.deleteMany({
+        where: { id: foreign.id },
+      });
+    }
   });
 });

@@ -1,4 +1,5 @@
 {
   "id_must_be_int": "变量 id 必须是整数",
-  "name_exists": "变量名已存在"
+  "name_exists": "变量名已存在",
+  "not_editable": "只能编辑自定义变量"
 }

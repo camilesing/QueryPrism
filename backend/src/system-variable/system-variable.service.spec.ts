@@ -1,12 +1,15 @@
 // system-variable.service spec — Phase 10c cycle 2 §82/§88/§101.
-//   - listAll/listPage share listFilter: no name → {} (all, system first),
-//     with name → `name contains AND type != 'system'` (system vars excluded
-//     from name searches).
+//   - listAll/listPage share listFilter, scoped to the rows this module owns:
+//     no name → system + custom (system first), with name → `name contains`
+//     among custom rows (system vars excluded from name searches). The table
+//     is shared with runtime parameters, appearance entries and query-cache
+//     revisions, which never show up here.
 //   - save upserts by id presence: strict int parse (non-numeric id → 400),
 //     dup-name check inside ONE interactive $transaction (400 on conflict,
 //     excluding self on update), create forces type='custom' + createTime/
-//     createBy, update only writes name/varType/value.
-//   - delete: bare ids array → deleteMany in ids; empty array is a no-op.
+//     createBy, update only writes name/varType/value and only to custom rows.
+//   - delete: bare ids array → deleteMany in ids AND custom; empty array is a
+//     no-op.
 import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaService } from '../database/prisma.service';
@@ -40,6 +43,7 @@ describe('SystemVariableService', () => {
         findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
         deleteMany: jest.fn(),
       },
     };
@@ -63,14 +67,17 @@ describe('SystemVariableService', () => {
   });
 
   describe('listAll', () => {
-    it('no name → all rows, ordered type desc + name asc, snake-mapped', async () => {
+    it('no name → system + custom rows only, ordered type desc + name asc', async () => {
       prisma.systemVariable.findMany.mockResolvedValue([
         mockRow({ type: 'system', name: 'currentUser' }),
         mockRow(),
       ]);
       const rows = await service.listAll();
+      // Other modules store their rows in the same table (parameter,
+      // appearance, cache_rev): an unfiltered `{}` listed them on the
+      // variables page as deletable "variables".
       expect(prisma.systemVariable.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { type: { in: ['system', 'custom'] } },
         orderBy: [{ type: 'desc' }, { name: 'asc' }],
       });
       expect(rows).toEqual([
@@ -91,23 +98,23 @@ describe('SystemVariableService', () => {
       ]);
     });
 
-    it('with name → contains filter AND system vars excluded', async () => {
+    it('with name → contains filter among custom rows (system + internal rows excluded)', async () => {
       prisma.systemVariable.findMany.mockResolvedValue([]);
       await service.listAll('reg');
       expect(prisma.systemVariable.findMany).toHaveBeenCalledWith({
         where: {
           name: { contains: 'reg', mode: 'insensitive' },
-          type: { not: 'system' },
+          type: 'custom',
         },
         orderBy: [{ type: 'desc' }, { name: 'asc' }],
       });
     });
 
-    it('empty-string name → no filter (falsy arm)', async () => {
+    it('empty-string name → unfiltered by name (falsy arm)', async () => {
       prisma.systemVariable.findMany.mockResolvedValue([]);
       await service.listAll('');
       expect(prisma.systemVariable.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { type: { in: ['system', 'custom'] } },
         orderBy: [{ type: 'desc' }, { name: 'asc' }],
       });
     });
@@ -123,13 +130,13 @@ describe('SystemVariableService', () => {
       expect(prisma.systemVariable.count).toHaveBeenCalledWith({
         where: {
           name: { contains: 'reg', mode: 'insensitive' },
-          type: { not: 'system' },
+          type: 'custom',
         },
       });
       expect(prisma.systemVariable.findMany).toHaveBeenCalledWith({
         where: {
           name: { contains: 'reg', mode: 'insensitive' },
-          type: { not: 'system' },
+          type: 'custom',
         },
         orderBy: [{ type: 'desc' }, { name: 'asc' }],
         skip: 10,
@@ -147,12 +154,16 @@ describe('SystemVariableService', () => {
       ]);
     });
 
-    it('no name → unfiltered page', async () => {
+    it('no name → page over system + custom rows', async () => {
       prisma.systemVariable.count.mockResolvedValue(0);
       prisma.systemVariable.findMany.mockResolvedValue([]);
       await service.listPage(1, 20);
       expect(prisma.systemVariable.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: {}, skip: 0, take: 20 }),
+        expect.objectContaining({
+          where: { type: { in: ['system', 'custom'] } },
+          skip: 0,
+          take: 20,
+        }),
       );
     });
   });
@@ -205,7 +216,7 @@ describe('SystemVariableService', () => {
 
     it('update branch (numeric id, string id): dup check excludes self; only name/varType/value written', async () => {
       prisma.systemVariable.findFirst.mockResolvedValue(null);
-      prisma.systemVariable.update.mockResolvedValue(mockRow());
+      prisma.systemVariable.updateMany.mockResolvedValue({ count: 1 });
       await service.save(
         { id: '5', name: 'renamed', var_type: 'number', value: [0, 10] },
         42,
@@ -213,14 +224,30 @@ describe('SystemVariableService', () => {
       expect(prisma.systemVariable.findFirst).toHaveBeenCalledWith({
         where: { name: 'renamed', id: { not: 5 } },
       });
-      expect(prisma.systemVariable.update).toHaveBeenCalledWith({
-        where: { id: 5 },
+      expect(prisma.systemVariable.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, type: 'custom' },
         data: {
           name: 'renamed',
           varType: 'number',
           value: [0, 10],
         },
       });
+      expect(prisma.systemVariable.create).not.toHaveBeenCalled();
+      expect(prisma.systemVariable.update).not.toHaveBeenCalled();
+    });
+
+    it('update of a non-custom row (system / parameter / cache_rev / unknown id) → 400, nothing written', async () => {
+      prisma.systemVariable.findFirst.mockResolvedValue(null);
+      prisma.systemVariable.updateMany.mockResolvedValue({ count: 0 });
+      await expect(
+        service.save(
+          { id: 4, name: 'cache.rev.1', var_type: 'number', value: [0, 0] },
+          1,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.systemVariable.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 4, type: 'custom' } }),
+      );
       expect(prisma.systemVariable.create).not.toHaveBeenCalled();
     });
 
@@ -242,11 +269,13 @@ describe('SystemVariableService', () => {
   });
 
   describe('delete', () => {
-    it('deletes the given ids via deleteMany in', async () => {
+    it('deletes the given ids via deleteMany in, custom rows only', async () => {
       const result = await service.delete([5, 9]);
       expect(result).toEqual({ success: true });
+      // System variables and other modules' rows match 0 rows even if an id
+      // slips in (the UI only guards ids 1-3 client-side).
       expect(prisma.systemVariable.deleteMany).toHaveBeenCalledWith({
-        where: { id: { in: [5, 9] } },
+        where: { id: { in: [5, 9] }, type: 'custom' },
       });
     });
 

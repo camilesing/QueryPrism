@@ -1,4 +1,5 @@
 {
   "id_must_be_int": "Variable id must be an integer",
-  "name_exists": "Variable name already exists"
+  "name_exists": "Variable name already exists",
+  "not_editable": "Only custom variables can be edited"
 }
