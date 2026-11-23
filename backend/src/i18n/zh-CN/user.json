@@ -13,5 +13,6 @@
   "user_key_not_found": "用户 #{{key}} 不存在",
   "excel_required": "请上传 Excel 文件",
   "user_id_missing": "缺少用户 id",
-  "some_ws_not_found_or_archived": "部分工作空间不存在或已归档"
+  "some_ws_not_found_or_archived": "部分工作空间不存在或已归档",
+  "admin_protected": "系统管理员账号不能被删除、禁用或重置为默认密码"
 }

@@ -17,6 +17,7 @@ import { tr } from '../common/i18n/translate';
 import { ImportErrorFileService } from '../common/import-export/import-error-file.service';
 import { jsonValueToString } from '../common/utils/json-value';
 import { PWD_REGEX, initialPwdDisabled } from '../auth/password-policy';
+import { ADMIN_UID } from '../auth/admin.guard';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import type { CurrentUserInfo } from '../common/context/request-context';
@@ -232,6 +233,9 @@ export class UserService {
   // oid_list reconciles UserWs rows (add new, drop removed), system_variables
   // is a Json blob passed through verbatim. Returns row WITH userWorkspaces.
   async update(id: number, dto: UpdateUserDto): Promise<UserWithWorkspaces> {
+    if (dto.status !== undefined && dto.status !== 1) {
+      this.assertSystemAdminIntact(id);
+    }
     await this.findOneOrFail(id);
     const data: {
       account?: string;
@@ -342,6 +346,7 @@ export class UserService {
 
   // DELETE /user/:key — UserWs rows cascade via the relation onDelete: Cascade.
   async remove(id: number): Promise<{ success: true }> {
+    this.assertSystemAdminIntact(id);
     await this.findOneOrFail(id);
     await this.prisma.user.delete({ where: { id } });
     return { success: true };
@@ -353,6 +358,7 @@ export class UserService {
     if (!Array.isArray(ids) || ids.length === 0) {
       throw new BadRequestException(tr('user.ids_required'));
     }
+    if (ids.includes(ADMIN_UID)) this.assertSystemAdminIntact(ADMIN_UID);
     await this.prisma.user.deleteMany({ where: { id: { in: ids } } });
     return { success: true };
   }
@@ -360,6 +366,7 @@ export class UserService {
   // PATCH /user/status (body {id, status}) — Phase 10 §85: status is Int 1/0.
   // Returns row WITH userWorkspaces so the controller can map oid_list.
   async updateStatus(id: number, status: number): Promise<UserWithWorkspaces> {
+    if (status !== 1) this.assertSystemAdminIntact(id);
     await this.findOneOrFail(id);
     await this.prisma.user.update({ where: { id }, data: { status } });
     return this.findDetailed(id);
@@ -369,6 +376,7 @@ export class UserService {
   // GET /user/defaultPwd route returns the same constant so the frontend can
   // display what the password was reset to.
   async resetToDefaultPassword(id: number): Promise<{ success: true }> {
+    this.assertSystemAdminIntact(id);
     await this.findOneOrFail(id);
     const hashed = await bcrypt.hash(DEFAULT_PWD, 10);
     await this.prisma.user.update({
@@ -376,6 +384,15 @@ export class UserService {
       data: { password: hashed },
     });
     return { success: true };
+  }
+
+  /** uid 1 is the only hard-coded system admin (AdminGuard). Deleting or
+   *  disabling it, or putting it on the public default password, cannot be
+   *  undone through the API — recovery needs manual SQL. */
+  private assertSystemAdminIntact(id: number): void {
+    if (id === ADMIN_UID) {
+      throw new BadRequestException(tr('user.admin_protected'));
+    }
   }
 
   /** Return the default password string (GET /user/defaultPwd). When

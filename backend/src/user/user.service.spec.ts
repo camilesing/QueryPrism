@@ -624,11 +624,59 @@ describe('UserService.remove / removeBatch / updateStatus', () => {
 
   it('removeBatch deletes by id list (missing ids simply match 0 rows)', async () => {
     const { service, prisma } = makeUserService();
-    await expect(service.removeBatch([1, 2, 3])).resolves.toEqual({
+    await expect(service.removeBatch([2, 3, 4])).resolves.toEqual({
       success: true,
     });
     expect(prisma.user.deleteMany).toHaveBeenCalledWith({
-      where: { id: { in: [1, 2, 3] } },
+      where: { id: { in: [2, 3, 4] } },
+    });
+  });
+
+  describe('system admin (uid 1) protection', () => {
+    it('remove(1) is refused and deletes nothing', async () => {
+      const { service, prisma } = makeUserService();
+      await expect(service.remove(1)).rejects.toMatchObject({ status: 400 });
+      expect(prisma.user.delete).not.toHaveBeenCalled();
+    });
+
+    it('removeBatch is refused as soon as uid 1 is among the ids', async () => {
+      const { service, prisma } = makeUserService();
+      await expect(service.removeBatch([2, 1])).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(prisma.user.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('updateStatus cannot disable uid 1 (enabling stays allowed)', async () => {
+      const { service, prisma } = makeUserService();
+      const detailed = { id: 1, status: 1, userWorkspaces: [{ oid: 1 }] };
+      prisma.user.findUnique
+        .mockResolvedValueOnce({ id: 1, status: 1 }) // findOneOrFail
+        .mockResolvedValueOnce(detailed); // findDetailed
+      await expect(service.updateStatus(1, 0)).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      // re-enabling an already enabled admin is a no-op, not a lockout
+      await expect(service.updateStatus(1, 1)).resolves.toBe(detailed);
+    });
+
+    it('update cannot disable uid 1 through the status field', async () => {
+      const { service, prisma } = makeUserService();
+      prisma.user.findUnique.mockResolvedValue({ id: 1, status: 1 });
+      await expect(service.update(1, { status: 0 })).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('resetToDefaultPassword(1) is refused: the default password is public', async () => {
+      const { service, prisma } = makeUserService();
+      prisma.user.findUnique.mockResolvedValue({ id: 1, status: 1 });
+      await expect(service.resetToDefaultPassword(1)).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 

@@ -13,5 +13,6 @@
   "user_key_not_found": "User #{{key}} not found",
   "excel_required": "Please upload an Excel file",
   "user_id_missing": "Missing user id",
-  "some_ws_not_found_or_archived": "Some workspaces do not exist or have been archived"
+  "some_ws_not_found_or_archived": "Some workspaces do not exist or have been archived",
+  "admin_protected": "The system admin account cannot be deleted, disabled or reset to the default password"
 }
