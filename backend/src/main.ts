@@ -12,6 +12,11 @@ async function bootstrap() {
   // Wire the i18n facade so tr() works everywhere without DI.
   setI18n(app.get(I18nService));
   const config = app.get(ConfigService);
+  // Without this Nest never calls the lifecycle hooks on SIGTERM/SIGINT, so
+  // the modules that implement onModuleDestroy / onApplicationShutdown
+  // (Prisma disconnect, metadata-sync scheduler stop, regression queue) were
+  // dead code and in-flight work was cut off without cleanup.
+  app.enableShutdownHooks();
 
   // 动态CORS: 静态 admin 前端 URL + 各 Assistant.domain 字段 (embedded 页面
   // 所在域). AssistantService.listAllowedOrigins 60s 缓存, mutation 清缓存.
