@@ -2047,7 +2047,7 @@ export class ChatService {
       }
       return { chat: created, record: firstRecord };
     });
-    await this.maintainChatLimit(oid);
+    await this.maintainChatLimit(oid, opts.origin ?? 0);
     return Object.assign(chat, {
       records: record ? [record] : [],
       datasource: ds,
@@ -3030,17 +3030,19 @@ export class ChatService {
     });
   }
 
-  private async maintainChatLimit(oid: number): Promise<void> {
+  private async maintainChatLimit(oid: number, origin: number): Promise<void> {
     const limit = this.config.get<number>('chat.chatLimit') ?? 20;
     const uid = this.currentUid();
     // Per-user cap (Chat.create_by scoping): legacy null-owner chats are
     // excluded so this cleanup never deletes another user's conversation.
-    const count = await this.prisma.chat.count({
-      where: { oid, createBy: uid },
-    });
+    // The cap applies PER ORIGIN: an MCP integration (origin 1) runs as its
+    // creator — a workspace admin — and its traffic must never evict that
+    // admin's own page conversations (origin 0) or any other origin's.
+    const where = { oid, createBy: uid, origin };
+    const count = await this.prisma.chat.count({ where });
     if (count <= limit) return;
     const surplus = await this.prisma.chat.findMany({
-      where: { oid, createBy: uid },
+      where,
       orderBy: { updatedAt: 'asc' },
       take: count - limit,
     });

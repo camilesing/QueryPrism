@@ -1874,7 +1874,7 @@ describe('ChatService CRUD (oid-scoped)', () => {
     expect(chat.records).toHaveLength(1);
     expect(chat.datasource?.name).toBe('main');
     expect(m.prisma.chat.count).toHaveBeenCalledWith({
-      where: { oid: 1, createBy: 1 },
+      where: { oid: 1, createBy: 1, origin: 0 },
     });
   });
 
@@ -5676,12 +5676,36 @@ describe('ChatService helpers (ALS guards, history rounds, chat cap, keyword sen
     await run(1, () => m.service.start());
 
     expect(m.prisma.chat.findMany).toHaveBeenCalledWith({
-      where: { oid: 1, createBy: 1 },
+      where: { oid: 1, createBy: 1, origin: 0 },
       orderBy: { updatedAt: 'asc' },
       take: 1,
     });
     expect(m.prisma.chat.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: [99] } },
+    });
+  });
+
+  it('maintainChatLimit is scoped per origin: an MCP chat never evicts the creator page chats', async () => {
+    // MCP integrations run as their creator (a workspace admin) and pass
+    // origin 1; counting every origin would let agent traffic delete that
+    // admin's own conversations from the web UI.
+    const m = makeService();
+    m.datasourceService.findOne.mockResolvedValue({ id: 1, type: 'sqlite' });
+    m.prisma.chat.create.mockResolvedValue({ id: 5, oid: 1 });
+    m.prisma.chatRecord.create.mockResolvedValue({ id: 51 });
+    m.config.get.mockImplementation(() => undefined);
+    m.prisma.chat.count.mockResolvedValue(21);
+    m.prisma.chat.findMany.mockResolvedValue([{ id: 99 }]);
+
+    await run(1, () => m.service.start({ origin: 1 }));
+
+    expect(m.prisma.chat.count).toHaveBeenCalledWith({
+      where: { oid: 1, createBy: 1, origin: 1 },
+    });
+    expect(m.prisma.chat.findMany).toHaveBeenCalledWith({
+      where: { oid: 1, createBy: 1, origin: 1 },
+      orderBy: { updatedAt: 'asc' },
+      take: 1,
     });
   });
 
