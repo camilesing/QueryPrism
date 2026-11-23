@@ -20,7 +20,7 @@
         />
         <div>
           <div
-            v-for="(item, _index) in tableList"
+            v-for="(item, _index) in filteredTables"
             :key="_index"
             class="list-item_primary"
             @click="clickTable(item)"
@@ -133,7 +133,7 @@
 </template>
 
 <script setup lang="tsx">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { datasourceApi } from '@/api/datasource'
 import { onMounted } from 'vue'
@@ -154,6 +154,16 @@ const { t } = useI18n()
 const dsId = ref<number>(0)
 const searchValue = ref('')
 const tableList = ref<any>([])
+// The search box filters the table list by name, case-insensitively.
+const filteredTables = computed(() => {
+  const keyword = searchValue.value.trim().toLowerCase()
+  if (!keyword) return tableList.value
+  return tableList.value.filter((item: any) =>
+    String(item.table_name ?? '')
+      .toLowerCase()
+      .includes(keyword)
+  )
+})
 const currentTable = ref<any>({})
 const currentField = ref<any>({})
 const fieldList = ref<any>([])
