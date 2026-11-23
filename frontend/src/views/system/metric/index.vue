@@ -788,8 +788,15 @@ function payloadSummary(row: ChangeRequestRow): string {
           </el-select>
           <div class="form-tip">{{ t('metric.scope_hint') }}</div>
         </el-form-item>
+        <!-- Metrics are upserted by scope + code and the payload carries no id:
+             a changed code would create a second metric, so it is read-only
+             while editing. -->
         <el-form-item label="code" required>
-          <el-input v-model="form.code" :placeholder="t('metric.code_hint')" />
+          <el-input
+            v-model="form.code"
+            :placeholder="t('metric.code_hint')"
+            :disabled="!!form.id"
+          />
         </el-form-item>
         <el-form-item v-if="activeTab !== 'standard'" :label="t('metric.name')" required>
           <el-input v-model="form.name" />

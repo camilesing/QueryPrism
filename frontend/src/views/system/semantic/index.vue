@@ -625,17 +625,20 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
           </el-select>
           <div class="form-tip">{{ t('semantic.scope_hint') }}</div>
         </el-form-item>
+        <!-- Rows are upserted by natural key (datasource + table [+ field]) and
+             the payload carries no id: changing a key field here would create
+             a second row, so the keys are read-only while editing. -->
         <el-form-item :label="t('semantic.datasource')" required>
-          <el-select v-model="form.datasource_id" style="width: 100%">
+          <el-select v-model="form.datasource_id" style="width: 100%" :disabled="!!form.id">
             <el-option v-for="d in datasources" :key="d.id" :value="d.id" :label="d.name" />
           </el-select>
         </el-form-item>
         <el-form-item :label="t('semantic.table_name')" required>
-          <el-input v-model="form.table_name" />
+          <el-input v-model="form.table_name" :disabled="!!form.id" />
         </el-form-item>
         <template v-if="activeTab === 'field'">
           <el-form-item :label="t('semantic.field_name')" required>
-            <el-input v-model="form.field_name" />
+            <el-input v-model="form.field_name" :disabled="!!form.id" />
           </el-form-item>
           <el-form-item :label="t('semantic.role')">
             <el-select v-model="form.role" style="width: 100%">
