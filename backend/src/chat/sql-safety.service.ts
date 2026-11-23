@@ -106,10 +106,12 @@ export class SqlSafetyService {
   }
 
   /** Read-only + statement-type + table-whitelist guard. Never throws — a
-   *  parse failure or any DML/DDL anywhere yields { ok: false }. */
+   *  parse failure or any DML/DDL anywhere yields { ok: false }.
+   *  `allowedTables: null` skips only the whitelist (the read-only shape rules
+   *  still apply) — for a datasource whose table metadata was never synced. */
   validate(
     sql: string,
-    allowedTables: string[],
+    allowedTables: string[] | null = [],
     datasourceType?: string | null,
   ): SqlSafetyResult {
     const clean = this.stripFences(sql).trim();
@@ -157,7 +159,8 @@ export class SqlSafetyService {
     }
 
     const cteNames = this.collectCteNames(parsed.ast);
-    const allowed = new Set(allowedTables.map((t) => t.toLowerCase()));
+    const enforceWhitelist = allowedTables != null;
+    const allowed = new Set((allowedTables ?? []).map((t) => t.toLowerCase()));
     const tables: string[] = [];
     for (const entry of parsed.tableList) {
       const parts = entry.split('::');
@@ -172,7 +175,7 @@ export class SqlSafetyService {
       }
       if (table && this.isVirtualCte(entry, cteNames)) continue; // virtual CTE name
       if (table) tables.push(table);
-      if (table && !allowed.has(table.toLowerCase())) {
+      if (enforceWhitelist && table && !allowed.has(table.toLowerCase())) {
         return { ok: false, tables, reason: `表 ${table} 不在允许的白名单内` };
       }
     }

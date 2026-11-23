@@ -1963,6 +1963,8 @@ describe('DatasourceService', () => {
       jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
         mockDatasourceRow({
           configuration: encryptFrontendConfig({ db: testDbPath }),
+          // the funnel validates against the datasource's CHECKED tables
+          tables: [{ tableName: 'nums', checked: true }],
         }),
       );
     }
@@ -1973,6 +1975,60 @@ describe('DatasourceService', () => {
           rows.map((r) => ({ type: 'parameter', ...r })) as never,
         );
     }
+
+    it('refuses SQL that is not read-only or leaves the checked tables, before any connector runs', async () => {
+      stubDs();
+      stubParams([{ name: 'cache.enabled', value: false }]);
+      const withConnector = jest.spyOn(factory, 'withConnector');
+      for (const sql of [
+        'SELECT id FROM secret', // table outside the datasource's checked set
+        'DELETE FROM nums', // not read-only
+        'WITH d AS (DELETE FROM nums RETURNING *) SELECT * FROM d', // DML in a CTE
+        'SELECT * INTO nums_backup FROM nums', // creates a table
+        'SELECT 1; DROP TABLE nums', // statement batch
+      ]) {
+        await expect(service.execSql(1, sql)).rejects.toMatchObject({
+          status: 400,
+        });
+      }
+      expect(withConnector).not.toHaveBeenCalled();
+    });
+
+    it('still runs read-only SQL on a datasource whose schema was never synced (no table metadata)', async () => {
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          configuration: encryptFrontendConfig({ db: testDbPath }),
+          tables: [],
+        }),
+      );
+      stubParams([{ name: 'cache.enabled', value: false }]);
+      const withConnector = jest.spyOn(factory, 'withConnector');
+      const out = await service.execSql(1, 'SELECT id FROM nums ORDER BY id');
+      expect(out.rows).toHaveLength(5);
+      // the read-only shape rules are NOT relaxed with the whitelist
+      await expect(
+        service.execSql(1, 'DELETE FROM nums'),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(withConnector).toHaveBeenCalledTimes(1);
+    });
+
+    it('never exempts an Excel datasource: with no sheet metadata every table reference is refused', async () => {
+      // Excel datasources query the APP database, where `public."User"` sits
+      // next to the imported sheets.
+      jest.spyOn(prismaService.datasource, 'findFirst').mockResolvedValue(
+        mockDatasourceRow({
+          type: 'excel',
+          tables: [],
+          configuration: encryptFrontendConfig({ db: 'app' }),
+        }),
+      );
+      stubParams([{ name: 'cache.enabled', value: false }]);
+      const withConnector = jest.spyOn(factory, 'withConnector');
+      await expect(
+        service.execSql(1, 'SELECT * FROM excel_store.mine a, public."User" u'),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(withConnector).not.toHaveBeenCalled();
+    });
 
     it('caps rows at quota.max_rows; a smaller caller limit wins, a larger is clamped', async () => {
       stubDs();

@@ -36,6 +36,8 @@ import {
   type EmbeddingConfig,
 } from '../common/config/embedding-config';
 import { appendLimit } from './db-connector/limit-clause';
+import { SqlSafetyService } from '../chat/sql-safety.service';
+import { normalizeDatasourceType } from './datasource-type';
 import { effectiveSqlHash } from '../quota/quota-policy';
 import { QueryCacheService } from '../quota/query-cache.service';
 import { EmbeddingService } from '../embedding/embedding.service';
@@ -85,6 +87,8 @@ type FieldEditBody = {
 @Injectable()
 export class DatasourceService {
   private readonly logger = new Logger(DatasourceService.name);
+  /** Stateless validator (read-only AST + checked-table whitelist). */
+  private readonly sqlSafety = new SqlSafetyService();
 
   constructor(
     private prisma: PrismaService,
@@ -405,12 +409,37 @@ export class DatasourceService {
    *  MetaDataImprove M7: this is the single execution funnel every query
    *  (chat / dashboard / MCP / regression) goes through, so the query-cost
    *  guards live here — quota.max_rows caps rows (a caller's smaller limit
-   *  wins, a larger one is clamped), and with cache.enabled repeated
+   *  wins, a larger is clamped), and with cache.enabled repeated
    *  effective SQL (appendLimit output — deterministic, so hashing it matches
    *  what the connector executes) is served from Postgres until TTL/revision
-   *  invalidation. */
+   *  invalidation.
+   *
+   *  The SQL is validated HERE for every caller, not only in the chat
+   *  pipeline: the connectors check just the first keyword, and dashboard
+   *  refresh, regression and `POST /datasource/execSql/:id` reach this funnel
+   *  with SQL that was never seen by the chat validator. The rules are the
+   *  chat ones — exactly one read-only statement (no DML in a CTE, no
+   *  SELECT INTO) over the datasource's CHECKED tables only. For an Excel
+   *  datasource the connector talks to the APP database, so this whitelist is
+   *  also what keeps a comma-joined `public."User"` out of the query. */
   async execSql(id: number, sql: string, limit?: number) {
     const datasource = await this.loadForConnector(id);
+    const tables = datasource.tables ?? [];
+    // A datasource whose schema was never synced has no table metadata to
+    // check against, so only the read-only shape rules apply to it. An Excel
+    // datasource is never exempt: its connector talks to the APP database,
+    // so only its own imported sheets may ever appear in a statement.
+    const hasMetadata =
+      tables.length > 0 || normalizeDatasourceType(datasource.type) === 'excel';
+    const allowedTables = hasMetadata
+      ? tables.filter((t) => t.checked).map((t) => t.tableName)
+      : null;
+    const safety = this.sqlSafety.validate(sql, allowedTables, datasource.type);
+    if (!safety.ok) {
+      throw new BadRequestException(
+        safety.reason ?? tr('datasource.query_only'),
+      );
+    }
     const oid = this.currentOid();
     const cfg = await resolveEmbeddingConfig(this.prisma);
     const max = Math.min(limit ?? cfg.quotaMaxRows, cfg.quotaMaxRows);
@@ -1252,6 +1281,8 @@ export class DatasourceService {
   private async loadForConnector(id: number) {
     const datasource = await this.prisma.datasource.findFirst({
       where: { id, oid: this.currentOid() },
+      // execSql validates against the datasource's checked table names.
+      include: { tables: { select: { tableName: true, checked: true } } },
     });
     if (!datasource) {
       throw new NotFoundException(tr('datasource.not_found', { id }));
