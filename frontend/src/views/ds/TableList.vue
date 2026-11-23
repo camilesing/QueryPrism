@@ -205,15 +205,23 @@ const closeTable = () => {
 }
 
 const saveTable = () => {
+  // The row object is shared with the list: restore it when the save fails,
+  // or the header keeps showing a comment the server never stored.
+  const previous = currentTable.value.custom_comment
   currentTable.value.custom_comment = tableComment.value
-  datasourceApi.saveTable(currentTable.value).then(() => {
-    closeTable()
-    ElMessage({
-      message: t('common.save_success'),
-      type: 'success',
-      showClose: true,
+  datasourceApi
+    .saveTable(currentTable.value)
+    .then(() => {
+      closeTable()
+      ElMessage({
+        message: t('common.save_success'),
+        type: 'success',
+        showClose: true,
+      })
     })
-  })
+    .catch(() => {
+      currentTable.value.custom_comment = previous
+    })
 }
 
 const editField = (row: any) => {
@@ -223,15 +231,22 @@ const editField = (row: any) => {
 }
 
 const changeStatus = (row: any) => {
+  // el-switch already flipped `row.checked`; put it back when the save fails
+  // so the list does not claim a field is excluded (or used) when it is not.
   currentField.value = row
-  datasourceApi.saveField(currentField.value).then(() => {
-    closeField()
-    ElMessage({
-      message: t('common.save_success'),
-      type: 'success',
-      showClose: true,
+  datasourceApi
+    .saveField(currentField.value)
+    .then(() => {
+      closeField()
+      ElMessage({
+        message: t('common.save_success'),
+        type: 'success',
+        showClose: true,
+      })
     })
-  })
+    .catch(() => {
+      row.checked = !row.checked
+    })
 }
 
 const closeField = () => {
@@ -239,15 +254,21 @@ const closeField = () => {
 }
 
 const saveField = () => {
+  const previous = currentField.value.custom_comment
   currentField.value.custom_comment = fieldComment.value
-  datasourceApi.saveField(currentField.value).then(() => {
-    closeField()
-    ElMessage({
-      message: t('common.save_success'),
-      type: 'success',
-      showClose: true,
+  datasourceApi
+    .saveField(currentField.value)
+    .then(() => {
+      closeField()
+      ElMessage({
+        message: t('common.save_success'),
+        type: 'success',
+        showClose: true,
+      })
     })
-  })
+    .catch(() => {
+      currentField.value.custom_comment = previous
+    })
 }
 
 const clickTable = (table: any) => {
