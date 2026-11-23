@@ -655,7 +655,7 @@ const handleCurrentChange = (val: number) => {
         <el-table-column prop="name" :label="$t('workspace.workspace_name')" min-width="180" />
         <el-table-column
           prop="member_count"
-          :label="$t('workspace.member_management')"
+          :label="$t('authorized_space.number_of_members')"
           width="120"
         />
         <el-table-column :label="$t('workspace.archived_at')" width="190">
