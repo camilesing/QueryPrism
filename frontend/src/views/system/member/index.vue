@@ -166,9 +166,7 @@ const search = ($event: any = {}) => {
 const closeField = () => {
   fieldDialog.value = false
   afterFind.value = false
-  userInfo.value.id = ''
-  userInfo.value.name = ''
-  userInfo.value.account = ''
+  userInfo.value = emptyUserInfo()
 }
 
 const saveField = () => {
@@ -185,14 +183,13 @@ const saveField = () => {
   })
 }
 
-const userInfo = ref({
-  id: '',
-  name: '',
-  account: '',
-})
+const emptyUserInfo = () => ({ id: '', name: '', account: '' })
+const userInfo = ref(emptyUserInfo())
 const afterFind = ref(false)
 const findUser = () => {
   if (!workspaceForm.name) return
+  // A lookup that fails must not leave the previous hit addable.
+  userInfo.value = emptyUserInfo()
   uwsOption({ keyword: workspaceForm.name })
     .then((res: any) => {
       userInfo.value = res || {}
@@ -205,6 +202,9 @@ const findUser = () => {
 const addWorkspace = () => {
   afterFind.value = false
   workspaceForm.name = ''
+  // The dialog is reopened, not remounted: without this the previously
+  // found user was still shown with an enabled Add button.
+  userInfo.value = emptyUserInfo()
   fieldDialog.value = true
 }
 
@@ -373,7 +373,7 @@ const handleCurrentChange = (val: number) => {
     modal-class="add-user_dialog"
     destroy-on-close
     :close-on-click-modal="false"
-    @before-closed="closeField"
+    @closed="closeField"
   >
     <el-input
       v-model="workspaceForm.name"
