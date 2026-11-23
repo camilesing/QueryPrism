@@ -184,7 +184,7 @@ const fieldRow = (over: Record<string, unknown>): Record<string, unknown> => ({
 });
 
 const EXPORT_TABLES = [
-  tableRow({}),
+  tableRow({ aliases: ['GMV', '成交额'] }),
   tableRow({
     id: 2,
     tableName: 'refund',
@@ -200,6 +200,7 @@ const EXPORT_FIELDS = [
     id: 11,
     role: 'dimension',
     unit: 'kg',
+    aliases: ['销售额'],
     enumValues: [
       { value: '1', label: '男' },
       { value: '2' }, // no label → bare value
@@ -242,12 +243,16 @@ describe('SemanticImportService.exportAll', () => {
     expect(ts).toBeDefined();
     expect(ts.getCell(1, 1).value).toBe('datasource_id');
     expect(ts.getCell(1, 5).value).toBe('scope');
+    expect(ts.getCell(1, 6).value).toBe('aliases');
     expect(ts.getCell(2, 2).value).toBe('sales_order');
     expect(ts.getCell(2, 4).value).toBe('true');
+    expect(ts.getCell(2, 6).value).toBe('GMV,成交额');
     expect(ts.getCell(3, 4).value).toBe('false');
     expect(ts.getCell(3, 5).value).toBe('GLOBAL');
     const fs = wb.getWorksheet('field_semantics')!;
     expect(fs.getCell(1, 9).value).toBe('scope');
+    expect(fs.getCell(1, 10).value).toBe('aliases');
+    expect(fs.getCell(2, 10).value).toBe('销售额');
     // enum pairs render as value|label; label-less and non-string entries degrade
     expect(fs.getCell(2, 7).value).toBe('1|男,2');
     expect(fs.getCell(2, 6).value).toBe('kg');
@@ -289,6 +294,7 @@ describe('SemanticImportService.importExcel', () => {
         datasource_id: 1,
         table_name: 'sales_order',
         meaning: '销售订单主表',
+        aliases: ['GMV', '成交额'],
         enabled: true,
         scope: 'WORKSPACE',
       }),
@@ -307,6 +313,7 @@ describe('SemanticImportService.importExcel', () => {
         field_name: 'channel',
         role: 'dimension',
         unit: 'kg',
+        aliases: ['销售额'],
         enum_values: [{ value: '1', label: '男' }, { value: '2' }],
         enabled: true,
       }),
@@ -536,6 +543,35 @@ describe('SemanticImportService JSON row parsing', () => {
         unit: 'kg',
       }),
     );
+  });
+
+  it('parses aliases from comma strings and arrays; a blank value preserves the stored list', async () => {
+    const { service, upsert } = makeService();
+    await withUser(WS_ADMIN, () =>
+      service.importJson([
+        {
+          datasource_id: 1,
+          table_name: 't1',
+          meaning: 'm',
+          aliases: 'GMV, 成交额',
+        },
+        {
+          datasource_id: 1,
+          table_name: 't2',
+          meaning: 'm',
+          aliases: ['A', ' B '],
+        },
+        // blank → undefined → the service keeps the existing alias list
+        { datasource_id: 1, table_name: 't3', meaning: 'm', aliases: '   ' },
+      ]),
+    );
+    const infoOf = (name: string) =>
+      upsert.mock.calls
+        .map(([info]) => info as Record<string, unknown>)
+        .find((info) => info.table_name === name)!;
+    expect(infoOf('t1').aliases).toEqual(['GMV', '成交额']);
+    expect(infoOf('t2').aliases).toEqual(['A', 'B']);
+    expect(infoOf('t3')).not.toHaveProperty('aliases');
   });
 
   it('fails rows with bad datasource ids or missing table/meaning/field — batch continues', async () => {

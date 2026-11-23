@@ -17,6 +17,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
@@ -43,6 +44,7 @@ import {
   type SemanticScope,
 } from './semantic-policy';
 import { withNaturalKeyRetry } from './natural-key';
+import { expandKeywordsWithAliases } from './keyword-expansion';
 import {
   toFieldSemanticSnake,
   toRequestSnake,
@@ -65,6 +67,9 @@ export interface SemanticUpsertInfo {
   field_name?: string;
   role?: FieldRole;
   meaning: string;
+  /** Business synonyms for table-recall keyword expansion (recall-only —
+   *  never injected into the SQL prompt). */
+  aliases?: string[];
   unit?: string;
   enum_values?: Array<{ value: string; label?: string }>;
   enabled?: boolean;
@@ -72,8 +77,7 @@ export interface SemanticUpsertInfo {
 }
 
 export type SemanticUpsertResult =
-  | { applied: true; id: number }
-  | { applied: false; request_id: number };
+  { applied: true; id: number } | { applied: false; request_id: number };
 
 /** One dimension field handled by an enum-collection run (snake wire). */
 export interface EnumCollectItem {
@@ -144,6 +148,25 @@ function enumLabelMap(raw: unknown): Map<string, string> {
   return map;
 }
 
+/** Trim / drop-empty / case-insensitively dedupe an alias list. `undefined`
+ *  (not an array) stays undefined so an edit that omits aliases preserves the
+ *  stored list, while an explicit [] clears it. */
+function normalizeAliases(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const value = item.trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
 /** The effective annotations the SQL prompt consumes (M2.2 rule 2). */
 export interface SemanticAnnotations {
   /** tableName → resolved business meaning (only tables WITH a semantic). */
@@ -165,6 +188,8 @@ type PrismaTx = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
 
 @Injectable()
 export class SemanticService {
+  private readonly logger = new Logger(SemanticService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     // Connector access for the M3.3 enum collector (bounded DISTINCT probes).
@@ -311,6 +336,7 @@ export class SemanticService {
   async upsert(info: SemanticUpsertInfo): Promise<SemanticUpsertResult> {
     const actor = this.actor();
     this.validateInfo(info);
+    info.aliases = normalizeAliases(info.aliases);
     // The natural key embeds a datasource row id. Reject ids the actor cannot
     // reach (findOne is oid-scoped): otherwise a member could bind a PERSONAL
     // row to a guessed foreign datasource id and read table_exists back from
@@ -659,6 +685,87 @@ export class SemanticService {
     return { tableMeanings, fieldNotes };
   }
 
+  /** Table-recall keyword expansion from semantic aliases (the governed
+   *  replacement for the removed Terminology.expandWithTerminology). Only
+   *  enabled, actor-visible rows participate; the effective row per natural
+   *  key supplies the alias list. Any failure degrades to the raw keywords so
+   *  recall never fails because of this lookup. */
+  async expandKeywordsByAliases(
+    keywords: string,
+    datasourceId: number,
+  ): Promise<string> {
+    try {
+      const actor = this.actor();
+      const visible = {
+        datasourceId,
+        enabled: true,
+        OR: [
+          { scope: 'GLOBAL' },
+          { scope: 'WORKSPACE', oid: actor.oid },
+          { scope: 'PERSONAL', oid: actor.oid, ownerUid: actor.id },
+        ],
+      };
+      const [tables, fields] = await Promise.all([
+        this.prisma.tableSemantic.findMany({
+          where: visible,
+        }),
+        this.prisma.fieldSemantic.findMany({
+          where: visible,
+        }),
+      ]);
+      const byTable = new Map<string, typeof tables>();
+      for (const t of tables) {
+        const list = byTable.get(t.tableName) ?? [];
+        list.push(t);
+        byTable.set(t.tableName, list);
+      }
+      const effectiveTables: Array<{
+        tableName: string;
+        aliases: unknown;
+      }> = [];
+      for (const [tableName, list] of byTable) {
+        const effective = pickEffectiveRow(list);
+        if (effective) {
+          effectiveTables.push({ tableName, aliases: effective.aliases });
+        }
+      }
+      const byField = new Map<string, typeof fields>();
+      for (const f of fields) {
+        const key = `${f.tableName}.${f.fieldName}`;
+        const list = byField.get(key) ?? [];
+        list.push(f);
+        byField.set(key, list);
+      }
+      const effectiveFields: Array<{
+        tableName: string;
+        fieldName: string;
+        aliases: unknown;
+      }> = [];
+      for (const list of byField.values()) {
+        const effective = pickEffectiveRow(list);
+        if (effective) {
+          effectiveFields.push({
+            tableName: effective.tableName,
+            fieldName: effective.fieldName,
+            aliases: effective.aliases,
+          });
+        }
+      }
+      return expandKeywordsWithAliases(
+        keywords,
+        effectiveTables,
+        effectiveFields,
+      );
+    } catch (e) {
+      this.logger.warn(
+        `semantic alias keyword expansion failed, using raw keywords: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return keywords;
+    }
+  }
+
   // ---- internals --------------------------------------------------------
 
   private validateInfo(info: SemanticUpsertInfo): void {
@@ -724,6 +831,8 @@ export class SemanticService {
     // Only carry `enabled` when the caller set it: an edit that omits the flag
     // must preserve a deliberately disabled row instead of re-enabling it.
     if (info.enabled !== undefined) payload.enabled = info.enabled;
+    // Same rule for aliases: omit on an edit that did not touch them.
+    if (info.aliases !== undefined) payload.aliases = info.aliases;
     if (info.entity_type === 'field') {
       payload.field_name = info.field_name!.trim();
       payload.role = info.role ?? 'other';
@@ -751,6 +860,7 @@ export class SemanticService {
       field_name: p.field_name !== undefined ? str(p.field_name) : undefined,
       role: typeof p.role === 'string' ? (p.role as FieldRole) : undefined,
       meaning: str(p.meaning),
+      aliases: normalizeAliases(p.aliases),
       unit: typeof p.unit === 'string' ? p.unit : undefined,
       enum_values: Array.isArray(p.enum_values)
         ? (p.enum_values as SemanticUpsertInfo['enum_values'])
@@ -833,6 +943,8 @@ export class SemanticService {
       });
       const data = {
         meaning: info.meaning.trim(),
+        // Recall-only aliases; undefined keeps the stored list on an edit.
+        aliases: (info.aliases ?? undefined) as Prisma.InputJsonValue,
         // Preserve the stored flag on a content edit that omits `enabled`.
         enabled: info.enabled ?? existing?.enabled ?? true,
       };
@@ -892,6 +1004,8 @@ export class SemanticService {
     const data = {
       role: info.role ?? 'other',
       meaning: info.meaning.trim(),
+      // Recall-only aliases; undefined keeps the stored list on an edit.
+      aliases: (info.aliases ?? undefined) as Prisma.InputJsonValue,
       unit: info.unit?.trim() || null,
       enumValues: (info.enum_values ?? undefined) as Prisma.InputJsonValue,
       // Preserve the stored flag on a content edit that omits `enabled`.
@@ -995,6 +1109,7 @@ export class SemanticService {
           version: row.version,
           snapshot: {
             meaning: row.meaning,
+            aliases: row.aliases,
             enabled,
             source: 'toggle',
           },
@@ -1014,6 +1129,7 @@ export class SemanticService {
           snapshot: {
             role: row.role,
             meaning: row.meaning,
+            aliases: row.aliases,
             unit: row.unit,
             enabled,
             source: 'toggle',

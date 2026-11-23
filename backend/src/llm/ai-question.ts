@@ -39,7 +39,7 @@ export interface DatasourceOption {
 
 /** The context object every generator renders a prompt from. Fields are
  *  optional because each generator only needs a subset (e.g. generate_sql
- *  needs schema/terminologies/data_training; generate_chart needs sql +
+ *  needs schema/data_training; generate_chart needs sql +
  *  sqlResult). Missing fields render as empty strings in the template. */
 export interface AiModelQuestion {
   lang: string;
@@ -49,7 +49,6 @@ export interface AiModelQuestion {
   schema?: string;
   sql?: string;
   sqlResult?: string;
-  terminologies?: string;
   dataTraining?: string;
   sampleData?: string;
   history?: ChatHistoryRound[];

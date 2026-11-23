@@ -17,6 +17,7 @@ export interface TableSemanticSnake {
   datasource_id: number;
   table_name: string;
   meaning: string;
+  aliases: unknown;
   enabled: boolean;
   version: number;
   create_by: number | null;
@@ -36,6 +37,7 @@ export interface FieldSemanticSnake {
   field_name: string;
   role: string;
   meaning: string;
+  aliases: unknown;
   unit: string | null;
   enum_values: unknown;
   enabled: boolean;
@@ -96,6 +98,7 @@ export function toTableSemanticSnake(
     datasource_id: row.datasourceId,
     table_name: row.tableName,
     meaning: row.meaning,
+    aliases: row.aliases,
     enabled: row.enabled,
     version: row.version,
     create_by: row.createBy,
@@ -119,6 +122,7 @@ export function toFieldSemanticSnake(
     field_name: row.fieldName,
     role: row.role,
     meaning: row.meaning,
+    aliases: row.aliases,
     unit: row.unit,
     enum_values: row.enumValues,
     enabled: row.enabled,

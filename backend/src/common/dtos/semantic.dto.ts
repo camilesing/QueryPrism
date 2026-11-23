@@ -53,6 +53,12 @@ export class SemanticUpsertDto {
   @IsNotEmpty()
   meaning!: string;
 
+  /** Business synonyms used by table-recall keyword expansion only. */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  aliases?: string[];
+
   @IsOptional()
   @IsString()
   unit?: string;

@@ -58,6 +58,14 @@ export const normalizeLanguage = (input?: string | null): 'en' | 'zh-CN' | null 
 export const getBrowserLocale = (): 'en' | 'zh-CN' => {
   return normalizeLanguage(navigator.language) ?? 'en'
 }
+
+/** Split a comma / Chinese-comma / newline separated alias list into trimmed,
+ *  non-empty entries (shared by the metric and semantic admin pages). */
+export const splitAliases = (text: string): string[] =>
+  text
+    .split(/[,，\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
 export const getLocale = (): 'en' | 'zh-CN' => {
   return normalizeLanguage(wsCache.get('user.language')) ?? getBrowserLocale()
 }

@@ -165,7 +165,7 @@ describe('ParameterService', () => {
         pval: '10',
       });
       expect(items.filter((i) => i.pkey.startsWith('embedding.'))).toHaveLength(
-        10,
+        8,
       );
     });
 

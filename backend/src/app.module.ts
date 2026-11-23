@@ -18,7 +18,6 @@ import { ParameterModule } from './parameter/parameter.module';
 import { ApiKeyModule } from './apikey/apikey.module';
 import { VectorModule } from './vector/vector.module';
 import { EmbeddingModule } from './embedding/embedding.module';
-import { TerminologyModule } from './terminology/terminology.module';
 import { DataTrainingModule } from './data-training/data-training.module';
 import { LlmModule } from './llm/llm.module';
 import { McpModule } from './mcp/mcp.module';
@@ -68,17 +67,16 @@ import configuration from './common/config/configuration';
     ParameterModule,
     ApiKeyModule,
     // Phase 3 — RAG infra: VectorService (pgvector) + EmbeddingService.
-    // Both are @Global modules, injected by terminology/data-training/
-    // datasource recall paths without explicit re-import.
+    // Both are @Global modules, injected by data-training/datasource recall
+    // paths without explicit re-import.
     VectorModule,
     EmbeddingModule,
-    TerminologyModule,
     DataTrainingModule,
     DatasourceModule,
     ChatModule,
     // Phase 4 — Prompt templates + LLM Service + generators. Downstream of
-    // datasource/terminology/data-training (for context assembly); used by
-    // the Phase 5 chat pipeline and by AiModelService.testStatus.
+    // datasource/data-training (for context assembly); used by the Phase 5
+    // chat pipeline and by AiModelService.testStatus.
     LlmModule,
     // Phase 6 — Dashboard builder (resource tree + canvas CRUD).
     DashboardModule,

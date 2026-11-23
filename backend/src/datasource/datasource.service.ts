@@ -490,7 +490,7 @@ export class DatasourceService {
    *  step) — keyword-fused ranking:
    *  α·vectorSimilarity + (1-α)·keywordScore over ALL checked tables, exact
    *  keyword hits (the question names the table) first, then explicit-mention
-   *  retention + rank-fill. `keywords` (already extracted + terminology-
+   *  retention + rank-fill. `keywords` (already extracted + semantic-alias-
    *  expanded) replaces both the vector query and the keyword source when
    *  present; without keywords (or keywordEnabled off) the ranking is pure
    *  vector similarity (α=1) — retention still applies.

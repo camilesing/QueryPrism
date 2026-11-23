@@ -10,8 +10,6 @@ const { t } = useI18n()
 // 由后端返回的有效值（已保存 > 启动配置 > 代码默认）覆盖。
 // MetaDataImprove M1：clarify.* 反问收敛参数走同一注册表与校验链路。
 const EMBEDDING_NUMBER_KEYS = [
-  'embedding.terminology_similarity',
-  'embedding.terminology_top_count',
   'embedding.data_training_similarity',
   'embedding.data_training_top_count',
   'embedding.table_count',
@@ -38,8 +36,6 @@ const state = reactive({
     'chat.show_log': false,
     'chat.sample_data_enabled': true,
     'embedding.enabled': true,
-    'embedding.terminology_similarity': 0.4,
-    'embedding.terminology_top_count': 5,
     'embedding.data_training_similarity': 0.4,
     'embedding.data_training_top_count': 5,
     'embedding.table_enabled': true,
@@ -306,34 +302,6 @@ onMounted(() => {
             </div>
             <div class="value">
               <el-switch v-model="state.parameterForm['embedding.enabled']" />
-            </div>
-          </div>
-          <div class="card-item">
-            <div class="label">
-              {{ t('parameter.embedding_terminology_similarity') }}
-            </div>
-            <div class="value">
-              <el-input-number
-                v-model.number="state.parameterForm['embedding.terminology_similarity']"
-                :min="0"
-                :max="1"
-                :step="0.05"
-                :precision="2"
-                controls-position="right"
-              />
-            </div>
-          </div>
-          <div class="card-item">
-            <div class="label">
-              {{ t('parameter.embedding_terminology_top_count') }}
-            </div>
-            <div class="value">
-              <el-input-number
-                v-model.number="state.parameterForm['embedding.terminology_top_count']"
-                :min="1"
-                step="1"
-                controls-position="right"
-              />
             </div>
           </div>
           <div class="card-item">

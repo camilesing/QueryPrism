@@ -101,11 +101,16 @@ describe('Semantic admin (e2e)', () => {
         datasource_id: 1,
         table_name: 'sales_order',
         meaning: '销售订单主表',
+        aliases: ['GMV', '成交额'],
       });
     expect(res.status).toBe(200);
     const out = (res.body as ApiEnvelope<{ applied: boolean; id: number }>)
       .data;
     expect(out.applied).toBe(true);
+    const created = await prisma.tableSemantic.findUnique({
+      where: { id: out.id },
+    });
+    expect(created?.aliases).toEqual(['GMV', '成交额']);
 
     const versions = await request(app.getHttpServer())
       .get(`/api/v1/system/semantic/versions/table/${out.id}`)
@@ -125,6 +130,11 @@ describe('Semantic admin (e2e)', () => {
         table_name: 'sales_order',
         meaning: '销售订单表（修订）',
       });
+    // The edit omitted aliases → the stored list must survive.
+    const revised = await prisma.tableSemantic.findUnique({
+      where: { id: out.id },
+    });
+    expect(revised?.aliases).toEqual(['GMV', '成交额']);
     const versions2 = await request(app.getHttpServer())
       .get(`/api/v1/system/semantic/versions/table/${out.id}`)
       .set(TOKEN_HEADER, adminToken);
@@ -145,6 +155,7 @@ describe('Semantic admin (e2e)', () => {
         datasource_id: 1,
         table_name: 'crm_customer',
         meaning: '客户主数据',
+        aliases: ['客户表'],
         note: '补充客户表含义',
       });
     expect(propose.status).toBe(200);
@@ -180,6 +191,7 @@ describe('Semantic admin (e2e)', () => {
       where: { scope: 'WORKSPACE', tableName: 'crm_customer' },
     });
     expect(applied?.meaning).toBe('客户主数据');
+    expect(applied?.aliases).toEqual(['客户表']);
 
     // A member may not review: create a FRESH pending WORKSPACE proposal (the
     // approved one above would fail the status check first and prove nothing).

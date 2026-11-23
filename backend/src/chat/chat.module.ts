@@ -18,7 +18,6 @@ import { DatasourceModule } from '../datasource/datasource.module';
 import { LlmModule } from '../llm/llm.module';
 import { AuditModule } from '../audit/audit.module';
 import { PermissionModule } from '../permission/permission.module';
-import { TerminologyModule } from '../terminology/terminology.module';
 import { SemanticModule } from '../semantic/semantic.module';
 import { QuotaModule } from '../quota/quota.module';
 
@@ -31,7 +30,6 @@ import { QuotaModule } from '../quota/quota.module';
     LlmModule,
     AuditModule,
     PermissionModule,
-    TerminologyModule, // 3fd6fa86: keyword → synonym expansion in runCore
     SemanticModule, // MetaDataImprove M2: effective semantics in runCore
     QuotaModule, // MetaDataImprove M7: per-call LLM character budget
   ],

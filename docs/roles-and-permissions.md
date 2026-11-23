@@ -41,7 +41,6 @@ QueryPrism 没有数据库层面的角色字段，只有三种实际身份：
 | 数据连接 `/#/ds/index` | ✗ | ✓ | ✓ |
 | 应用集成 → 嵌入式 `/#/app-integration/embedded` | ✗ | ✓ | ✓ |
 | 应用集成 → MCP `/#/app-integration/mcp` | ✗ | ✓ | ✓ |
-| 设置 → 专业术语 `/#/set/professional` | ✗ | ✓ | ✓ |
 | 设置 → 数据训练 `/#/set/training` | ✗ | ✓ | ✓ |
 | 设置 → 自定义提示词 `/#/set/prompt` | ✗ | ✓ | ✓ |
 | 设置 → 语义层 `/#/set/semantic` | ✗ | ✓ | ✓ |
@@ -93,7 +92,7 @@ QueryPrism 没有数据库层面的角色字段，只有三种实际身份：
 | API Key（仅自己的） | ✓ | ✓ | ✓ | `JwtAuthGuard` |
 | `GET /datasource/list` | ✓（连接配置置空） | ✓ | ✓ | `JwtAuthGuard` |
 | 数据源增删改、测试连接、同步表、选表、执行 SQL、Excel 导入、表关系版本 | ✗ | ✓ | ✓ | `WsAdminGuard` |
-| 术语、数据训练、自定义提示词 | ✗ | ✓ | ✓ | `WsAdminGuard` |
+| 数据训练、自定义提示词 | ✗ | ✓ | ✓ | `WsAdminGuard` |
 | 嵌入式助手、MCP 集成配置 | ✗ | ✓ | ✓ | `WsAdminGuard` |
 | 行权限规则 `/ds_permission` | ✗ | ✓ | ✓ | `WsAdminGuard` |
 | 推荐问题（管理列表 / 保存） | ✗ | ✓ | ✓ | `WsAdminGuard`（对话侧 `get_datasource_recommended_base` 仅 `JwtAuthGuard`） |
@@ -143,7 +142,7 @@ QueryPrism 没有数据库层面的角色字段，只有三种实际身份：
 | 创建/编辑自己的仪表盘 | ✓ | ✓ | ✓ |
 | 选择工作空间内已接入的数据源提问 | ✓ | ✓ | ✓ |
 | 接入/修改数据源、同步表结构、配置表关系 | ✗ | ✓ | ✓ |
-| 维护术语、训练数据、提示词、语义/指标/标准 | ✗ | ✓ | ✓ |
+| 维护训练数据、提示词、语义/指标/标准 | ✗ | ✓ | ✓ |
 | 配置嵌入助手、MCP 集成、推荐问题、行权限 | ✗ | ✓ | ✓ |
 | 查看/维护元数据同步、回归测试、查询预算 | ✗ | ✓（预算见 6.1） | ✓ |
 | 管理本空间成员（仅普通成员）与权限配置 | ✗ | ✓ | ✓ |

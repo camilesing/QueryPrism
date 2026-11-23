@@ -145,8 +145,6 @@ function makeServices(prisma: MetricPrismaMock = makePrisma()) {
 /** Full strategy snapshot — the vector stage requires one explicitly. */
 const CONFIG: EmbeddingConfig = {
   enabled: true,
-  terminologySimilarity: 0.4,
-  terminologyTopCount: 5,
   dataTrainingSimilarity: 0.4,
   dataTrainingTopCount: 5,
   tableEnabled: true,

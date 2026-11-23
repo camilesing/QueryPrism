@@ -1,14 +1,13 @@
 // AiQuestionService — assembles the AiModelQuestion context object each
 // generator renders a prompt from. Gathers the M-Schema, per-table sample
-// data, RAG-recalled terminologies and data-training samples from the
-// Phase 2/3 services. This front-loads the gathering the Phase 5 chat
-// pipeline will orchestrate. Terminology / data-training recall read the
-// workspace oid from RequestContext, so this must run inside a request
-// scope (or a requestContextStorage.run(...) in tests / background tasks).
+// data and RAG-recalled data-training samples from the Phase 2/3 services.
+// This front-loads the gathering the Phase 5 chat pipeline will orchestrate.
+// Data-training recall reads the workspace oid from RequestContext, so this
+// must run inside a request scope (or a requestContextStorage.run(...) in
+// tests / background tasks).
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatasourceService } from '../datasource/datasource.service';
-import { TerminologyService } from '../terminology/terminology.service';
 import { DataTrainingService } from '../data-training/data-training.service';
 import { CustomPromptService } from '../custom-prompt/custom-prompt.service';
 import { RequestContext } from '../common/context/request-context';
@@ -33,7 +32,6 @@ export class AiQuestionService {
 
   constructor(
     private readonly datasourceService: DatasourceService,
-    private readonly terminologyService: TerminologyService,
     private readonly dataTrainingService: DataTrainingService,
     private readonly customPromptService: CustomPromptService,
     private readonly config: ConfigService,
@@ -41,10 +39,10 @@ export class AiQuestionService {
   ) {}
 
   /** Build the SQL-generation context: schema + sample data + recalled
-   *  terminology + recalled samples + recent history. `tableIds` (from the
-   *  embedding pre-filter) narrows the M-Schema to the recalled subset.
+   *  data-training samples + recent history. `tableIds` (from the embedding
+   *  pre-filter) narrows the M-Schema to the recalled subset.
    *  `embeddingConfig` is the task-start retrieval snapshot (9e6070e8) —
-   *  terminology / data-training recall follow its switches + thresholds. */
+   *  data-training recall follows its switches + thresholds. */
   async buildSqlContext(opts: {
     question: string;
     datasourceId: number;
@@ -59,8 +57,8 @@ export class AiQuestionService {
      *  injected into the system prompt. Omitted for chart / select_datasource
      *  / recommend paths (no injection). */
     customPromptType?: string;
-    /** Query used for terminology/data-training recall — defaults to the
-     *  question; the analysis re-run passes the record's saved keywords. */
+    /** Query used for data-training recall — defaults to the question; the
+     *  analysis re-run passes the record's saved keywords. */
     knowledgeQuery?: string;
     embeddingConfig?: EmbeddingConfig;
     /** MetaDataImprove M2: effective table/field semantics — injected into the
@@ -68,7 +66,7 @@ export class AiQuestionService {
     semantics?: MSchemaSemantics;
     /** MetaDataImprove M4: pre-rendered metric-definition and naming-rule
      *  blocks (the chat pipeline resolves them next to `semantics`; empty
-     *  string / undefined renders a blank section, same as terminologies). */
+     *  string / undefined renders a blank section, same as data_training). */
     metrics?: string;
     namingRules?: string;
     /** MetaDataImprove clarify: recalled tables omitted from the narrowed
@@ -76,7 +74,7 @@ export class AiQuestionService {
     candidateTables?: string;
   }): Promise<AiModelQuestion> {
     const sampleDataEnabled = await this.sampleDataEnabled();
-    const [schema, sampleData, terminologies, dataTraining, customPromptText] =
+    const [schema, sampleData, dataTraining, customPromptText] =
       await Promise.all([
         this.datasourceService.getMSchema(
           opts.datasourceId,
@@ -86,12 +84,6 @@ export class AiQuestionService {
         sampleDataEnabled
           ? this.gatherSampleData(opts.datasourceId)
           : Promise.resolve(''),
-        this.terminologyService.getTerminologyTemplate(
-          opts.knowledgeQuery ?? opts.question,
-          opts.datasourceId,
-          undefined,
-          opts.embeddingConfig,
-        ),
         this.dataTrainingService.getDataTrainingTemplate(
           opts.knowledgeQuery ?? opts.question,
           opts.datasourceId,
@@ -115,7 +107,6 @@ export class AiQuestionService {
       question: opts.question,
       schema,
       sampleData,
-      terminologies,
       dataTraining,
       history: opts.history,
       customPrompt: customPromptText,

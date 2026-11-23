@@ -1783,3 +1783,145 @@ describe('SemanticService.collectEnums — concurrency + degraded probes', () =>
     });
   });
 });
+
+describe('SemanticService.aliases (recall-only synonyms)', () => {
+  it('normalizes aliases on create (trim, drop blank, dedupe case-insensitively)', async () => {
+    const { service, prisma } = makeService();
+    prisma.tableSemantic.findFirst.mockResolvedValue(null);
+    prisma.tableSemantic.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 70,
+        ...data,
+        version: 1,
+      }),
+    );
+    const result = await withUser(WS_ADMIN, () =>
+      service.upsert({
+        ...TABLE_INFO,
+        aliases: ['  GMV ', 'gmv', '', '成交额'],
+      }),
+    );
+    expect(result).toEqual({ applied: true, id: 70 });
+    expect(prisma.tableSemantic.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ aliases: ['GMV', '成交额'] }),
+    });
+  });
+
+  it('carries aliases on a proposal payload and applies them on approval', async () => {
+    const { service, prisma } = makeService();
+    const result = await withUser(MEMBER, () =>
+      service.upsert({ ...TABLE_INFO, aliases: ['销售单'] }),
+    );
+    expect(result).toEqual({ applied: false, request_id: 999 });
+    expect(prisma.semanticChangeRequest.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({ aliases: ['销售单'] }),
+      }),
+    });
+
+    // Approval path: payload → infoFromPayload → applyUpsertTx.
+    prisma.semanticChangeRequest.findUnique.mockResolvedValue({
+      id: 1,
+      status: 'pending',
+      targetType: 'WORKSPACE',
+      oid: 1,
+      action: 'upsert',
+      payload: {
+        datasource_id: 3,
+        table_name: 'sales_order',
+        meaning: '销售订单主表',
+        aliases: ['销售单'],
+      },
+    });
+    prisma.tableSemantic.findFirst.mockResolvedValue(null);
+    prisma.tableSemantic.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 71,
+        ...data,
+        version: 1,
+      }),
+    );
+    await withUser(WS_ADMIN, () => service.review(1, true));
+    expect(prisma.tableSemantic.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ aliases: ['销售单'] }),
+    });
+  });
+
+  it('an edit that omits aliases leaves the stored list untouched', async () => {
+    const { service, prisma } = makeService();
+    prisma.tableSemantic.findFirst.mockResolvedValue({
+      id: 72,
+      version: 2,
+      enabled: true,
+      aliases: ['旧别名'],
+    });
+    prisma.tableSemantic.update.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 72,
+        ...data,
+        version: 3,
+      }),
+    );
+    await withUser(WS_ADMIN, () => service.upsert(TABLE_INFO));
+    const update = prisma.tableSemantic.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(update.data.aliases).toBeUndefined();
+  });
+
+  it('expands keywords with the effective row aliases (PERSONAL > WORKSPACE)', async () => {
+    const { service, prisma } = makeService();
+    prisma.tableSemantic.findMany.mockResolvedValue([
+      {
+        scope: 'WORKSPACE',
+        oid: 1,
+        ownerUid: null,
+        tableName: 'orders',
+        aliases: ['成交额'],
+        updatedAt: new Date('2026-01-01'),
+      },
+      {
+        scope: 'PERSONAL',
+        oid: 1,
+        ownerUid: 7,
+        tableName: 'orders',
+        aliases: ['GMV'],
+        updatedAt: new Date('2026-01-02'),
+      },
+    ]);
+    prisma.fieldSemantic.findMany.mockResolvedValue([
+      {
+        scope: 'WORKSPACE',
+        oid: 1,
+        ownerUid: null,
+        tableName: 'orders',
+        fieldName: 'amount',
+        aliases: ['销售额'],
+        updatedAt: new Date('2026-01-01'),
+      },
+    ]);
+    const out = await withUser(MEMBER, () =>
+      service.expandKeywordsByAliases('GMV,销售额,成交额', 3),
+    );
+    // PERSONAL aliases win for `orders`; the shadowed WORKSPACE alias 成交额
+    // no longer matches.
+    expect(out).toBe('GMV,销售额,成交额,orders,amount');
+  });
+
+  it('degrades to the raw keywords when the lookup fails', async () => {
+    const { service, prisma } = makeService();
+    prisma.tableSemantic.findMany.mockRejectedValue(new Error('db down'));
+    prisma.fieldSemantic.findMany.mockRejectedValue(new Error('db down'));
+    const out = await withUser(MEMBER, () =>
+      service.expandKeywordsByAliases('GMV', 3),
+    );
+    expect(out).toBe('GMV');
+  });
+
+  it('degrades to the raw keywords outside a request context', async () => {
+    const { service } = makeService();
+    await expect(service.expandKeywordsByAliases('GMV', 3)).resolves.toBe(
+      'GMV',
+    );
+  });
+});

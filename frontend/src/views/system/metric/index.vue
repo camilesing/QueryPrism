@@ -15,6 +15,7 @@ import {
 } from '@/api/metric'
 import { datasourceApi } from '@/api/datasource'
 import { request } from '@/utils/request'
+import { splitAliases } from '@/utils/utils'
 import EmptyBackground from '@/views/dashboard/common/EmptyBackground.vue'
 import icon_add_outlined from '@/assets/svg/icon_add_outlined.svg'
 import IconOpeEdit from '@/assets/svg/icon_edit_outlined.svg'
@@ -195,12 +196,6 @@ const defaultForm = () => ({
   category: '',
 })
 const form = reactive(defaultForm())
-
-const splitAliases = (text: string): string[] =>
-  text
-    .split(/[,，\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
 
 function openCreate() {
   Object.assign(form, defaultForm())

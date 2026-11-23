@@ -13,7 +13,6 @@ type Row = Record<string, unknown> & { id: number };
 
 type MockPrisma = {
   systemVariable: { findMany: jest.Mock };
-  terminology: { findMany: jest.Mock; updateMany: jest.Mock };
   dataTraining: { findMany: jest.Mock; updateMany: jest.Mock };
   datasource: { findMany: jest.Mock; updateMany: jest.Mock };
   table: { findMany: jest.Mock; updateMany: jest.Mock };
@@ -34,7 +33,6 @@ function makePrisma(rows: Record<string, Row[]> = {}): MockPrisma {
     // resolveEmbeddingConfig read: [] → env defaults (enabled/table_enabled
     // default true)
     systemVariable: { findMany: jest.fn().mockResolvedValue([]) },
-    terminology: delegate(rows.terminology ?? []),
     dataTraining: delegate(rows.dataTraining ?? []),
     datasource: delegate(rows.datasource ?? []),
     table: delegate(rows.table ?? []),
@@ -76,23 +74,28 @@ describe('EmbeddingBackfillService', () => {
       const svc = makeService(prisma, vector, embedding);
       svc.onModuleInit();
       expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
-      expect(prisma.terminology.findMany).not.toHaveBeenCalled();
+      expect(prisma.dataTraining.findMany).not.toHaveBeenCalled();
     });
 
     it('runs the backfill when embedding is available', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'DAU', description: '日活' }],
+        dataTraining: [{ id: 1, question: 'DAU 怎么算', description: '日活' }],
       });
       embedding.embedBatch.mockResolvedValue([[0.1, 0.2]]);
       const svc = makeService(prisma, vector, embedding);
       svc.onModuleInit();
       await new Promise((r) => setImmediate(r));
-      expect(prisma.terminology.updateMany).toHaveBeenCalledWith({
-        where: { id: 1, embedding: DB_NULL, word: 'DAU', description: '日活' },
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 1,
+          embedding: DB_NULL,
+          question: 'DAU 怎么算',
+          description: '日活',
+        },
         data: { embedding: [0.1, 0.2] },
       });
       expect(vector.upsert).toHaveBeenCalledWith(
-        'terminology',
+        'data_training',
         1,
         [0.1, 0.2],
         expect.anything(), // the batch transaction client
@@ -103,7 +106,6 @@ describe('EmbeddingBackfillService', () => {
   describe('run — runtime switch gating', () => {
     it('fills all four collections when both switches are on (env defaults)', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
         dataTraining: [{ id: 2, question: 'q', description: 'd' }],
         datasource: [{ id: 3, name: 'ds', description: null }],
         table: [
@@ -121,14 +123,13 @@ describe('EmbeddingBackfillService', () => {
       );
       const result = await makeService(prisma, vector, embedding).run();
       expect(result).toEqual({
-        terminology: 1,
         dataTraining: 1,
         datasource: 1,
         table: 1,
         metric: 1,
       });
       // table text uses the EFFECTIVE comment (custom wins)
-      expect(embedding.embedBatch).toHaveBeenNthCalledWith(4, [
+      expect(embedding.embedBatch).toHaveBeenNthCalledWith(3, [
         'orders\n销售单',
       ]);
       expect(prisma.table.updateMany).toHaveBeenCalledWith({
@@ -141,12 +142,12 @@ describe('EmbeddingBackfillService', () => {
         },
         data: { embedding: [0.5] },
       });
-      expect(vector.upsert).toHaveBeenCalledTimes(5);
+      expect(vector.upsert).toHaveBeenCalledTimes(4);
     });
 
     it('skips the knowledge half when embedding.enabled=false (saved param)', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
+        dataTraining: [{ id: 1, question: 'q', description: null }],
         table: [
           { id: 4, tableName: 't', tableComment: null, customComment: null },
         ],
@@ -156,11 +157,10 @@ describe('EmbeddingBackfillService', () => {
       ]);
       embedding.embedBatch.mockResolvedValue([[0.5]]);
       const result = await makeService(prisma, vector, embedding).run();
-      expect(prisma.terminology.findMany).not.toHaveBeenCalled();
       expect(prisma.dataTraining.findMany).not.toHaveBeenCalled();
       // the metadata half is independent and still ran
       expect(prisma.table.findMany).toHaveBeenCalled();
-      expect(result.terminology).toBe(0);
+      expect(result.dataTraining).toBe(0);
       expect(result.table).toBe(1);
     });
 
@@ -225,7 +225,6 @@ describe('EmbeddingBackfillService', () => {
       const prisma = makePrisma();
       const result = await makeService(prisma, vector, embedding).run();
       expect(result).toEqual({
-        terminology: 0,
         dataTraining: 0,
         datasource: 0,
         table: 0,
@@ -238,35 +237,35 @@ describe('EmbeddingBackfillService', () => {
   describe('race protection (conditional write-back)', () => {
     it('does not upsert vec0 when the conditional update matched 0 rows', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
+        dataTraining: [{ id: 1, question: 'a', description: null }],
       });
-      prisma.terminology.updateMany.mockResolvedValue({ count: 0 });
+      prisma.dataTraining.updateMany.mockResolvedValue({ count: 0 });
       embedding.embedBatch.mockResolvedValue([[0.5]]);
       await makeService(prisma, vector, embedding).runKnowledge();
-      expect(prisma.terminology.updateMany).toHaveBeenCalled();
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalled();
       expect(vector.upsert).not.toHaveBeenCalled();
     });
 
     it('embeds only rows that are still NULL at batch time (re-read)', async () => {
       const prisma = makePrisma({
-        terminology: [
-          { id: 1, word: 'a', description: null },
-          { id: 2, word: 'b', description: null },
+        dataTraining: [
+          { id: 1, question: 'a', description: null },
+          { id: 2, question: 'b', description: null },
         ],
       });
       // scan sees both; the batch re-read (id IN filter) reports only #2 —
       // #1 was filled by the synchronous upsert path in between
-      prisma.terminology.findMany
+      prisma.dataTraining.findMany
         .mockResolvedValueOnce([
-          { id: 1, word: 'a', description: null },
-          { id: 2, word: 'b', description: null },
+          { id: 1, question: 'a', description: null },
+          { id: 2, question: 'b', description: null },
         ])
-        .mockResolvedValueOnce([{ id: 2, word: 'b', description: null }]);
+        .mockResolvedValueOnce([{ id: 2, question: 'b', description: null }]);
       embedding.embedBatch.mockResolvedValue([[0.5]]);
       await makeService(prisma, vector, embedding).runKnowledge();
       expect(embedding.embedBatch).toHaveBeenCalledWith(['b']);
-      expect(prisma.terminology.updateMany).toHaveBeenCalledTimes(1);
-      expect(prisma.terminology.updateMany).toHaveBeenCalledWith(
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expect.objectContaining({ id: 2 }) }),
       );
     });
@@ -288,24 +287,24 @@ describe('EmbeddingBackfillService', () => {
     it('splits 33 rows into batches of 32 + 1', async () => {
       const rows = Array.from({ length: 33 }, (_, i) => ({
         id: i + 1,
-        word: `w${i + 1}`,
+        question: `w${i + 1}`,
         description: null,
       }));
-      const prisma = makePrisma({ terminology: rows });
+      const prisma = makePrisma({ dataTraining: rows });
       embedding.embedBatch.mockImplementation((texts: string[]) =>
         texts.map(() => [0.5]),
       );
       const result = await makeService(prisma, vector, embedding).run();
-      expect(result.terminology).toBe(33);
+      expect(result.dataTraining).toBe(33);
       expect(embedding.embedBatch).toHaveBeenCalledTimes(2);
       expect(embedding.embedBatch.mock.calls[0][0]).toHaveLength(32);
       expect(embedding.embedBatch.mock.calls[1][0]).toHaveLength(1);
-      expect(prisma.terminology.updateMany).toHaveBeenCalledTimes(33);
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalledTimes(33);
     });
 
     it('retries a failing batch and succeeds on the third attempt', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
+        dataTraining: [{ id: 1, question: 'a', description: null }],
       });
       embedding.embedBatch
         .mockRejectedValueOnce(new Error('api 500'))
@@ -313,15 +312,15 @@ describe('EmbeddingBackfillService', () => {
         .mockResolvedValueOnce([[0.5]]);
       await makeService(prisma, vector, embedding).runKnowledge();
       expect(embedding.embedBatch).toHaveBeenCalledTimes(3);
-      expect(prisma.terminology.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalledTimes(1);
     });
 
     it('leaves the batch NULL after 3 failures and still completes the run', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
-        dataTraining: [{ id: 2, question: 'q', description: null }],
+        dataTraining: [{ id: 1, question: 'a', description: null }],
+        datasource: [{ id: 2, name: 'ds', description: null }],
       });
-      // terminology batch always fails; data_training succeeds
+      // data_training batch always fails; datasource succeeds
       let calls = 0;
       embedding.embedBatch.mockImplementation((texts: string[]) => {
         calls++;
@@ -330,32 +329,31 @@ describe('EmbeddingBackfillService', () => {
       });
       const result = await makeService(prisma, vector, embedding).run();
       expect(result).toEqual({
-        terminology: 1,
-        dataTraining: 1,
-        datasource: 0,
+        dataTraining: 1, // scanned rows — the write itself failed 3×
+        datasource: 1,
         table: 0,
         metric: 0,
       });
-      expect(prisma.terminology.updateMany).not.toHaveBeenCalled();
-      expect(prisma.dataTraining.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.dataTraining.updateMany).not.toHaveBeenCalled();
+      expect(prisma.datasource.updateMany).toHaveBeenCalledTimes(1);
       expect(calls).toBeGreaterThanOrEqual(4); // 3 failed + 1 ok
     });
 
     it('treats a vector-count mismatch as a batch failure', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
+        dataTraining: [{ id: 1, question: 'a', description: null }],
       });
       embedding.embedBatch.mockResolvedValue([]); // wrong count
       await makeService(prisma, vector, embedding).runKnowledge();
       expect(embedding.embedBatch).toHaveBeenCalledTimes(3);
-      expect(prisma.terminology.updateMany).not.toHaveBeenCalled();
+      expect(prisma.dataTraining.updateMany).not.toHaveBeenCalled();
     });
   });
 
   describe('in-flight dedup', () => {
     it('a second concurrent run of the same collection is skipped', async () => {
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
+        dataTraining: [{ id: 1, question: 'a', description: null }],
       });
       let release!: (v: number[][]) => void;
       embedding.embedBatch.mockImplementation(
@@ -373,7 +371,7 @@ describe('EmbeddingBackfillService', () => {
       await Promise.all([first, second]);
       // run #1 alone: one scan + one batch re-read; run #2 skipped the
       // running set so it never scanned again
-      expect(prisma.terminology.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.dataTraining.findMany).toHaveBeenCalledTimes(2);
       expect(embedding.embedBatch).toHaveBeenCalledTimes(1);
     });
   });
@@ -382,11 +380,11 @@ describe('EmbeddingBackfillService', () => {
     it('still persists the Prisma embedding (source of truth), skips upsert', async () => {
       vector.available = false;
       const prisma = makePrisma({
-        terminology: [{ id: 1, word: 'a', description: null }],
+        dataTraining: [{ id: 1, question: 'a', description: null }],
       });
       embedding.embedBatch.mockResolvedValue([[0.5]]);
       await makeService(prisma, vector, embedding).runKnowledge();
-      expect(prisma.terminology.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.dataTraining.updateMany).toHaveBeenCalledTimes(1);
       expect(vector.upsert).not.toHaveBeenCalled();
     });
   });
@@ -422,10 +420,9 @@ describe('EmbeddingBackfillService', () => {
         findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       };
-      const terminology = { findMany, updateMany };
+      const dataTraining = { findMany, updateMany };
       const tx = {
-        terminology,
-        dataTraining: empty,
+        dataTraining,
         datasource: empty,
         table: empty,
       };
@@ -455,8 +452,8 @@ describe('EmbeddingBackfillService', () => {
     it('commits the Json write and the pgvector upsert in ONE transaction', async () => {
       embedding.embedBatch.mockResolvedValue([[0.1], [0.2]]);
       const { prisma, tx, updateMany } = makeAtomicPrisma([
-        { id: 1, word: 'a', description: null },
-        { id: 2, word: 'b', description: null },
+        { id: 1, question: 'a', description: null },
+        { id: 2, question: 'b', description: null },
       ]);
       await makeService(prisma, vector, embedding).runKnowledge();
 
@@ -475,7 +472,7 @@ describe('EmbeddingBackfillService', () => {
         .mockRejectedValueOnce(new Error('vector down'))
         .mockResolvedValue(undefined);
       const { prisma, updateMany } = makeAtomicPrisma([
-        { id: 1, word: 'a', description: null },
+        { id: 1, question: 'a', description: null },
       ]);
 
       await makeService(prisma, vector, embedding).runKnowledge();
@@ -537,22 +534,22 @@ describe('residual arm sweep', () => {
   it('runKnowledge returns early when embedding is unavailable', async () => {
     embedding.available = false;
     const prisma = makePrisma({
-      terminology: [{ id: 1, word: 'a', description: null }],
+      dataTraining: [{ id: 1, question: 'a', description: null }],
     });
     await makeService(prisma, vector, embedding).runKnowledge();
     expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
-    expect(prisma.terminology.findMany).not.toHaveBeenCalled();
+    expect(prisma.dataTraining.findMany).not.toHaveBeenCalled();
   });
 
   it('runKnowledge returns early when embedding.enabled=false', async () => {
     const prisma = makePrisma({
-      terminology: [{ id: 1, word: 'a', description: null }],
+      dataTraining: [{ id: 1, question: 'a', description: null }],
     });
     prisma.systemVariable.findMany.mockResolvedValue([
       { name: 'embedding.enabled', value: 'false' },
     ]);
     await makeService(prisma, vector, embedding).runKnowledge();
-    expect(prisma.terminology.findMany).not.toHaveBeenCalled();
+    expect(prisma.dataTraining.findMany).not.toHaveBeenCalled();
   });
 
   it('runTablesAndDatasources fills both collections when table_enabled', async () => {
@@ -606,19 +603,19 @@ describe('residual arm sweep', () => {
 
   it('skips the embed call entirely when every re-read row is blank', async () => {
     const prisma = makePrisma();
-    const blank = { id: 1, word: '  ', description: null };
-    prisma.terminology.findMany
+    const blank = { id: 1, question: '  ', description: null };
+    prisma.dataTraining.findMany
       .mockResolvedValueOnce([blank]) // scan
       .mockResolvedValueOnce([blank]); // batch re-read: still NULL but blank
     await makeService(prisma, vector, embedding).runKnowledge();
     expect(embedding.embedBatch).not.toHaveBeenCalled();
-    expect(prisma.terminology.updateMany).not.toHaveBeenCalled();
+    expect(prisma.dataTraining.updateMany).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('stringifies a non-Error batch failure in the final warn', async () => {
     const prisma = makePrisma({
-      terminology: [{ id: 1, word: 'a', description: null }],
+      dataTraining: [{ id: 1, question: 'a', description: null }],
     });
     embedding.embedBatch.mockRejectedValue('provider exploded');
     const warnSpy = jest

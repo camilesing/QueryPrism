@@ -1,4 +1,4 @@
-// EmbeddingService is consumed by terminology/data-training/datasource
+// EmbeddingService is consumed by data-training/datasource
 // recall paths. Registered globally so those modules can inject it without
 // each re-importing this module. EmbeddingBackfillService runs once on
 // startup (non-blocking) and on embedding.* re-enable flips to fill

@@ -59,9 +59,9 @@ describe('VectorService (pgvector)', () => {
     await disabled.onModuleInit();
 
     expect(disabled.available).toBe(false);
-    await disabled.upsert('terminology', 1, [1, 0]);
+    await disabled.upsert('data_training', 1, [1, 0]);
     expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
-    await expect(disabled.search('terminology', [1, 0])).resolves.toEqual([]);
+    await expect(disabled.search('data_training', [1, 0])).resolves.toEqual([]);
   });
 
   it('disables itself when the vector_store schema is missing', async () => {
@@ -80,7 +80,7 @@ describe('VectorService (pgvector)', () => {
   });
 
   it('creates the partitioned table + HNSW index then upserts', async () => {
-    await service.upsert('terminology', 1, [0.1, 0.2, 0.3]);
+    await service.upsert('data_training', 1, [0.1, 0.2, 0.3]);
 
     const executed = sqlCalls(prisma.$executeRawUnsafe);
     expect(
@@ -117,7 +117,7 @@ describe('VectorService (pgvector)', () => {
       return Promise.resolve([]);
     });
 
-    const hits = await service.search('terminology', [0.1, 0.2], 2);
+    const hits = await service.search('data_training', [0.1, 0.2], 2);
 
     expect(hits).toEqual([
       { id: 2, distance: 0.1 },
@@ -126,7 +126,7 @@ describe('VectorService (pgvector)', () => {
     const search = prisma.$queryRawUnsafe.mock.calls.find((call) =>
       String(call[0]).includes('<=>'),
     );
-    expect(String(search?.[0])).toContain('"vector_store"."vec_terminology"');
+    expect(String(search?.[0])).toContain('"vector_store"."vec_data_training"');
     expect(search?.[1]).toBe('[0.1,0.2]');
     expect(search?.[2]).toBe(2);
   });
@@ -149,7 +149,7 @@ describe('VectorService (pgvector)', () => {
       return Promise.resolve([]);
     });
 
-    await expect(service.search('terminology', [1, 0])).resolves.toEqual([]);
+    await expect(service.search('data_training', [1, 0])).resolves.toEqual([]);
   });
 
   /** What Prisma 6 actually throws for a failed raw query: P2010 with the
@@ -175,12 +175,12 @@ describe('VectorService (pgvector)', () => {
       return Promise.resolve([]);
     });
 
-    await expect(service.search('terminology', [1, 0])).resolves.toEqual([]);
+    await expect(service.search('data_training', [1, 0])).resolves.toEqual([]);
   });
 
   it('remove is a no-op for the Prisma-wrapped missing-table error (P2010)', async () => {
     prisma.$executeRawUnsafe.mockRejectedValueOnce(prismaUndefinedTable());
-    await expect(service.remove('terminology', 7)).resolves.toBeUndefined();
+    await expect(service.remove('data_training', 7)).resolves.toBeUndefined();
   });
 
   it('search still rethrows other P2010 failures', async () => {
@@ -203,14 +203,14 @@ describe('VectorService (pgvector)', () => {
       return Promise.resolve([]);
     });
 
-    await expect(service.search('terminology', [1, 0])).rejects.toThrow(
+    await expect(service.search('data_training', [1, 0])).rejects.toThrow(
       'syntax error',
     );
   });
 
   it('remove deletes by id; clear drops the table', async () => {
-    await service.remove('terminology', 7);
-    await service.clear('terminology');
+    await service.remove('data_training', 7);
+    await service.clear('data_training');
 
     const executed = sqlCalls(prisma.$executeRawUnsafe);
     expect(executed.some((sql) => sql.includes('DELETE FROM'))).toBe(true);
@@ -220,17 +220,17 @@ describe('VectorService (pgvector)', () => {
   });
 
   it('rejects a dimension change for an existing collection', async () => {
-    await service.upsert('terminology', 1, [0.1, 0.2, 0.3]);
+    await service.upsert('data_training', 1, [0.1, 0.2, 0.3]);
     await expect(
-      service.upsert('terminology', 2, [0.1, 0.2, 0.3, 0.4]),
+      service.upsert('data_training', 2, [0.1, 0.2, 0.3, 0.4]),
     ).rejects.toThrow(/dimension mismatch/i);
   });
 
   it('rejects non-finite / empty vectors', async () => {
     await expect(
-      service.upsert('terminology', 1, [0.1, Number.NaN]),
+      service.upsert('data_training', 1, [0.1, Number.NaN]),
     ).rejects.toThrow(/non-finite/);
-    await expect(service.upsert('terminology', 1, [])).rejects.toThrow(
+    await expect(service.upsert('data_training', 1, [])).rejects.toThrow(
       /empty embedding/,
     );
   });
@@ -249,10 +249,10 @@ describe('VectorService (pgvector)', () => {
       } as never,
     );
     await sized.onModuleInit();
-    await expect(sized.upsert('terminology', 1, [1, 0])).rejects.toThrow(
+    await expect(sized.upsert('data_training', 1, [1, 0])).rejects.toThrow(
       /EMBEDDING_DIMENSION=3/,
     );
-    await expect(sized.search('terminology', [1, 0, 0, 0])).rejects.toThrow(
+    await expect(sized.search('data_training', [1, 0, 0, 0])).rejects.toThrow(
       /EMBEDDING_DIMENSION=3/,
     );
   });
@@ -267,8 +267,8 @@ describe('VectorService (pgvector)', () => {
     await disabled.onModuleInit();
     expect(disabled.available).toBe(false);
 
-    await expect(disabled.remove('terminology', 1)).resolves.toBeUndefined();
-    await expect(disabled.clear('terminology')).resolves.toBeUndefined();
+    await expect(disabled.remove('data_training', 1)).resolves.toBeUndefined();
+    await expect(disabled.clear('data_training')).resolves.toBeUndefined();
     expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
   });
 
@@ -276,14 +276,14 @@ describe('VectorService (pgvector)', () => {
     prisma.$executeRawUnsafe.mockRejectedValueOnce(
       new Error('connection lost'),
     );
-    await expect(service.remove('terminology', 7)).rejects.toThrow(
+    await expect(service.remove('data_training', 7)).rejects.toThrow(
       'connection lost',
     );
   });
 
   it('remove rethrows a non-object rejection (isUndefinedTable guard)', async () => {
     prisma.$executeRawUnsafe.mockRejectedValueOnce('raw string failure');
-    await expect(service.remove('terminology', 7)).rejects.toBe(
+    await expect(service.remove('data_training', 7)).rejects.toBe(
       'raw string failure',
     );
   });
@@ -312,20 +312,20 @@ describe('VectorService (pgvector)', () => {
         ensureTable: (c: string, dim: number) => Promise<void>;
       }
     ).ensureTable.bind(service);
-    await expect(ensure('terminology', 0)).rejects.toThrow(
+    await expect(ensure('data_training', 0)).rejects.toThrow(
       /Invalid embedding dimension/,
     );
-    await expect(ensure('terminology', 2.5)).rejects.toThrow(
+    await expect(ensure('data_training', 2.5)).rejects.toThrow(
       /Invalid embedding dimension/,
     );
   });
 
   it('a repeat upsert with the same dimension skips the DDL entirely', async () => {
-    await service.upsert('terminology', 1, [0.1, 0.2, 0.3]);
+    await service.upsert('data_training', 1, [0.1, 0.2, 0.3]);
     const ddlAfterFirst = sqlCalls(prisma.$executeRawUnsafe).filter((sql) =>
       sql.includes('CREATE'),
     ).length;
-    await service.upsert('terminology', 2, [0.4, 0.5, 0.6]);
+    await service.upsert('data_training', 2, [0.4, 0.5, 0.6]);
     const ddlAfterSecond = sqlCalls(prisma.$executeRawUnsafe).filter((sql) =>
       sql.includes('CREATE'),
     ).length;
@@ -339,7 +339,7 @@ describe('VectorService (pgvector)', () => {
   it('upsert routes the INSERT through an explicit transaction client', async () => {
     const txExecute = jest.fn(() => Promise.resolve(1));
     const tx = { $executeRawUnsafe: txExecute };
-    await service.upsert('terminology', 9, [0.1, 0.2], tx as never);
+    await service.upsert('data_training', 9, [0.1, 0.2], tx as never);
     expect(txExecute).toHaveBeenCalledTimes(1);
     expect(String(txExecute.mock.calls[0][0])).toContain('ON CONFLICT (id)');
     expect(txExecute.mock.calls[0][1]).toBe(9);
@@ -359,7 +359,7 @@ describe('VectorService (pgvector)', () => {
     await recovered.onModuleInit();
     // recovered dim (=7) mismatches the upsert vector (=2)
     await expect(
-      recovered.upsert('terminology', 1, [0.1, 0.2]),
+      recovered.upsert('data_training', 1, [0.1, 0.2]),
     ).rejects.toThrow(/column expects 7/);
   });
 
@@ -380,7 +380,7 @@ describe('VectorService (pgvector)', () => {
     await fresh.onModuleInit();
     tableExists = true;
 
-    await fresh.upsert('terminology', 1, [0.5, 0.5]);
+    await fresh.upsert('data_training', 1, [0.5, 0.5]);
 
     const executed = sqlCalls(prisma.$executeRawUnsafe);
     expect(
@@ -409,7 +409,7 @@ describe('VectorService (pgvector)', () => {
     await fresh.onModuleInit(); // no table yet → nothing recovered
     tableExists = true; // the table appears before the upsert's DDL check
 
-    await expect(fresh.upsert('terminology', 1, [0.1, 0.2])).rejects.toThrow(
+    await expect(fresh.upsert('data_training', 1, [0.1, 0.2])).rejects.toThrow(
       /column expects 3, got 2/,
     );
   });
@@ -434,7 +434,7 @@ describePg('VectorService (real pgvector)', () => {
 
   afterAll(async () => {
     for (const collection of [
-      'terminology',
+      'data_training',
       'data_training',
       'datasource',
       'table',
@@ -445,21 +445,21 @@ describePg('VectorService (real pgvector)', () => {
   });
 
   it('orders hits by cosine distance and overwrites/deletes', async () => {
-    await service.clear('terminology');
-    await service.upsert('terminology', 1, [1, 0, 0]);
-    await service.upsert('terminology', 2, [0, 1, 0]);
-    await service.upsert('terminology', 3, [0.9, 0.1, 0]);
+    await service.clear('data_training');
+    await service.upsert('data_training', 1, [1, 0, 0]);
+    await service.upsert('data_training', 2, [0, 1, 0]);
+    await service.upsert('data_training', 3, [0.9, 0.1, 0]);
 
-    let hits = await service.search('terminology', [1, 0, 0], 3);
+    let hits = await service.search('data_training', [1, 0, 0], 3);
     expect(hits.map((h) => h.id)).toEqual([1, 3, 2]);
     expect(hits[0].distance).toBeCloseTo(0, 5);
 
-    await service.upsert('terminology', 1, [0, 0, 1]);
-    hits = await service.search('terminology', [0, 0, 1], 3);
+    await service.upsert('data_training', 1, [0, 0, 1]);
+    hits = await service.search('data_training', [0, 0, 1], 3);
     expect(hits[0]).toMatchObject({ id: 1 });
 
-    await service.remove('terminology', 1);
-    hits = await service.search('terminology', [0, 0, 1], 3);
+    await service.remove('data_training', 1);
+    hits = await service.search('data_training', [0, 0, 1], 3);
     expect(hits.map((h) => h.id)).not.toContain(1);
   });
 });

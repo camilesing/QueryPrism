@@ -1,4 +1,4 @@
-// POST /system/download-fail-info. The import surfaces (terminology /
+// POST /system/download-fail-info. The import surfaces (semantic /
 // data-training / custom-prompt Uploader) hand the frontend
 // `error_excel_filename`; the "download failure list" button posts that
 // filename back here.

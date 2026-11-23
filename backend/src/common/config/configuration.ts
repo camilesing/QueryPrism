@@ -117,7 +117,7 @@ export function configuration() {
       storeSchema: process.env.EXCEL_STORE_SCHEMA ?? 'excel_store',
     },
 
-    // Import failure workbooks (terminology / data-training / custom-prompt /
+    // Import failure workbooks (data-training / custom-prompt /
     // user batch import) + the /system/download-fail-info download route.
     importError: {
       dir: process.env.IMPORT_ERROR_DIR ?? 'uploads/import-errors',

@@ -1,10 +1,11 @@
 // Attribution-domain governance e2e — scenario tests over a realistic
 // fixture (4 SQLite tables derived from the 归因域 v1 FlinkSQL DDL, see
 // test/fixtures/attribution/README.md). Unlike the per-module contract specs
-// (semantic/metric/terminology/custom-prompt e2e), this suite drives the five
-// governance features against ONE shared datasource and asserts the runtime
-// seams they feed (recall expansion, metric caliber matching, naming rules,
-// effective annotations / M-Schema decoration, custom-prompt resolution).
+// (semantic/metric/custom-prompt e2e), this suite drives the four governance
+// features against ONE shared datasource and asserts the runtime seams they
+// feed (semantic-alias recall expansion, metric caliber matching, naming
+// rules, effective annotations / M-Schema decoration, custom-prompt
+// resolution).
 //
 // CRUD runs over real HTTP; matching logic runs via direct service calls
 // wrapped in requestContextStorage ALS (no HTTP for DI-only methods).
@@ -20,7 +21,6 @@ import { requestContextStorage } from './../src/common/context/request-context';
 import { SemanticService } from './../src/semantic/semantic.service';
 import { MetricService } from './../src/semantic/metric.service';
 import { DataStandardService } from './../src/semantic/standard.service';
-import { TerminologyService } from './../src/terminology/terminology.service';
 import { CustomPromptService } from './../src/custom-prompt/custom-prompt.service';
 import { DatasourceService } from './../src/datasource/datasource.service';
 import {
@@ -81,7 +81,6 @@ describe('Attribution governance (e2e)', () => {
   let semantic: SemanticService;
   let metric: MetricService;
   let standard: DataStandardService;
-  let terminology: TerminologyService;
   let customPrompt: CustomPromptService;
   let datasource: DatasourceService;
   let ds: AttributionDatasource;
@@ -93,7 +92,6 @@ describe('Attribution governance (e2e)', () => {
   // id trackers so afterAll sweeps ONLY this suite's rows.
   const metricIds: number[] = [];
   const standardIds: number[] = [];
-  const terminologyIds: number[] = [];
   const customPromptIds: number[] = [];
 
   beforeAll(async () => {
@@ -107,7 +105,6 @@ describe('Attribution governance (e2e)', () => {
     semantic = app.get(SemanticService);
     metric = app.get(MetricService);
     standard = app.get(DataStandardService);
-    terminology = app.get(TerminologyService);
     customPrompt = app.get(CustomPromptService);
     datasource = app.get(DatasourceService);
     token = await login(app);
@@ -152,7 +149,6 @@ describe('Attribution governance (e2e)', () => {
     for (const [path, ids] of [
       ['/api/v1/system/metric', metricIds],
       ['/api/v1/system/standard', standardIds],
-      ['/api/v1/system/terminology', terminologyIds],
       ['/api/v1/system/custom_prompt', customPromptIds],
     ] as const) {
       if (ids.length > 0) {
@@ -435,75 +431,6 @@ describe('Attribution governance (e2e)', () => {
       .set(TOKEN_HEADER, token);
     expect(versions.status).toBe(200);
     expect((versions.body.data as unknown[]).length).toBe(1);
-  });
-
-  // ─── 术语 (terminology) ─────────────────────────────────────────────────
-
-  it('terms with synonyms expand keywords and render the template', async () => {
-    const put = (body: Record<string, unknown>) =>
-      request(app.getHttpServer())
-        .put('/api/v1/system/terminology')
-        .set(TOKEN_HEADER, token)
-        .send(body);
-
-    const first = await put({
-      word: '首次归因',
-      description: '订单归因到访客的第一次触点(首触)',
-      other_words: ['首触', '首次互动归因'],
-      specific_ds: false,
-      datasource_ids: [],
-      enabled: true,
-    });
-    expect(first.status).toBe(200);
-    terminologyIds.push(first.body.data.id as number);
-    const last = await put({
-      word: '末次归因',
-      description: '订单归因到成单前的最后一次触点(末触)',
-      other_words: ['末触', '最后一次互动'],
-      specific_ds: false,
-      datasource_ids: [],
-      enabled: true,
-    });
-    expect(last.status).toBe(200);
-    terminologyIds.push(last.body.data.id as number);
-    const cycle = await put({
-      word: '转化周期',
-      description: '首触到成单经历的天数(interact_days)',
-      specific_ds: true,
-      datasource_ids: [ds.dsId],
-      enabled: true,
-    });
-    expect(cycle.status).toBe(200);
-    terminologyIds.push(cycle.body.data.id as number);
-
-    // A hit on the SYNONYM '首触' folds in the whole group (parent word).
-    const expanded = await admin(() =>
-      terminology.expandWithTerminology('首触,订单', 1),
-    );
-    expect(expanded).toContain('首次归因');
-
-    // Template recall sees the ds-bound term for THIS datasource only.
-    // (Queries are deliberately short: without an embedding provider recall
-    // is ILIKE-only and matches word⊇query — see terminology.service recall.)
-    const onDs = await admin(() =>
-      terminology.getTerminologyTemplate('转化周期', ds.dsId),
-    );
-    expect(onDs).toContain('word="转化周期"');
-    expect(onDs).toContain('interact_days');
-    const otherDs = await admin(() =>
-      terminology.getTerminologyTemplate('转化周期', 1),
-    );
-    expect(otherDs).not.toContain('转化周期');
-
-    // Disabling a parent hides it (and its children) from recall.
-    const disable = await request(app.getHttpServer())
-      .get(`/api/v1/system/terminology/${last.body.data.id}/enable/false`)
-      .set(TOKEN_HEADER, token);
-    expect(disable.status).toBe(200);
-    const after = await admin(() =>
-      terminology.getTerminologyTemplate('末次归因', ds.dsId),
-    );
-    expect(after).not.toContain('末次归因');
   });
 
   // ─── 指标 (metrics) ─────────────────────────────────────────────────────

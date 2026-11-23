@@ -44,7 +44,6 @@ describe('PromptService', () => {
     it('renders every generate_sql context section and keeps the output contract', () => {
       const markers = {
         schema: 'SCHEMA_MARKER',
-        terminologies: 'TERM_MARKER',
         data_training: 'TRAIN_MARKER',
         sample_data: 'SAMPLE_MARKER',
         question: 'QUESTION_MARKER',

@@ -1,7 +1,7 @@
 // ChatService — the Phase 5 SSE chat pipeline. Orchestrates the closed loop
 // NL2SQL → execute → chart as an async generator yielding ChatSseEvent frames;
 // the controller's SSE handler pumps them through SseWriter. Every chat and
-// ChatRecord is oid-scoped via RequestContext (mirror Terminology). A failure
+// ChatRecord is oid-scoped via RequestContext. A failure
 // mid-pipeline yields an `error` + terminal event and persists the error on
 // the ChatRecord instead of throwing, so the client always gets a clean close.
 //
@@ -71,7 +71,6 @@ import { RequestContext } from '../common/context/request-context';
 import { tr } from '../common/i18n/translate';
 import { detectQuestionLanguage } from '../common/utils/detect-language';
 import { chatMessages, type ChatMessages } from './chat-messages';
-import { TerminologyService } from '../terminology/terminology.service';
 import {
   SemanticService,
   type SemanticAnnotations,
@@ -195,7 +194,6 @@ export class ChatService {
     private readonly generatorService: GeneratorService,
     private readonly sqlSafety: SqlSafetyService,
     private readonly rowPermissionService: RowPermissionService,
-    private readonly terminologyService: TerminologyService,
     private readonly semanticService: SemanticService,
     private readonly metricService: MetricService,
     private readonly standardService: DataStandardService,
@@ -976,7 +974,7 @@ export class ChatService {
       question: string;
       sql: string | null;
       sqlExecResult: unknown;
-      /** Analysis re-retrieves terminology with the record's
+      /** Analysis re-retrieves data-training with the record's
        *  saved keywords instead of re-matching on the raw question. */
       expandedKeywords?: string | null;
       extractedKeywords?: string | null;
@@ -999,11 +997,11 @@ export class ChatService {
     const engine = engineFromDatasourceType(ds.type);
     if (!engine) return msgs.unsupportedEngine;
     // 3fd6fa86 (P1S4): the record's saved keywords drive BOTH the table
-    // recall here and the terminology re-retrieval in buildSqlContext
+    // recall here and the data-training re-retrieval in buildSqlContext
     // (upstream generate_analysis re-matches on the saved keywords).
     const savedKeywords = source.expandedKeywords ?? source.extractedKeywords;
     // Task-start retrieval snapshot (ADR 0001): one config read drives BOTH
-    // the table recall and the terminology/data-training retrieval inside
+    // the table recall and the data-training retrieval inside
     // buildForResult — an admin save mid-task must not split the snapshot.
     const cfg = await resolveEmbeddingConfig(this.prisma);
     const tableIds = await this.recallNarrowedSchema(
@@ -1076,9 +1074,10 @@ export class ChatService {
     // A forced table subset means the user already chose the tables — keyword
     // extraction (an LLM call) and recall would both be wasted.
     const forcedTableIds = opts?.forcedTableIds;
-    // 3fd6fa86→bc3403b8: LLM keyword extraction + terminology expansion feed
-    // the fusion table ranking; failures degrade to the raw question (we do
-    // NOT reject non-data queries like upstream — no behavior change).
+    // 3fd6fa86→bc3403b8: LLM keyword extraction + semantic-alias expansion feed
+    // the fusion table ranking (the removed Terminology synonym groups now
+    // live on TableSemantic/FieldSemantic.aliases); failures degrade to the
+    // raw question (we do NOT reject non-data queries like upstream).
     let expandedKeywords: string | null = null;
     if (cfg.keywordEnabled && !forcedTableIds) {
       const extracted = await this.extractKeywords(
@@ -1090,10 +1089,12 @@ export class ChatService {
         modelId,
       );
       if (extracted) {
-        expandedKeywords = await this.terminologyService.expandWithTerminology(
-          extracted,
-          this.currentOid(),
-        );
+        expandedKeywords = cfg.semanticEnabled
+          ? await this.semanticService.expandKeywordsByAliases(
+              extracted,
+              datasourceId,
+            )
+          : extracted;
         await this.prisma.chatRecord.update({
           where: { id: record.id },
           data: {
@@ -1686,7 +1687,7 @@ export class ChatService {
     // --- generate chart ------------------------------------------------
     yield { type: 'info', data: { msg: msgs.generateChart } };
     // Same task-start snapshot `cfg` as the SQL step — the chart context's
-    // terminology/data-training retrieval must not re-resolve mid-task.
+    // data-training retrieval must not re-resolve mid-task.
     const chartCtx = await this.aiQuestionService.buildForResult({
       question: content,
       datasourceId,
@@ -2739,7 +2740,7 @@ export class ChatService {
   }
 
   /** recallTables → tableIds (undefined when recall is empty so getMSchema
-   *  falls back to all checked tables). `opts.keywords` is the terminology-
+   *  falls back to all checked tables). `opts.keywords` is the semantic-alias-
    *  expanded keyword string for the fusion ranking; `opts.config` is the
    *  task-start snapshot (resolved here when not supplied). */
   private async recallNarrowedSchema(

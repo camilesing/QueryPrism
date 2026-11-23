@@ -29,10 +29,8 @@ import { jsonValueToString } from '../utils/json-value';
 /** Immutable snapshot — take once at the start of a chat task / background
  *  job; rules must not switch mid-task (ADR 0001). */
 export interface EmbeddingConfig {
-  /** Knowledge vectorization (terminology + data-training) generation/recall. */
+  /** Knowledge vectorization (data-training) generation/recall. */
   enabled: boolean;
-  terminologySimilarity: number;
-  terminologyTopCount: number;
   dataTrainingSimilarity: number;
   dataTrainingTopCount: number;
   /** Table + datasource vector generation / pre-filtering. */
@@ -40,7 +38,7 @@ export interface EmbeddingConfig {
   tableCount: number;
   /** Vector weight in table fusion; keyword weight is 1 - alpha. */
   tableAlpha: number;
-  /** Keyword extraction / terminology expansion / fusion (independent). */
+  /** Keyword extraction / semantic-alias expansion / fusion (independent). */
   keywordEnabled: boolean;
   datasourceCount: number;
   /** Clarify gate (MetaDataImprove M1): ask the user to narrow candidate
@@ -96,8 +94,6 @@ export interface EmbeddingConfig {
 /** camelCase field → persisted parameter key. */
 const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   enabled: 'embedding.enabled',
-  terminologySimilarity: 'embedding.terminology_similarity',
-  terminologyTopCount: 'embedding.terminology_top_count',
   dataTrainingSimilarity: 'embedding.data_training_similarity',
   dataTrainingTopCount: 'embedding.data_training_top_count',
   tableEnabled: 'embedding.table_enabled',
@@ -148,7 +144,6 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'cacheEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
-  'terminologyTopCount',
   'dataTrainingTopCount',
   'tableCount',
   'datasourceCount',
@@ -241,22 +236,11 @@ function envNumber(
 }
 
 /** Startup (env) layer — code defaults. Legacy MCB keys (EMBEDDING_THRESHOLD
- *  / EMBEDDING_TOP_K) feed the terminology pair when the current keys are
+ *  / EMBEDDING_TOP_K) feed the data-training pair when the current keys are
  *  absent. */
 function envDefaults(): EmbeddingConfig {
   return {
     enabled: envBool('EMBEDDING_ENABLED', true),
-    terminologySimilarity: envNumber(
-      'EMBEDDING_TERMINOLOGY_SIMILARITY',
-      'EMBEDDING_THRESHOLD',
-      0.4,
-    ),
-    terminologyTopCount: Math.max(
-      1,
-      Math.floor(
-        envNumber('EMBEDDING_TERMINOLOGY_TOP_COUNT', 'EMBEDDING_TOP_K', 5),
-      ),
-    ),
     dataTrainingSimilarity: envNumber(
       'EMBEDDING_DATA_TRAINING_SIMILARITY',
       'EMBEDDING_THRESHOLD',
@@ -316,7 +300,7 @@ function envDefaults(): EmbeddingConfig {
       1,
       Math.floor(envNumber('METRIC_MAX_DEFINITIONS', undefined, 5)),
     ),
-    // Stricter than the terminology default (0.4): metric names are short and
+    // Stricter than the data-training default (0.4): metric names are short and
     // domain-adjacent ("订单量" vs "支付金额"), so a loose threshold would
     // force-stuff unrelated metric tables into the prompt.
     metricSimilarityThreshold: envNumber(

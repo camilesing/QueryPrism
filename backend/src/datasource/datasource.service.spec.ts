@@ -649,8 +649,6 @@ describe('DatasourceService', () => {
     // explicit snapshot so the tests never read the real SystemVariable table
     const cfg = {
       enabled: true,
-      terminologySimilarity: 0.4,
-      terminologyTopCount: 5,
       dataTrainingSimilarity: 0.4,
       dataTrainingTopCount: 5,
       tableEnabled: true,
@@ -2087,8 +2085,6 @@ describe('DatasourceService', () => {
         service.recallTables(1, '问', {
           config: {
             enabled: true,
-            terminologySimilarity: 0.4,
-            terminologyTopCount: 5,
             dataTrainingSimilarity: 0.4,
             dataTrainingTopCount: 5,
             tableEnabled: true,

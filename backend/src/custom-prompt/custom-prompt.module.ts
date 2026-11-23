@@ -2,7 +2,7 @@
 // 11B (runtime matching). Custom-prompt admin CRUD + Excel import/export +
 // the chat-pipeline findCustomPrompts lookup. Imports DatabaseModule +
 // AuthModule for the JwtAuthGuard (decision §39: @SystemLog is SetMetadata
-// read globally, AuditModule not needed; mirrors TerminologyModule §105).
+// read globally, AuditModule not needed).
 // CustomPromptService IS exported so LlmModule can inject it into
 // AiQuestionService.buildSqlContext (§110 runtime custom_prompt injection).
 import { Module } from '@nestjs/common';

@@ -240,7 +240,7 @@ function round2(x: number): number {
  *    ∈ field name parts  0.3
  *  Final = best keyword score × keyword coverage (matched/total), rounded
  *  to 2 decimals. `keywordsCsv` is the comma-separated (already extracted +
- *  terminology-expanded) keyword string, or a raw question as fallback. */
+ *  semantic-alias-expanded) keyword string, or a raw question as fallback. */
 export function calcKeywordScore(
   keywordsCsv: string,
   tableName: string,

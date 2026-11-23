@@ -60,6 +60,38 @@ function cellText(value: ExcelJS.CellValue): string {
   return '';
 }
 
+/** Stored aliases JSON → a comma-separated Excel cell. */
+function aliasCsv(raw: unknown): string {
+  if (!Array.isArray(raw)) return '';
+  return raw
+    .filter((a): a is string => typeof a === 'string')
+    .map((a) => a.trim())
+    .filter(Boolean)
+    .join(',');
+}
+
+/** Excel text / JSON string[] → the normalized alias list.
+ *  `undefined` = column absent or blank → preserve the stored list (an old
+ *  export without the aliases column must not wipe curated aliases); an
+ *  explicit JSON `[]` clears it. Excel cannot clear aliases — use the admin
+ *  page for that. */
+function parseAliases(
+  raw: string | string[] | null | undefined,
+): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((a): a is string => typeof a === 'string')
+      .map((a) => a.trim())
+      .filter(Boolean);
+  }
+  const out = raw
+    .split(/[,，]/)
+    .map((a) => a.trim())
+    .filter(Boolean);
+  return out.length > 0 ? out : undefined;
+}
+
 /** One parsed row (Excel or JSON) of a semantic import. */
 export interface SemanticImportRow {
   entity_type?: string;
@@ -68,6 +100,9 @@ export interface SemanticImportRow {
   field_name?: string | null;
   role?: string | null;
   meaning?: string;
+  /** Recall-only business synonyms; Excel text (comma-separated) or JSON
+   *  string[] both accepted. */
+  aliases?: string | string[];
   unit?: string | null;
   /** "value|label,value|label" or "value,value" — parsed into enum_values. */
   enum_values?: string | null;
@@ -133,6 +168,7 @@ export class SemanticImportService {
       { header: 'meaning', key: 'meaning', width: 48 },
       { header: 'enabled', key: 'enabled', width: 10 },
       { header: 'scope', key: 'scope', width: 12 },
+      { header: 'aliases', key: 'aliases', width: 36 },
     ];
     for (const t of tables) {
       ts.addRow({
@@ -141,6 +177,7 @@ export class SemanticImportService {
         meaning: t.meaning,
         enabled: t.enabled ? 'true' : 'false',
         scope: t.scope,
+        aliases: aliasCsv(t.aliases),
       });
     }
     const fs = wb.addWorksheet('field_semantics');
@@ -154,6 +191,7 @@ export class SemanticImportService {
       { header: 'enum_values', key: 'enum_values', width: 36 },
       { header: 'enabled', key: 'enabled', width: 10 },
       { header: 'scope', key: 'scope', width: 12 },
+      { header: 'aliases', key: 'aliases', width: 36 },
     ];
     for (const f of fields) {
       const enums = Array.isArray(f.enumValues)
@@ -176,6 +214,7 @@ export class SemanticImportService {
         enum_values: enums,
         enabled: f.enabled ? 'true' : 'false',
         scope: f.scope,
+        aliases: aliasCsv(f.aliases),
       });
     }
     const buf = await wb.xlsx.writeBuffer();
@@ -210,6 +249,7 @@ export class SemanticImportService {
             meaning: cellText(row.getCell(3).value),
             enabled: cellText(row.getCell(4).value),
             scope: cellText(row.getCell(5).value),
+            aliases: cellText(row.getCell(6).value),
           },
           label: `table#row${rowNumber}`,
         });
@@ -231,6 +271,7 @@ export class SemanticImportService {
             enum_values: cellText(row.getCell(7).value),
             enabled: cellText(row.getCell(8).value),
             scope: cellText(row.getCell(9).value),
+            aliases: cellText(row.getCell(10).value),
           },
           label: `field#row${rowNumber}`,
         });
@@ -307,6 +348,8 @@ export class SemanticImportService {
       meaning: raw.meaning.trim(),
       enabled: parseImportEnabled(raw.enabled),
     };
+    const aliases = parseAliases(raw.aliases);
+    if (aliases !== undefined) info.aliases = aliases;
     if (entityType === 'field') {
       if (!raw.field_name?.trim()) {
         throw new BadRequestException(tr('semantic.missing_fields'));

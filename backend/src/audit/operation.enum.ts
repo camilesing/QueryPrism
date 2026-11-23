@@ -6,7 +6,6 @@ export enum OperationModule {
   AI_MODEL = 'ai_model',
   DATASOURCE = 'datasource',
   CHAT = 'chat',
-  TERMINOLOGY = 'terminology',
   DATA_TRAINING = 'data_training',
   DASHBOARD = 'dashboard',
   ASSISTANT = 'assistant',

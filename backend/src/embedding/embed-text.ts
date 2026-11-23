@@ -1,5 +1,5 @@
 // Single vector-input composition shared by the synchronous write paths
-// (terminology / data-training upserts, embedDatasource / embedTable) and the
+// (data-training upserts, embedDatasource / embedTable) and the
 // null-embedding backfill — the embedded text can never drift between the
 // path that writes on edit and the path that fills later.
 

@@ -160,12 +160,6 @@ function makeService() {
     extractKeywords: jest.fn(),
   };
 
-  // 3fd6fa86: identity expansion by default — per-test overrides simulate
-  // synonym groups.
-  const terminologyService = {
-    expandWithTerminology: jest.fn((k: string) => Promise.resolve(k)),
-  };
-
   // RowPermissionService — isNormalUser defaults false so the happy-path
   // admin (test user id=1) bypasses the filter step (getRowFilters never
   // called). Per-test overrides flip isNormalUser→true + seed getRowFilters.
@@ -200,11 +194,13 @@ function makeService() {
   };
 
   // MetaDataImprove M2: no effective semantics by default (empty maps →
-  // rule 2 never narrows; individual tests override per-case).
+  // rule 2 never narrows; individual tests override per-case). Alias
+  // expansion is identity by default — per-test overrides simulate aliases.
   const semanticService = {
     effectiveAnnotations: jest
       .fn()
       .mockResolvedValue({ tableMeanings: {}, fieldNotes: {} }),
+    expandKeywordsByAliases: jest.fn((k: string) => Promise.resolve(k)),
   };
 
   // MetaDataImprove M4: no metric/naming matches by default (empty text →
@@ -225,7 +221,6 @@ function makeService() {
     generatorService as unknown as GeneratorService,
     sqlSafety as unknown as SqlSafetyService,
     rowPermissionService as unknown as RowPermissionService,
-    terminologyService as never,
     semanticService as never,
     metricService as never,
     standardService as never,
@@ -240,7 +235,6 @@ function makeService() {
     datasourceService,
     aiQuestionService,
     generatorService,
-    terminologyService,
     rowPermissionService,
     sqlSafety,
     audit,
@@ -410,10 +404,10 @@ const types = (events: ChatSseEvent[]) => events.map((e) => e.type).join(',');
 describe('ChatService pipeline (runPipeline / regenerate)', () => {
   beforeEach(() => setI18n(createTestI18n()));
   // --- 3fd6fa86 keyword-extraction pre-step wiring -------------------------
-  it('extracts keywords → expands via terminology → persists → recalls with them', async () => {
+  it('extracts keywords → expands via semantic aliases → persists → recalls with them', async () => {
     const m = makeService();
     happyMocks(m);
-    m.terminologyService.expandWithTerminology.mockResolvedValue(
+    m.semanticService.expandKeywordsByAliases.mockResolvedValue(
       '用户,订单,会员',
     );
 
@@ -432,8 +426,8 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
         expandedKeywords: '用户,订单,会员',
       },
     });
-    // expansion ran with the workspace oid
-    expect(m.terminologyService.expandWithTerminology).toHaveBeenCalledWith(
+    // expansion ran for the question's datasource
+    expect(m.semanticService.expandKeywordsByAliases).toHaveBeenCalledWith(
       '用户,订单',
       1,
     );
@@ -458,7 +452,7 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
 
     await run(1, () => collect(m.service.runPipeline(1, '查询所有用户')));
 
-    expect(m.terminologyService.expandWithTerminology).not.toHaveBeenCalled();
+    expect(m.semanticService.expandKeywordsByAliases).not.toHaveBeenCalled();
     expect(m.datasourceService.recallTables).toHaveBeenCalledWith(
       1,
       '查询所有用户',
@@ -502,6 +496,25 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       '查询所有用户',
       expect.objectContaining({ keywords: null }),
     );
+  });
+
+  it('semantic.enabled=false persists the raw keywords without alias expansion', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'semantic.enabled', value: 'false' },
+    ]);
+
+    await run(1, () => collect(m.service.runPipeline(1, '查询所有用户')));
+
+    expect(m.semanticService.expandKeywordsByAliases).not.toHaveBeenCalled();
+    expect(m.prisma.chatRecord.update).toHaveBeenCalledWith({
+      where: { id: 100 },
+      data: {
+        extractedKeywords: '用户,订单',
+        expandedKeywords: '用户,订单',
+      },
+    });
   });
 
   it('runs the full closed-loop pipeline (chat with datasource)', async () => {
@@ -5480,7 +5493,7 @@ describe('ChatService helpers (ALS guards, history rounds, chat cap, keyword sen
 
     // The sentinel is not a rejection: recall runs with the raw question and
     // nothing is persisted.
-    expect(m.terminologyService.expandWithTerminology).not.toHaveBeenCalled();
+    expect(m.semanticService.expandKeywordsByAliases).not.toHaveBeenCalled();
     expect(m.datasourceService.recallTables).toHaveBeenCalledWith(
       1,
       '你好呀',

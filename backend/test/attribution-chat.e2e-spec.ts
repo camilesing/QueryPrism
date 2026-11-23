@@ -1,11 +1,11 @@
 // Attribution-domain chat e2e — the full NL2SQL pipeline over the realistic
 // fixture (test/fixtures/attribution) with ONLY the LLM faked. Every other
-// collaborator is REAL: AiQuestionService (terminology / data-training /
-// custom-prompt recall), DatasourceService (M-Schema + SQLite execSql),
+// collaborator is REAL: AiQuestionService (data-training / custom-prompt
+// recall), DatasourceService (M-Schema + SQLite execSql),
 // MetricService / DataStandardService / SemanticService matching. The fake
 // GeneratorService.generateSql captures the assembled AiModelQuestion and
 // returns a canned SQL, so each test asserts BOTH the prompt injection of all
-// five governance features AND the SQL execution against the live SQLite file
+// four governance features AND the SQL execution against the live SQLite file
 // (expected values recomputed from the CSVs — never hard-coded).
 //
 // clarify.enabled is switched off via a SystemVariable parameter row for this
@@ -42,7 +42,6 @@ interface ApiEnvelope<T = unknown> {
 interface CapturedContext {
   question: string;
   schema: string;
-  terminologies: string;
   customPrompt?: string;
   metrics?: string;
   namingRules?: string;
@@ -194,9 +193,6 @@ describe('Attribution chat pipeline (e2e)', () => {
     await prisma.dataStandard
       .deleteMany({ where: { code: 'gmv' } })
       .catch(() => undefined);
-    await prisma.terminology
-      .deleteMany({ where: { oid: 1, word: { startsWith: '首触归因' } } })
-      .catch(() => undefined);
     await prisma.customPrompt
       .deleteMany({ where: { oid: 1, name: { startsWith: 'attr-chat-' } } })
       .catch(() => undefined);
@@ -226,7 +222,7 @@ describe('Attribution chat pipeline (e2e)', () => {
       },
     });
 
-    // The five governance features, seeded for the attribution datasource.
+    // The four governance features, seeded for the attribution datasource.
     await prisma.tableSemantic.deleteMany({ where: { datasourceId: ds.dsId } });
     await prisma.fieldSemantic.deleteMany({ where: { datasourceId: ds.dsId } });
     await prisma.tableSemantic.create({
@@ -248,17 +244,6 @@ describe('Attribution chat pipeline (e2e)', () => {
         fieldName: 'utm_source',
         role: 'dimension',
         meaning: 'UTM流量来源(渠道标识)',
-        enabled: true,
-      },
-    });
-    await prisma.terminology.deleteMany({
-      where: { oid: 1, word: { startsWith: '首触归因' } },
-    });
-    await prisma.terminology.create({
-      data: {
-        oid: 1,
-        word: '首触归因GMV口径',
-        description: '订单归因到访客第一次触点(首触)的GMV统计口径',
         enabled: true,
       },
     });
@@ -361,7 +346,7 @@ describe('Attribution chat pipeline (e2e)', () => {
       .catch(() => undefined);
   }
 
-  it('injects all five governance features and executes the SQL on SQLite', async () => {
+  it('injects all four governance features and executes the SQL on SQLite', async () => {
     const { chatId, rid, text } = await ask('首触归因GMV');
     try {
       expect(text).toContain('"type":"sql"');
@@ -371,11 +356,6 @@ describe('Attribution chat pipeline (e2e)', () => {
       expect(captured).toBeDefined();
       expect(captured!.schema).toContain('店铺维度流量来源UTM日汇总');
       expect(captured!.schema).toContain('UTM流量来源(渠道标识)');
-
-      // 术语 — the term rides along on the SQL context. (The question is
-      // deliberately short: without an embedding provider recall is
-      // ILIKE-only and matches word⊇query — see terminology.service recall.)
-      expect(captured!.terminologies).toContain('word="首触归因GMV口径"');
 
       // 指标 — caliber block + the SUM expression of the matched atomic.
       expect(captured!.metrics).toContain('<metric_definitions>');
@@ -427,7 +407,7 @@ describe('Attribution chat pipeline (e2e)', () => {
       expect(text).toContain('execute-success');
       expect(captured!.metrics).toBe('');
       // The other injections are unaffected.
-      expect(captured!.terminologies).toContain('首触归因');
+      expect(captured!.schema).toContain('店铺维度流量来源UTM日汇总');
       expect(captured!.customPrompt).toContain('金额单位一律为分');
     } finally {
       await cleanupChat(chatId);

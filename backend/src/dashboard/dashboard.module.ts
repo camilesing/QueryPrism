@@ -1,6 +1,6 @@
 // DashboardModule — Prisma + Auth for JwtAuthGuard. @SystemLog is just
 // SetMetadata read by the global SystemLogInterceptor, so AuditModule isn't
-// needed (mirrors TerminologyModule). Service exported for reuse by the MCP
+// needed. Service exported for reuse by the MCP
 // surface in Phase 7.
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';

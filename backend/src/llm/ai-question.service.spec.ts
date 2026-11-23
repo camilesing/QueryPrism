@@ -1,11 +1,9 @@
 // Spec for the AiQuestionService context assembly. The downstream services
-// (datasource / terminology / data-training) are mocked; recall of
-// terminology / data-training reads oid from RequestContext, so each call is
-// wrapped in requestContextStorage.run.
+// (datasource / data-training) are mocked; data-training recall reads oid
+// from RequestContext, so each call is wrapped in requestContextStorage.run.
 import { requestContextStorage } from '../common/context/request-context';
 import { AiQuestionService } from './ai-question.service';
 import type { DatasourceService } from '../datasource/datasource.service';
-import type { TerminologyService } from '../terminology/terminology.service';
 import type { DataTrainingService } from '../data-training/data-training.service';
 import type { CustomPromptService } from '../custom-prompt/custom-prompt.service';
 import type { ConfigService } from '@nestjs/config';
@@ -44,10 +42,6 @@ function makeService(opts?: {
     })),
   } as unknown as DatasourceServiceMock;
 
-  const terminologyService = {
-    getTerminologyTemplate: jest.fn().mockResolvedValue('<terminologies/>'),
-  } as unknown as jest.Mocked<TerminologyService>;
-
   const dataTrainingService = {
     getDataTrainingTemplate: jest.fn().mockResolvedValue('<data_training/>'),
   } as unknown as jest.Mocked<DataTrainingService>;
@@ -75,7 +69,6 @@ function makeService(opts?: {
 
   const svc = new AiQuestionService(
     datasourceService,
-    terminologyService,
     dataTrainingService,
     customPromptService,
     config,
@@ -84,7 +77,6 @@ function makeService(opts?: {
   return {
     svc,
     datasourceService,
-    terminologyService,
     dataTrainingService,
     customPromptService,
     prisma,
@@ -99,7 +91,7 @@ async function run<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 describe('AiQuestionService', () => {
-  it('assembles schema, sample data, terminology and training into the context', async () => {
+  it('assembles schema, sample data and training into the context', async () => {
     const { svc, datasourceService } = makeService();
     const ctx = await run(() =>
       svc.buildSqlContext({
@@ -109,7 +101,6 @@ describe('AiQuestionService', () => {
       }),
     );
     expect(ctx.schema).toBe('MS-SCHEMA');
-    expect(ctx.terminologies).toBe('<terminologies/>');
     expect(ctx.dataTraining).toBe('<data_training/>');
     // both checked tables sampled; the hidden one skipped
     expect(ctx.sampleData).toContain('Table: users');
@@ -137,7 +128,7 @@ describe('AiQuestionService', () => {
     expect(datasourceService.previewTable).not.toHaveBeenCalled();
     // the rest of the context is unaffected
     expect(ctx.schema).toBe('MS-SCHEMA');
-    expect(ctx.terminologies).toBe('<terminologies/>');
+    expect(ctx.dataTraining).toBe('<data_training/>');
   });
 
   it('falls back to the env default when no parameter row is saved', async () => {

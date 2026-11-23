@@ -14,6 +14,7 @@ export interface SemanticRow {
   field_name?: string
   role?: string
   meaning: string
+  aliases: string[] | null
   unit?: string | null
   enum_values?: Array<{ value: string; label?: string }> | null
   enabled: boolean
@@ -42,6 +43,7 @@ export interface SemanticChangeRequestRow {
     table_name?: string
     field_name?: string
     meaning?: string
+    aliases?: string[]
     [key: string]: unknown
   }
   status: 'pending' | 'approved' | 'rejected'
@@ -56,7 +58,12 @@ export interface SemanticChangeRequestRow {
 export interface SemanticVersionRow {
   id: number
   version: number
-  snapshot: { meaning?: string; enabled?: boolean; source?: string } & Record<string, unknown>
+  snapshot: {
+    meaning?: string
+    aliases?: string[] | null
+    enabled?: boolean
+    source?: string
+  } & Record<string, unknown>
   changed_by: number | null
   note: string | null
   create_time: string

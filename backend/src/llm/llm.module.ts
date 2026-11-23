@@ -7,7 +7,6 @@
 // never imports AiModelModule).
 import { Module } from '@nestjs/common';
 import { DatasourceModule } from '../datasource/datasource.module';
-import { TerminologyModule } from '../terminology/terminology.module';
 import { DataTrainingModule } from '../data-training/data-training.module';
 import { CustomPromptModule } from '../custom-prompt/custom-prompt.module';
 import { LlmService } from './llm.service';
@@ -18,7 +17,6 @@ import { GeneratorService } from './generator.service';
 @Module({
   imports: [
     DatasourceModule,
-    TerminologyModule,
     DataTrainingModule,
     // §110: AiQuestionService.buildSqlContext injects the runtime-matched
     // custom-prompt body into the NL2SQL system prompt.

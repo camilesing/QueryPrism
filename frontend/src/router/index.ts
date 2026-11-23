@@ -15,7 +15,6 @@ import assistant from '@/views/embedded/index.vue'
 import EmbeddedPage from '@/views/embedded/page.vue'
 import EmbeddedCommon from '@/views/embedded/common.vue'
 import Member from '@/views/system/member/index.vue'
-import Professional from '@/views/system/professional/index.vue'
 import Training from '@/views/system/training/index.vue'
 import Semantic from '@/views/system/semantic/index.vue'
 import Metric from '@/views/system/metric/index.vue'
@@ -102,7 +101,7 @@ export const routes = [
     path: '/set',
     name: 'set',
     component: LayoutDsl,
-    redirect: '/set/professional',
+    redirect: '/set/semantic',
     meta: { title: 'workspace.set', iconActive: 'set', iconDeActive: 'noSet' },
     children: [
       // 旧地址兼容：成员/权限已收进系统管理「权限管控」
@@ -117,12 +116,6 @@ export const routes = [
         name: 'permission',
         redirect: '/system/permission-control/permission',
         hidden: true,
-      },
-      {
-        path: '/set/professional',
-        name: 'professional',
-        component: Professional,
-        meta: { title: 'professional.professional_terminology' },
       },
       {
         path: '/set/training',

@@ -221,7 +221,6 @@ export class GeneratorService {
       schema: ctx.schema,
       sql: ctx.sql,
       sql_result: ctx.sqlResult,
-      terminologies: ctx.terminologies,
       data_training: ctx.dataTraining,
       sample_data: ctx.sampleData,
       datasource_list: ctx.datasourceList

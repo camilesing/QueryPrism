@@ -13,6 +13,7 @@ import {
 } from '@/api/semantic'
 import { datasourceApi } from '@/api/datasource'
 import { request } from '@/utils/request'
+import { splitAliases } from '@/utils/utils'
 
 /** ISO string → "YYYY-MM-DD HH:mm:ss" (create_time is an ISO string on the
  *  semantic wire; utils/date.formatTimestamp expects an epoch number). */
@@ -100,6 +101,7 @@ const defaultForm = () => ({
   field_name: '',
   role: 'dimension',
   meaning: '',
+  aliasesText: '',
   unit: '',
   enumText: '',
   note: '',
@@ -121,6 +123,7 @@ function openEdit(row: SemanticRow) {
     field_name: row.field_name ?? '',
     role: row.role ?? 'dimension',
     meaning: row.meaning,
+    aliasesText: (row.aliases ?? []).join(', '),
     unit: row.unit ?? '',
     enumText: (row.enum_values ?? [])
       .map((e) => (e.label ? `${e.value}|${e.label}` : e.value))
@@ -145,6 +148,9 @@ function submitForm() {
     datasource_id: form.datasource_id,
     table_name: form.table_name.trim(),
     meaning: form.meaning.trim(),
+    // Always send aliases (including []) so clearing the field clears the
+    // stored list instead of leaving stale recall synonyms behind.
+    aliases: splitAliases(form.aliasesText),
     note: form.note.trim() || undefined,
   }
   if (entityType.value === 'field') {
@@ -382,7 +388,9 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
   const p = row.payload ?? {}
   const key = [p.table_name, p.field_name].filter(Boolean).join('.')
   const head = `${row.action === 'remove' ? t('semantic.action_remove') : t('semantic.action_upsert')} ${key}`
-  return p.meaning ? `${head}：${p.meaning}` : head
+  const aliases = Array.isArray(p.aliases) ? (p.aliases as string[]).join(', ') : ''
+  const aliasText = aliases ? ` [${t('semantic.aliases')}: ${aliases}]` : ''
+  return p.meaning ? `${head}：${p.meaning}${aliasText}` : `${head}${aliasText}`
 }
 </script>
 
@@ -472,6 +480,9 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
               {{ row.meaning }}
               <span v-if="row.unit" class="unit-tag">{{ row.unit }}</span>
             </template>
+          </el-table-column>
+          <el-table-column :label="t('semantic.aliases')" width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ (row.aliases ?? []).join(', ') }}</template>
           </el-table-column>
           <el-table-column :label="t('semantic.scope')" width="110">
             <template #default="{ row }">
@@ -651,6 +662,9 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
         <el-form-item :label="t('semantic.meaning')" required>
           <el-input v-model="form.meaning" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item :label="t('semantic.aliases')">
+          <el-input v-model="form.aliasesText" :placeholder="t('semantic.aliases_hint')" />
+        </el-form-item>
         <el-form-item :label="t('semantic.note')">
           <el-input v-model="form.note" :placeholder="t('semantic.note_placeholder')" />
         </el-form-item>
@@ -670,6 +684,9 @@ function payloadSummary(row: SemanticChangeRequestRow): string {
           <div class="version-item">
             <b>v{{ v.version }}</b>
             <span class="version-meaning">{{ v.snapshot?.meaning }}</span>
+            <span v-if="v.snapshot?.aliases?.length" class="version-note">
+              {{ t('semantic.aliases') }}: {{ v.snapshot.aliases.join(', ') }}
+            </span>
             <span v-if="v.note" class="version-note">{{ v.note }}</span>
           </div>
         </el-timeline-item>

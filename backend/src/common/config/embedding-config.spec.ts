@@ -9,8 +9,6 @@ import {
 
 const ENV_KEYS = [
   'EMBEDDING_ENABLED',
-  'EMBEDDING_TERMINOLOGY_SIMILARITY',
-  'EMBEDDING_TERMINOLOGY_TOP_COUNT',
   'EMBEDDING_DATA_TRAINING_SIMILARITY',
   'EMBEDDING_DATA_TRAINING_TOP_COUNT',
   'TABLE_EMBEDDING_ENABLED',
@@ -95,8 +93,6 @@ describe('resolveEmbeddingConfig', () => {
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
     expect(cfg).toEqual({
       enabled: true,
-      terminologySimilarity: 0.4,
-      terminologyTopCount: 5,
       dataTrainingSimilarity: 0.4,
       dataTrainingTopCount: 5,
       tableEnabled: true,
@@ -133,19 +129,16 @@ describe('resolveEmbeddingConfig', () => {
 
   it('env startup values override code defaults (upstream-named keys)', async () => {
     process.env.TABLE_EMBEDDING_COUNT = '15';
-    process.env.EMBEDDING_TERMINOLOGY_SIMILARITY = '0.6';
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
     expect(cfg.tableCount).toBe(15);
-    expect(cfg.terminologySimilarity).toBe(0.6);
   });
 
-  it('legacy MCB keys feed the terminology pair when upstream keys absent', async () => {
+  it('legacy MCB keys feed the data-training pair when upstream keys absent', async () => {
     process.env.EMBEDDING_THRESHOLD = '0.55';
     process.env.EMBEDDING_TOP_K = '7';
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
-    expect(cfg.terminologySimilarity).toBe(0.55);
-    expect(cfg.terminologyTopCount).toBe(7);
     expect(cfg.dataTrainingSimilarity).toBe(0.55);
+    expect(cfg.dataTrainingTopCount).toBe(7);
   });
 
   it('an invalid saved row throws instead of silently degrading', async () => {
@@ -177,11 +170,11 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the twenty-six persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(26);
+  it('exposes exactly the twenty-four persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(24);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
-    ).toHaveLength(10);
+    ).toHaveLength(8);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('clarify.')),
     ).toHaveLength(4);

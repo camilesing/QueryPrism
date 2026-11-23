@@ -18,9 +18,6 @@ generate_sql: |
   question needs one of them, name it exactly as listed here.
   {candidate_tables}
 
-  ## Terminologies
-  {terminologies}
-
   ## Metric Definitions
   When a metric below matches the question, compute it EXACTLY as defined
   (aggregation, filters, time range) instead of guessing fields.

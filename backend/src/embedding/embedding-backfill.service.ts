@@ -1,7 +1,7 @@
 // EmbeddingBackfillService — fills embeddings for rows that were written
 // while no embedding key was configured (their `embedding` Json column is
-// SQL NULL). Covers terminology / data-training (knowledge), datasource /
-// table (metadata) AND metric definitions (metric recall):
+// SQL NULL). Covers data-training (knowledge), datasource / table (metadata)
+// AND metric definitions (metric recall):
 //
 //   - startup run (non-blocking) + manual POST /embedding/backfill
 //     + re-enable trigger from ParameterService (enabled / table_enabled /
@@ -34,7 +34,6 @@ const BATCH_SIZE = 32;
 const ATTEMPTS = 3;
 
 export interface BackfillCounts {
-  terminology: number;
   dataTraining: number;
   datasource: number;
   table: number;
@@ -94,7 +93,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
   async run(): Promise<BackfillCounts> {
     if (!this.embedding.available)
       return {
-        terminology: 0,
         dataTraining: 0,
         datasource: 0,
         table: 0,
@@ -102,7 +100,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
       };
     const cfg = await resolveEmbeddingConfig(this.prisma);
     const counts: BackfillCounts = {
-      terminology: 0,
       dataTraining: 0,
       datasource: 0,
       table: 0,
@@ -111,7 +108,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
     if (!cfg.enabled) {
       this.logger.log('embedding.enabled=false — knowledge backfill skipped');
     } else {
-      counts.terminology = await this.fill('terminology');
       counts.dataTraining = await this.fill('data_training');
     }
     if (!cfg.tableEnabled) {
@@ -130,19 +126,18 @@ export class EmbeddingBackfillService implements OnModuleInit {
       counts.metric = await this.fill('metric_def');
     }
     this.logger.log(
-      `backfill complete: ${counts.terminology} terminology, ${counts.dataTraining} data-training, ` +
+      `backfill complete: ${counts.dataTraining} data-training, ` +
         `${counts.datasource} datasource, ${counts.table} table, ${counts.metric} metric rows processed`,
     );
     return counts;
   }
 
-  /** Knowledge half only (terminology + data-training). ParameterService
-   *  calls this when embedding.enabled flips false→true. */
+  /** Knowledge half only (data-training). ParameterService calls this when
+   *  embedding.enabled flips false→true. */
   async runKnowledge(): Promise<void> {
     if (!this.embedding.available) return;
     const cfg = await resolveEmbeddingConfig(this.prisma);
     if (!cfg.enabled) return;
-    await this.fill('terminology');
     await this.fill('data_training');
   }
 
@@ -239,30 +234,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
   private adapterOf(collection: VectorCollection): CollectionAdapter {
     const dbNull = { equals: Prisma.DbNull };
     switch (collection) {
-      case 'terminology':
-        return {
-          load: async (ids) =>
-            (
-              await this.prisma.terminology.findMany({
-                where: ids
-                  ? { id: { in: ids }, embedding: dbNull }
-                  : { embedding: dbNull },
-                select: { id: true, word: true, description: true },
-                orderBy: { id: 'asc' },
-              })
-            ).map((r) => ({
-              id: r.id,
-              text: embedRowText(r.word, r.description),
-              match: { word: r.word, description: r.description },
-            })),
-          write: async (row, vector, client) =>
-            (
-              await (client ?? this.prisma).terminology.updateMany({
-                where: { id: row.id, embedding: dbNull, ...row.match },
-                data: { embedding: vector },
-              })
-            ).count,
-        };
       case 'data_training':
         return {
           load: async (ids) =>

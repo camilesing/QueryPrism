@@ -10,7 +10,7 @@ datasource db {
 // 数据源 (workspace-scoped: oid = owning workspace; children inherit scope)
 model Datasource {
   id                Int      @id @default(autoincrement())
-  oid               Int      @default(1) // 工作空间 id (无 FK, mirror Terminology.oid)
+  oid               Int      @default(1) // 工作空间 id (无 FK)
   name              String
   description       String?
   type              String // mysql, postgresql, sqlite
@@ -112,7 +112,7 @@ model DsRecommendedProblem {
 // 对话会话 (Phase 5: workspace-scoped, datasource optional for select_datasource flow)
 model Chat {
   id           Int        @id @default(autoincrement())
-  oid          Int // 工作空间 id (无 FK, mirror Terminology.oid)
+  oid          Int // 工作空间 id (无 FK)
   datasourceId Int? // null = select_datasource picks one on first question
   // 2026-09 review P1-2: SetNull, NOT Cascade — datasourceId is a nullable
   // "pick one later" field, so deleting a datasource must keep the chat
@@ -144,7 +144,7 @@ model ChatRecord {
   id                 Int      @id @default(autoincrement())
   chatId             Int
   chat               Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  oid                Int // 工作空间 id (scoping + audit; mirror Terminology.oid, 无 FK)
+  oid                Int // 工作空间 id (scoping + audit; 无 FK)
   createBy           Int? // 创建者 uid; null = legacy
   question           String // 用户原始问题
   sqlAnswer          String? // LLM 对 SQL 的自然语言说明 (streamed content)
@@ -363,31 +363,6 @@ model AiModelWorkspaceMapping {
 
 // ============================== Phase 3: RAG 知识库 ==============================
 
-// 术语表 (术语/同义词, 喂给 generate_sql prompt 的术语解释 + ILIKE/向量召回)
-// embedding Json 存向量数组 (source of truth, 可重建 vec0 索引); 实际 ANN 检索走 VectorService 的 vec0 虚拟表。
-model Terminology {
-  id                 Int      @id @default(autoincrement())
-  oid                Int // 工作空间 id
-  pid                Int? // 父术语 id (同义词分组)
-  word               String
-  description        String?
-  embedding          Json? // 向量数组 (number[]); 与 VectorService vec0 表保持同步
-  specificDs         Boolean  @default(false) // 是否限定特定数据源
-  datasourceIds      Json? // specificDs=true 时作用的数据源 id 数组
-  enabled            Boolean  @default(true)
-  advancedApplication String? // 高级应用说明
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-
-  @@index([oid])
-  @@index([word])
-  // 2026-09 review P2-4: natural-key uniqueness — re-importing the same Excel
-  // row (or re-saving the same word) used to create duplicate rows; imports
-  // now upsert by (oid, word). Children (pid-set synonyms) are intentionally
-  // outside the key: the parent word is the dedupe identity.
-  @@unique([oid, word])
-}
-
 // SQL 样例训练数据 (NL→SQL few-shot, 喂给 generate_sql prompt + ILIKE/向量召回)
 model DataTraining {
   id                  Int      @id @default(autoincrement())
@@ -397,7 +372,7 @@ model DataTraining {
   description         String?
   embedding           Json? // 向量数组 (number[]); 与 VectorService vec0 表保持同步
   enabled             Boolean  @default(true)
-  advancedApplication String? // 关联高级应用 (Assistant.id) 的字符串化 id; String? + coerce on read (同 terminology, no migration data)
+  advancedApplication String? // 关联高级应用 (Assistant.id) 的字符串化 id; String? + coerce on read (同 CustomPrompt, no migration data)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -417,7 +392,7 @@ model DataTraining {
 model CoreDashboard {
   id               Int      @id @default(autoincrement())
   pid              Int? // 父文件夹 id (null=根); 无 FK, service 校验
-  oid              Int // 工作空间 id (scoping; mirror Terminology.oid, 无 FK)
+  oid              Int // 工作空间 id (scoping; 无 FK)
   name             String
   level            Int      @default(0) // 树深度
   nodeType         String   @default("panel") // folder | panel
@@ -474,13 +449,13 @@ model Assistant {
 // Implemented from frontend contract (api/prompt.ts + views/system/prompt/index.vue).
 // type: GENERATE_SQL | ANALYSIS | PREDICT_DATA (path segment + column filter, 单表三分类型).
 // specificDs: true=限定 datasourceIds 数组, false=全部数据源. advancedApplication: stringified
-// Assistant.id (String? + coerce on read, same as Terminology/DataTraining §105/§106 pattern).
+// Assistant.id (String? + coerce on read, same as DataTraining §105/§106 pattern).
 // prompt 是 plaintext (无 AES).
 // 无 embedding (chat pipeline 用 find_custom_prompts 直接查询, 非 vec0 index — unlike
-// terminology/data-training). createTime 读取时序列化为 snake create_time.
+// data-training). createTime 读取时序列化为 snake create_time.
 model CustomPrompt {
   id                  Int      @id @default(autoincrement())
-  oid                 Int // 工作空间 id (scoping; mirror Terminology.oid, 无 FK)
+  oid                 Int // 工作空间 id (scoping; 无 FK)
   type                String // GENERATE_SQL | ANALYSIS | PREDICT_DATA
   name                String? // 提示词名称
   prompt              String? // 提示词内容 (plaintext, no AES)
@@ -588,6 +563,7 @@ model TableSemantic {
   datasourceId Int // 自然键数据源 id（无 FK）
   tableName    String
   meaning      String // 表的业务含义（有效语义的核心字段）
+  aliases      Json? // string[] 业务别名（仅参与表格召回关键词扩展，不注入提示词）
   enabled      Boolean  @default(true)
   version      Int      @default(1) // 当前版本号；每次落库 +1 并写历史快照
   createBy     Int? // 创建者 uid
@@ -625,6 +601,7 @@ model FieldSemantic {
   fieldName    String
   role         String // metric 指标 | dimension 维度 | time 时间 | other 其他
   meaning      String
+  aliases      Json? // string[] 业务别名（命中后把所属表名补进召回关键词）
   unit         String? // 度量单位（数据标准）
   enumValues   Json? // 维度枚举缓存 [{value, label?}]（M3 一键采集回填）
   enabled      Boolean  @default(true)
@@ -740,8 +717,8 @@ model MetricDefVersion {
 //   naming term=业务词/表/字段词根，name=标准译名，category=business_noun|table_root|field_root
 // 运行时：命名词典词条被问题文本命中时注入 generate_sql 提示词（naming.enabled
 // 可关）；单位字典 advisory —— 供管理与自动补全，不校验 FieldSemantic.unit 等
-// 既有自由文本。与 Terminology 的边界：Terminology 是工作空间级 RAG 召回词库
-// （无版本/审批），命名词典是带治理的标准译名库，两者并存、职责不同。
+// 既有自由文本。表/字段召回的同义词扩展由 TableSemantic/FieldSemantic.aliases
+// 承担；命名词典只做标准译名注入，两者职责不同。
 model DataStandard {
   id          Int      @id @default(autoincrement())
   kind        String // unit | naming
@@ -789,7 +766,7 @@ model DataStandardVersion {
 // 调度器按单实例设计：多实例部署会重复触发（见 metadata-sync-scheduler.service.ts）。
 model MetadataSyncSource {
   id         Int      @id @default(autoincrement())
-  oid        Int // 工作空间 id（无 FK，mirror Terminology.oid）
+  oid        Int // 工作空间 id（无 FK）
   name       String
   kind       String // HTTP_API | MCP
   target     String // semantic | metric | standard
@@ -840,7 +817,7 @@ model MetadataSyncRun {
 // 由首跑捕获或管理员 promote 某次 run 采纳。
 model RegressionCase {
   id           Int      @id @default(autoincrement())
-  oid          Int // 工作空间 id（无 FK，mirror Terminology.oid）
+  oid          Int // 工作空间 id（无 FK）
   datasourceId Int // 被测数据源
   name         String // 如 "支付金额-母婴类-近7天"
   question     String // 标准问题（自然语言，走完整 NL2SQL 流水线）
