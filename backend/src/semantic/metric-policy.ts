@@ -122,7 +122,11 @@ export interface CompositeDef {
 }
 
 export type MetricDefinition =
-  AtomicDef | ModifierDef | PeriodDef | DerivedDef | CompositeDef;
+  | AtomicDef
+  | ModifierDef
+  | PeriodDef
+  | DerivedDef
+  | CompositeDef;
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && !!v.trim();
 const isPosInt = (v: unknown): v is number =>
@@ -664,7 +668,9 @@ export function matchMetricDefinitions(
   const isDsBound = (row: MetricDefLike): boolean => {
     if (row.kind === 'atomic' || row.kind === 'modifier') {
       const def = parseMetricDefinition(row.kind, row.definition) as
-        AtomicDef | ModifierDef | null;
+        | AtomicDef
+        | ModifierDef
+        | null;
       return def?.datasourceId === datasourceId;
     }
     return true; // period/derived/composite bind through their references
