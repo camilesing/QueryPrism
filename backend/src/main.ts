@@ -23,9 +23,14 @@ async function bootstrap() {
   // 无 Origin 头 (同源/非浏览器) 一律放行; 查询失败 fail-closed.
   const assistantService = app.get(AssistantService);
   const frontendUrl = config.get<string>('frontendUrl');
-  const staticOrigins = [frontendUrl, 'http://localhost:5173'].filter(
-    (o): o is string => typeof o === 'string' && o.length > 0,
-  );
+  // The Vite dev origin is trusted outside production only: CORS runs with
+  // credentials, so in production anything served from that port on a
+  // visitor's machine would otherwise be a trusted origin of the API.
+  const isProduction = config.get<string>('nodeEnv') === 'production';
+  const staticOrigins = [
+    frontendUrl,
+    isProduction ? undefined : 'http://localhost:5173',
+  ].filter((o): o is string => typeof o === 'string' && o.length > 0);
   app.enableCors({
     origin: (
       origin: string | undefined,
