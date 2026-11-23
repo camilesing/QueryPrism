@@ -196,6 +196,8 @@ NODE_ENV=production pnpm run prisma:seed   # first time only
 node dist/src/main
 ```
 
+Run the server with `NODE_ENV=production`: it then refuses to start unless `JWT_SECRET`, `AES_KEY` and `EMBEDDED_SIGN_SECRET` are set to private values — the development defaults in `backend/.env.example` are public.
+
 ### Frontend (`.env`)
 
 ```env

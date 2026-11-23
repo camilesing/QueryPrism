@@ -55,6 +55,74 @@ describe('configuration', () => {
     });
   });
 
+  describe('production secrets guard', () => {
+    const PRIVATE_ENV = {
+      DATABASE_URL: PG_URL,
+      NODE_ENV: 'production',
+      AES_KEY: 'private-aes-key',
+      JWT_SECRET: 'private-jwt-secret',
+      EMBEDDED_SIGN_SECRET: 'private-embedded-sign-secret',
+    };
+    /** Copy without the named keys (an `undefined` value would become "undefined"). */
+    const without = (
+      env: Record<string, string>,
+      ...keys: string[]
+    ): Record<string, string> =>
+      Object.fromEntries(
+        Object.entries(env).filter(([k]) => !keys.includes(k)),
+      );
+
+    it('accepts private secrets under NODE_ENV=production', () => {
+      expect(() => configWith(PRIVATE_ENV)).not.toThrow();
+    });
+
+    it('fails fast when a secret is unset in production', () => {
+      expect(() => configWith(without(PRIVATE_ENV, 'JWT_SECRET'))).toThrow(
+        /JWT_SECRET must be set to a private value/,
+      );
+    });
+
+    it('fails fast when a secret is an empty string in production', () => {
+      expect(() => configWith({ ...PRIVATE_ENV, AES_KEY: '' })).toThrow(
+        /AES_KEY must be set to a private value/,
+      );
+    });
+
+    it('fails fast when a secret is still the public development default', () => {
+      expect(() =>
+        configWith({
+          ...PRIVATE_ENV,
+          JWT_SECRET: 'queryprism-jwt-secret-change-me',
+        }),
+      ).toThrow(/JWT_SECRET must be set to a private value/);
+    });
+
+    it('fails fast on the embedded-sign development default', () => {
+      expect(() =>
+        configWith({
+          ...PRIVATE_ENV,
+          EMBEDDED_SIGN_SECRET: EMBEDDED_SIGN_DEV_SECRET,
+        }),
+      ).toThrow(/EMBEDDED_SIGN_SECRET must be set to a private value/);
+    });
+
+    it('names every insecure secret at once', () => {
+      expect(() =>
+        configWith({ ...PRIVATE_ENV, AES_KEY: '', JWT_SECRET: '' }),
+      ).toThrow(/AES_KEY, JWT_SECRET must be set to a private value/);
+    });
+
+    it('keeps the development defaults outside production', () => {
+      const cfg = configWith({
+        DATABASE_URL: PG_URL,
+        NODE_ENV: 'development',
+      });
+      expect(cfg.aes.key).toBe('queryprism-aes-key-change-me-32b');
+      expect(cfg.jwt.secret).toBe('queryprism-jwt-secret-change-me');
+      expect(cfg.embeddedSign.secret).toBe(EMBEDDED_SIGN_DEV_SECRET);
+    });
+  });
+
   describe('defaults (only DATABASE_URL set)', () => {
     it('returns every documented default', () => {
       expect(configWith({ DATABASE_URL: PG_URL })).toEqual({

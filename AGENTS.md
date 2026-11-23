@@ -42,7 +42,7 @@ pnpm run prisma:seed           # admin user / baseline rows
 **Verification gate:** `pnpm run build && pnpm run lint && pnpm run test && pnpm run test:e2e` (the "four gates"). `backend/g2-ssr` is excluded — it has its own `npm run build` / `npm test`.
 
 **Important:**
-- `DATABASE_URL` must be a PostgreSQL URL — startup fails fast otherwise (see `backend/.env.example`)
+- `DATABASE_URL` must be a PostgreSQL URL — startup fails fast otherwise (see `backend/.env.example`). With `NODE_ENV=production` startup also fails fast unless `JWT_SECRET`, `AES_KEY` and `EMBEDDED_SIGN_SECRET` are private values (the development defaults are public)
 - `pnpm run prisma:seed` creates workspace `default` + dev admin `admin` / `admin` (also the e2e fixture)
 - Prisma CLI loads `.env` via `backend/prisma.config.ts`; schema is `backend/prisma/schema.prisma`
 - Vector index: derived tables in the unmanaged `vector_store` schema (pgvector/HNSW), managed by `VectorService`; Prisma `embedding Json` columns are the source of truth and the index is rebuildable

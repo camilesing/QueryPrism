@@ -192,6 +192,8 @@ NODE_ENV=production pnpm run prisma:seed   # 仅首次
 node dist/src/main
 ```
 
+后端请以 `NODE_ENV=production` 启动：此时若 `JWT_SECRET`、`AES_KEY`、`EMBEDDED_SIGN_SECRET` 未设置或仍是公开的开发默认值（见 `backend/.env.example`），后端会拒绝启动。
+
 ### Frontend (.env)
 
 ```env

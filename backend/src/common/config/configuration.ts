@@ -16,6 +16,39 @@ function assertDatabaseUrl(): void {
   }
 }
 
+/** Development defaults for the at-rest and signing secrets. They are public
+ *  (this repository and `.env.example` ship them), so they are only safe
+ *  outside production — see assertProductionSecrets. */
+const DEV_AES_KEY = 'queryprism-aes-key-change-me-32b';
+const DEV_JWT_SECRET = 'queryprism-jwt-secret-change-me';
+
+/** A production process must not run on a public development secret: with the
+ *  JWT secret anyone can forge an admin token, with the embedded-sign secret
+ *  anyone can mint an assistant token, and with the AES key every stored API
+ *  key is readable. Fail fast at boot, exactly like assertDatabaseUrl. */
+function assertProductionSecrets(): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  const secrets: Array<[name: string, value: string | undefined, dev: string]> =
+    [
+      ['AES_KEY', process.env.AES_KEY, DEV_AES_KEY],
+      ['JWT_SECRET', process.env.JWT_SECRET, DEV_JWT_SECRET],
+      [
+        'EMBEDDED_SIGN_SECRET',
+        process.env.EMBEDDED_SIGN_SECRET,
+        EMBEDDED_SIGN_DEV_SECRET,
+      ],
+    ];
+  const insecure = secrets
+    .filter(([, value, dev]) => !value?.trim() || value === dev)
+    .map(([name]) => name);
+  if (insecure.length > 0) {
+    throw new Error(
+      `${insecure.join(', ')} must be set to a private value when NODE_ENV=production ` +
+        '(missing or still the public development default). See backend/.env.example.',
+    );
+  }
+}
+
 function parseOptionalPositiveInt(raw: string | undefined): number | undefined {
   if (!raw) return undefined;
   const value = parseInt(raw, 10);
@@ -29,6 +62,7 @@ function parseOptionalPositiveInt(raw: string | undefined): number | undefined {
 
 export function configuration() {
   assertDatabaseUrl();
+  assertProductionSecrets();
   return {
     port: parseInt(process.env.PORT ?? '3000', 10),
     nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -37,12 +71,12 @@ export function configuration() {
     // Used by the AES crypto util (datasource configuration / ai_model api_key).
     // Should be a stable secret; rotated manually (rotation requires re-encryption).
     aes: {
-      key: process.env.AES_KEY ?? 'queryprism-aes-key-change-me-32b',
+      key: process.env.AES_KEY ?? DEV_AES_KEY,
     },
 
     // JWT auth (Phase 1). Local login only — no SSO.
     jwt: {
-      secret: process.env.JWT_SECRET ?? 'queryprism-jwt-secret-change-me',
+      secret: process.env.JWT_SECRET ?? DEV_JWT_SECRET,
       // token TTL in minutes; default 8 days.
       expiresIn: process.env.JWT_EXPIRES_IN ?? '11520m',
       tokenKey: process.env.TOKEN_KEY ?? 'X-QUERYPRISM-TOKEN',
