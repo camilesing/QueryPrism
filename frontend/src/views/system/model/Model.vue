@@ -78,6 +78,11 @@ const defaultModelListWithSearch = computed(() => {
 
 const modelCheckHandler = async (item: any) => {
   const response = await modelApi.check(item)
+  if (!response.ok) {
+    // Plain-text errors (unknown id, expired token) arrive before any stream.
+    ElMessage.error(await response.text())
+    return
+  }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let checkTimeout = false
@@ -85,21 +90,44 @@ const modelCheckHandler = async (item: any) => {
     checkTimeout = true
   }, 9000)
   let checkMsg = ''
-  while (true) {
-    if (checkTimeout) {
-      break
-    }
-    const { done, value } = await reader.read()
-    if (done) break
-    const lines = decoder.decode(value).trim().split('\n')
-    for (const line of lines) {
-      const data = JSON.parse(line)
-      if (data.error) {
-        checkMsg += data.error
-      } else if (data.content) {
-        console.debug(data.content)
+  // SseWriter frames every event as `data:<json>` followed by a blank line;
+  // heartbeat comments (`: ...`) and the blank lines carry no payload. A
+  // frame may be split across chunks, so frames are cut on the blank line.
+  let buffer = ''
+  try {
+    while (true) {
+      if (checkTimeout) {
+        break
+      }
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let separator = buffer.indexOf('\n\n')
+      while (separator >= 0) {
+        const frame = buffer.slice(0, separator)
+        buffer = buffer.slice(separator + 2)
+        separator = buffer.indexOf('\n\n')
+        for (const rawLine of frame.split('\n')) {
+          const line = rawLine.trim()
+          if (!line.startsWith('data:')) continue
+          let data: any
+          try {
+            data = JSON.parse(line.slice('data:'.length))
+          } catch {
+            continue
+          }
+          if (data.error) {
+            checkMsg += data.error
+          } else if (data.content) {
+            console.debug(data.content)
+          }
+        }
       }
     }
+  } catch (e) {
+    console.error(e)
+  } finally {
+    reader.cancel().catch(() => {})
   }
   if (!checkMsg) {
     return
@@ -128,14 +156,15 @@ const duplicateName = async (item: any) => {
     ...item,
   }
   if (!item.id) {
-    modelApi.add(param).then(() => {
+    // The connectivity check needs the stored id: the unsaved form has ''.
+    modelApi.add(param).then((created: any) => {
       beforeClose()
       search()
       ElMessage({
         type: 'success',
         message: t('workspace.add_successfully'),
       })
-      modelCheckHandler(item)
+      modelCheckHandler(created ?? item)
     })
     return
   }
