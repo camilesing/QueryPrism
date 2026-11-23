@@ -80,6 +80,12 @@ const tokenReadyPromise = new Promise<any>((resolve) => {
   resolveTokenReady = resolve
 })
 const communicationCb = async (event: any) => {
+  // Only the embedding window may drive this page. A sibling frame on the
+  // host page can postMessage the same event name, and the token it would
+  // inject picks the account and workspace the visitor then acts in.
+  if (event.source !== window.parent) {
+    return
+  }
   if (event.data?.eventName === eventName) {
     if (event.data?.messageId !== route.query.id) {
       return

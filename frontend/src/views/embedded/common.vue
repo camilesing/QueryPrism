@@ -41,6 +41,12 @@ const isWsAdmin = computed(() => {
   return userStore.isAdmin || userStore.isSpaceAdmin
 })
 const communicationCb = async (event: any) => {
+  // Only the embedding window may drive this page. A sibling frame on the
+  // host page can postMessage the same event name, and the certificate it
+  // would inject picks the account and workspace the visitor then acts in.
+  if (event.source !== window.parent) {
+    return
+  }
   if (event.data?.eventName === eventName) {
     if (event.data?.messageId !== route.query.id) {
       return
