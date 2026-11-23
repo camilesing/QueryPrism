@@ -227,6 +227,10 @@ const handleInitDsIdChange = (val: any) => {
   datasourceApi.tableList(val.id).then((res: any) => {
     tableListOptions.value = res || []
     activeTable.value = null
+    // The table belongs to the previous datasource: keeping its id passed
+    // the required check and saved a permission pointing at a foreign table.
+    columnForm.table_id = ''
+    columnForm.table_name = ''
     fieldListOptions.value = []
     columnForm.permissions = []
     if (authTreeRef.value) {
