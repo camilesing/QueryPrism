@@ -1,5 +1,5 @@
 import 'core-js/features/object/has-own'
-// @ts-ignore: css-has-pseudo/browser lacks official type definitions
+// @ts-expect-error: css-has-pseudo/browser lacks official type definitions
 import cssHasPseudo from 'css-has-pseudo/browser'
 
 import { createApp } from 'vue'
