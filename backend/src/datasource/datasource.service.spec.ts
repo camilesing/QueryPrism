@@ -648,9 +648,6 @@ describe('DatasourceService', () => {
     const table6 = mkTable(6, 'orders');
     // explicit snapshot so the tests never read the real SystemVariable table
     const cfg = {
-      enabled: true,
-      dataTrainingSimilarity: 0.4,
-      dataTrainingTopCount: 5,
       tableEnabled: true,
       tableCount: 10,
       tableAlpha: 0.4,
@@ -2084,9 +2081,6 @@ describe('DatasourceService', () => {
       await expect(
         service.recallTables(1, '问', {
           config: {
-            enabled: true,
-            dataTrainingSimilarity: 0.4,
-            dataTrainingTopCount: 5,
             tableEnabled: true,
             tableCount: 10,
             tableAlpha: 0.4,

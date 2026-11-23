@@ -361,28 +361,6 @@ model AiModelWorkspaceMapping {
   @@unique([modelId, oid])
 }
 
-// ============================== Phase 3: RAG 知识库 ==============================
-
-// SQL 样例训练数据 (NL→SQL few-shot, 喂给 generate_sql prompt + ILIKE/向量召回)
-model DataTraining {
-  id                  Int      @id @default(autoincrement())
-  oid                 Int // 工作空间 id
-  datasource          Int? // 关联数据源 id (null=全局样例)
-  question            String
-  description         String?
-  embedding           Json? // 向量数组 (number[]); 与 VectorService vec0 表保持同步
-  enabled             Boolean  @default(true)
-  advancedApplication String? // 关联高级应用 (Assistant.id) 的字符串化 id; String? + coerce on read (同 CustomPrompt, no migration data)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-
-  @@index([oid])
-  @@index([datasource])
-  // 2026-09 review P3-1: composite matching the retrieval access pattern
-  // (workspace-scoped, optionally datasource-filtered training samples).
-  @@index([oid, datasource])
-}
-
 // ============================== Phase 6: Dashboard 构建器 ==============================
 
 // 仪表盘资源 (folder | panel). oid-scoped workspace tree; pid links parent folder
@@ -449,10 +427,10 @@ model Assistant {
 // Implemented from frontend contract (api/prompt.ts + views/system/prompt/index.vue).
 // type: GENERATE_SQL | ANALYSIS | PREDICT_DATA (path segment + column filter, 单表三分类型).
 // specificDs: true=限定 datasourceIds 数组, false=全部数据源. advancedApplication: stringified
-// Assistant.id (String? + coerce on read, same as DataTraining §105/§106 pattern).
+// Assistant.id (String? + coerce on read, same convention as other assistant-scoped resources).
 // prompt 是 plaintext (无 AES).
-// 无 embedding (chat pipeline 用 find_custom_prompts 直接查询, 非 vec0 index — unlike
-// data-training). createTime 读取时序列化为 snake create_time.
+// 无 embedding (chat pipeline 用 find_custom_prompts 直接查询, 非 vec0 index).
+// createTime 读取时序列化为 snake create_time.
 model CustomPrompt {
   id                  Int      @id @default(autoincrement())
   oid                 Int // 工作空间 id (scoping; 无 FK)

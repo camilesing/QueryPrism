@@ -207,7 +207,6 @@ export class WorkspaceService {
       await tx.chat.deleteMany({ where: { oid: id } }); // cascades records + logs
       await tx.chatRecord.deleteMany({ where: { oid: id } }); // orphan safety
       await tx.datasource.deleteMany({ where: { oid: id } }); // cascades tables/fields/recommended
-      await tx.dataTraining.deleteMany({ where: { oid: id } });
       await tx.coreDashboard.deleteMany({ where: { oid: id } });
       await tx.assistant.deleteMany({ where: { oid: id } });
       await tx.mcpIntegration.deleteMany({ where: { oid: id } });

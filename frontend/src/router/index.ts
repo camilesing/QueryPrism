@@ -15,7 +15,6 @@ import assistant from '@/views/embedded/index.vue'
 import EmbeddedPage from '@/views/embedded/page.vue'
 import EmbeddedCommon from '@/views/embedded/common.vue'
 import Member from '@/views/system/member/index.vue'
-import Training from '@/views/system/training/index.vue'
 import Semantic from '@/views/system/semantic/index.vue'
 import Metric from '@/views/system/metric/index.vue'
 import MetadataSync from '@/views/system/metadata-sync/index.vue'
@@ -116,12 +115,6 @@ export const routes = [
         name: 'permission',
         redirect: '/system/permission-control/permission',
         hidden: true,
-      },
-      {
-        path: '/set/training',
-        name: 'training',
-        component: Training,
-        meta: { title: 'training.data_training' },
       },
       {
         path: '/set/prompt',

@@ -1,10 +1,9 @@
 // Spec for the AiQuestionService context assembly. The downstream services
-// (datasource / data-training) are mocked; data-training recall reads oid
+// (datasource / custom-prompt) are mocked; custom-prompt lookup reads oid
 // from RequestContext, so each call is wrapped in requestContextStorage.run.
 import { requestContextStorage } from '../common/context/request-context';
 import { AiQuestionService } from './ai-question.service';
 import type { DatasourceService } from '../datasource/datasource.service';
-import type { DataTrainingService } from '../data-training/data-training.service';
 import type { CustomPromptService } from '../custom-prompt/custom-prompt.service';
 import type { ConfigService } from '@nestjs/config';
 
@@ -42,10 +41,6 @@ function makeService(opts?: {
     })),
   } as unknown as DatasourceServiceMock;
 
-  const dataTrainingService = {
-    getDataTrainingTemplate: jest.fn().mockResolvedValue('<data_training/>'),
-  } as unknown as jest.Mocked<DataTrainingService>;
-
   const customPromptService = {
     findCustomPrompts: jest.fn().mockResolvedValue({
       customPromptText: 'be concise',
@@ -69,7 +64,6 @@ function makeService(opts?: {
 
   const svc = new AiQuestionService(
     datasourceService,
-    dataTrainingService,
     customPromptService,
     config,
     prisma as never,
@@ -77,7 +71,6 @@ function makeService(opts?: {
   return {
     svc,
     datasourceService,
-    dataTrainingService,
     customPromptService,
     prisma,
   };
@@ -91,7 +84,7 @@ async function run<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 describe('AiQuestionService', () => {
-  it('assembles schema, sample data and training into the context', async () => {
+  it('assembles schema and sample data into the context', async () => {
     const { svc, datasourceService } = makeService();
     const ctx = await run(() =>
       svc.buildSqlContext({
@@ -101,7 +94,6 @@ describe('AiQuestionService', () => {
       }),
     );
     expect(ctx.schema).toBe('MS-SCHEMA');
-    expect(ctx.dataTraining).toBe('<data_training/>');
     // both checked tables sampled; the hidden one skipped
     expect(ctx.sampleData).toContain('Table: users');
     expect(ctx.sampleData).toContain('Table: orders');
@@ -128,7 +120,6 @@ describe('AiQuestionService', () => {
     expect(datasourceService.previewTable).not.toHaveBeenCalled();
     // the rest of the context is unaffected
     expect(ctx.schema).toBe('MS-SCHEMA');
-    expect(ctx.dataTraining).toBe('<data_training/>');
   });
 
   it('falls back to the env default when no parameter row is saved', async () => {

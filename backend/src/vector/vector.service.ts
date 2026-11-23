@@ -1,5 +1,5 @@
-// VectorService — pgvector-backed ANN store for RAG recall (data-training /
-// datasource + table selection / metric definitions).
+// VectorService — pgvector-backed ANN store for RAG recall (datasource +
+// table selection / metric definitions).
 //
 // Prisma's `embedding Json` columns remain the source of truth (portable,
 // rebuildable). The `vector_store` schema holds derived search indexes:
@@ -15,8 +15,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
-export type VectorCollection =
-  'data_training' | 'datasource' | 'table' | 'metric_def';
+export type VectorCollection = 'datasource' | 'table' | 'metric_def';
 
 export interface VectorHit {
   id: number;
@@ -24,12 +23,7 @@ export interface VectorHit {
   distance: number;
 }
 
-const COLLECTIONS = [
-  'data_training',
-  'datasource',
-  'table',
-  'metric_def',
-] as const;
+const COLLECTIONS = ['datasource', 'table', 'metric_def'] as const;
 
 /** Dedicated schema for derived vector tables (not managed by Prisma Migrate). */
 const VECTOR_SCHEMA = 'vector_store';

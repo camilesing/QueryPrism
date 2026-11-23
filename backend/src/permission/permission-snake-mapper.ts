@@ -78,7 +78,7 @@ export interface PermissionGroupSnake {
 
 /** Safe JSON.parse to a default value on null/empty/invalid input. The mapper
  *  never throws — a corrupt stored JSON degrades to the empty default so the
- *  list endpoint stays 200 (mirrors terminology/data-training safe-parse pattern). */
+ *  list endpoint stays 200. */
 function safeJsonParse<T>(raw: string | null, fallback: T): T {
   if (raw == null || raw.trim() === '') return fallback;
   try {

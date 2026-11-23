@@ -20,7 +20,7 @@ import ExcelJS from 'exceljs';
 import { tr } from '../i18n/translate';
 
 export interface ImportErrorFileInput {
-  /** Short stable prefix, e.g. `terminology` / `data-training` / `user`. */
+  /** Short stable prefix, e.g. `custom-prompt` / `semantic` / `user`. */
   prefix: string;
   /** Original column labels (without the trailing error column). */
   headers: string[];

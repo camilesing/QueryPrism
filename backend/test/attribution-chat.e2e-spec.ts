@@ -1,7 +1,7 @@
 // Attribution-domain chat e2e — the full NL2SQL pipeline over the realistic
 // fixture (test/fixtures/attribution) with ONLY the LLM faked. Every other
-// collaborator is REAL: AiQuestionService (data-training / custom-prompt
-// recall), DatasourceService (M-Schema + SQLite execSql),
+// collaborator is REAL: AiQuestionService (custom-prompt recall),
+// DatasourceService (M-Schema + SQLite execSql),
 // MetricService / DataStandardService / SemanticService matching. The fake
 // GeneratorService.generateSql captures the assembled AiModelQuestion and
 // returns a canned SQL, so each test asserts BOTH the prompt injection of all

@@ -81,8 +81,6 @@ describe('configuration', () => {
           model: 'text-embedding-3-small',
           dimension: undefined,
           localModel: 'Xenova/all-MiniLM-L6-v2',
-          threshold: 0.4,
-          topK: 5,
         },
         chat: {
           queryprismName: 'QueryPrism',
@@ -122,8 +120,6 @@ describe('configuration', () => {
         EMBEDDING_MODEL: 'bge-small',
         EMBEDDING_DIMENSION: '768',
         EMBEDDING_LOCAL_MODEL: 'bge/local',
-        EMBEDDING_THRESHOLD: '0.75',
-        EMBEDDING_TOP_K: '9',
         QUERYPRISM_NAME: 'CorpBI',
         CHAT_LIMIT_ROWS: '50',
         CHAT_HISTORY_ROUND_COUNT: '7',
@@ -156,8 +152,6 @@ describe('configuration', () => {
           model: 'bge-small',
           dimension: 768,
           localModel: 'bge/local',
-          threshold: 0.75,
-          topK: 9,
         },
         chat: {
           queryprismName: 'CorpBI',
@@ -239,20 +233,6 @@ describe('configuration', () => {
       expect(configWith({ DATABASE_URL: PG_URL, PORT: 'abc' }).port).toBeNaN();
     });
 
-    it('parses EMBEDDING_TOP_K', () => {
-      expect(
-        configWith({ DATABASE_URL: PG_URL, EMBEDDING_TOP_K: '9' }).embedding
-          .topK,
-      ).toBe(9);
-    });
-
-    it('yields NaN for a non-numeric EMBEDDING_TOP_K', () => {
-      expect(
-        configWith({ DATABASE_URL: PG_URL, EMBEDDING_TOP_K: 'abc' }).embedding
-          .topK,
-      ).toBeNaN();
-    });
-
     it('parses the chat row/round/limit ints', () => {
       const chat = configWith({
         DATABASE_URL: PG_URL,
@@ -271,22 +251,6 @@ describe('configuration', () => {
       expect(
         configWith({ DATABASE_URL: PG_URL, CHAT_LIMIT_ROWS: 'x' }).chat
           .limitRows,
-      ).toBeNaN();
-    });
-  });
-
-  describe('EMBEDDING_THRESHOLD coercion (parseFloat)', () => {
-    it('parses a float', () => {
-      expect(
-        configWith({ DATABASE_URL: PG_URL, EMBEDDING_THRESHOLD: '0.75' })
-          .embedding.threshold,
-      ).toBe(0.75);
-    });
-
-    it('yields NaN for a non-numeric threshold (no validation — pinned)', () => {
-      expect(
-        configWith({ DATABASE_URL: PG_URL, EMBEDDING_THRESHOLD: 'abc' })
-          .embedding.threshold,
       ).toBeNaN();
     });
   });

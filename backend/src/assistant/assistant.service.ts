@@ -115,7 +115,7 @@ export class AssistantService {
   }
 
   /** GET /system/assistant/advanced_application — list type==1 (advanced)
-   *  only, for the professional/training/prompt el-option pickers. */
+   *  only, for the custom-prompt el-option picker. */
   async listAdvancedApplications(): Promise<Assistant[]> {
     const oid = this.currentOid();
     return this.prisma.assistant.findMany({

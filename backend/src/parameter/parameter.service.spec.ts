@@ -60,7 +60,7 @@ describe('parseParameterItems', () => {
 
 describe('ParameterService', () => {
   let service: ParameterService;
-  let backfill: { runKnowledge: jest.Mock; runTablesAndDatasources: jest.Mock };
+  let backfill: { runTablesAndDatasources: jest.Mock };
   let prisma: {
     systemVariable: { findMany: jest.Mock; upsert: jest.Mock };
     $transaction: jest.Mock;
@@ -76,7 +76,6 @@ describe('ParameterService', () => {
       $transaction: jest.fn(),
     };
     backfill = {
-      runKnowledge: jest.fn().mockResolvedValue(undefined),
       runTablesAndDatasources: jest.fn().mockResolvedValue(undefined),
     };
     const module = await Test.createTestingModule({
@@ -153,10 +152,6 @@ describe('ParameterService', () => {
       // 9e6070e8: every unsaved embedding.* key is appended at its backend-
       // resolved effective value (env/code defaults here)
       expect(items).toContainEqual({
-        pkey: 'embedding.enabled',
-        pval: 'true',
-      });
-      expect(items).toContainEqual({
         pkey: 'embedding.table_alpha',
         pval: '0.4',
       });
@@ -165,7 +160,7 @@ describe('ParameterService', () => {
         pval: '10',
       });
       expect(items.filter((i) => i.pkey.startsWith('embedding.'))).toHaveLength(
-        8,
+        5,
       );
     });
 
@@ -283,7 +278,7 @@ describe('ParameterService', () => {
         service.save([{ pkey: 'embedding.table_count', pval: '0' }]),
       ).rejects.toThrow(BadRequestException);
       await expect(
-        service.save([{ pkey: 'embedding.enabled', pval: '1' }]),
+        service.save([{ pkey: 'embedding.table_enabled', pval: '1' }]),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -312,32 +307,6 @@ describe('ParameterService', () => {
     });
 
     // --- 9e6070e8 lifecycle: a false→true re-enable fires the backfill -----
-    it('fires the knowledge backfill when embedding.enabled flips false→true', async () => {
-      const tx = {
-        systemVariable: {
-          findMany: jest.fn(),
-          createMany: jest.fn(),
-          update: jest.fn(),
-        },
-      };
-      prisma.$transaction.mockImplementation(
-        (cb: (tx: unknown) => Promise<ParameterItem[]>) => cb(tx),
-      );
-      tx.systemVariable.findMany.mockResolvedValue([]);
-      tx.systemVariable.createMany.mockResolvedValue({ count: 1 });
-      tx.systemVariable.update.mockResolvedValue({});
-      // config read before the save: enabled was saved OFF; after: back ON
-      prisma.systemVariable.findMany
-        .mockResolvedValueOnce([{ name: 'embedding.enabled', value: 'false' }])
-        .mockResolvedValueOnce([{ name: 'embedding.enabled', value: 'true' }]);
-
-      await service.save([{ pkey: 'embedding.enabled', pval: 'true' }]);
-      await new Promise((r) => setImmediate(r)); // flush the fire-and-forget
-
-      expect(backfill.runKnowledge).toHaveBeenCalledTimes(1);
-      expect(backfill.runTablesAndDatasources).not.toHaveBeenCalled();
-    });
-
     it('fires the metadata backfill when embedding.table_enabled flips false→true', async () => {
       const tx = {
         systemVariable: {
@@ -364,7 +333,6 @@ describe('ParameterService', () => {
       await new Promise((r) => setImmediate(r));
 
       expect(backfill.runTablesAndDatasources).toHaveBeenCalledTimes(1);
-      expect(backfill.runKnowledge).not.toHaveBeenCalled();
     });
 
     it('fires no backfill when neither switch flipped (stays enabled)', async () => {
@@ -384,7 +352,6 @@ describe('ParameterService', () => {
       await service.save([{ pkey: 'chat.show_sql', pval: 'true' }]);
       await new Promise((r) => setImmediate(r));
 
-      expect(backfill.runKnowledge).not.toHaveBeenCalled();
       expect(backfill.runTablesAndDatasources).not.toHaveBeenCalled();
     });
   });
@@ -402,7 +369,6 @@ describe('parseParameterItems (missing data field)', () => {
 describe('ParameterService tail-sweep', () => {
   let service: ParameterService;
   let backfill: {
-    runKnowledge: jest.Mock;
     runTablesAndDatasources: jest.Mock;
     runMetrics: jest.Mock;
   };
@@ -420,7 +386,6 @@ describe('ParameterService tail-sweep', () => {
       $transaction: jest.fn(),
     };
     backfill = {
-      runKnowledge: jest.fn().mockResolvedValue(undefined),
       runTablesAndDatasources: jest.fn().mockResolvedValue(undefined),
       runMetrics: jest.fn().mockResolvedValue(undefined),
     };
@@ -476,31 +441,7 @@ describe('ParameterService tail-sweep', () => {
     await new Promise((r) => setImmediate(r));
 
     expect(backfill.runMetrics).toHaveBeenCalledTimes(1);
-    expect(backfill.runKnowledge).not.toHaveBeenCalled();
     expect(backfill.runTablesAndDatasources).not.toHaveBeenCalled();
-  });
-
-  it('a failing knowledge backfill only logs (Error instance)', async () => {
-    txWith();
-    const errorSpy = jest
-      .spyOn(
-        (service as unknown as { logger: { error: jest.Mock } }).logger,
-        'error',
-      )
-      .mockImplementation(() => undefined);
-    backfill.runKnowledge.mockRejectedValue(new Error('vector store gone'));
-    prisma.systemVariable.findMany
-      .mockResolvedValueOnce([{ name: 'embedding.enabled', value: 'false' }])
-      .mockResolvedValueOnce([{ name: 'embedding.enabled', value: 'true' }]);
-
-    await expect(
-      service.save([{ pkey: 'embedding.enabled', pval: 'true' }]),
-    ).resolves.toBeDefined();
-    await new Promise((r) => setImmediate(r));
-
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('vector store gone'),
-    );
   });
 
   it('a failing metadata backfill only logs (non-Error rejection)', async () => {
@@ -564,7 +505,6 @@ describe('ParameterService tail-sweep', () => {
 describe('ParameterService backfill rejection shapes (both arms)', () => {
   let service: ParameterService;
   let backfill: {
-    runKnowledge: jest.Mock;
     runTablesAndDatasources: jest.Mock;
     runMetrics: jest.Mock;
   };
@@ -582,7 +522,6 @@ describe('ParameterService backfill rejection shapes (both arms)', () => {
       $transaction: jest.fn(),
     };
     backfill = {
-      runKnowledge: jest.fn().mockResolvedValue(undefined),
       runTablesAndDatasources: jest.fn().mockResolvedValue(undefined),
       runMetrics: jest.fn().mockResolvedValue(undefined),
     };
@@ -603,26 +542,6 @@ describe('ParameterService backfill rejection shapes (both arms)', () => {
             update: jest.fn().mockResolvedValue({}),
           },
         }),
-    );
-  });
-
-  it('knowledge backfill non-Error rejection is stringified into the log', async () => {
-    const errorSpy = jest
-      .spyOn(
-        (service as unknown as { logger: { error: jest.Mock } }).logger,
-        'error',
-      )
-      .mockImplementation(() => undefined);
-    backfill.runKnowledge.mockRejectedValue('knowledge plain failure');
-    prisma.systemVariable.findMany
-      .mockResolvedValueOnce([{ name: 'embedding.enabled', value: 'false' }])
-      .mockResolvedValueOnce([{ name: 'embedding.enabled', value: 'true' }]);
-
-    await service.save([{ pkey: 'embedding.enabled', pval: 'true' }]);
-    await new Promise((r) => setImmediate(r));
-
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('knowledge plain failure'),
     );
   });
 
@@ -656,7 +575,6 @@ describe('ParameterService backfill rejection shapes (both arms)', () => {
     // both configs resolve enabled → no flip → no backfill calls at all
     await service.save([{ pkey: 'chat.show_sql', pval: 'true' }]);
     await new Promise((r) => setImmediate(r));
-    expect(backfill.runKnowledge).not.toHaveBeenCalled();
     expect(backfill.runTablesAndDatasources).not.toHaveBeenCalled();
     expect(backfill.runMetrics).not.toHaveBeenCalled();
   });

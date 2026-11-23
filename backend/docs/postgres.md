@@ -35,13 +35,12 @@ database name with `_test`), reset that database, and seed it.
 
 - Prisma models live in the `public` schema (`backend/prisma/schema.prisma`).
 - Derived vector tables live in the **`vector_store`** schema:
-  `vec_data_training`, `vec_datasource`, `vec_table`, `vec_metric_def`.
+  `vec_datasource`, `vec_table`, `vec_metric_def`.
   Each has an HNSW index using `vector_cosine_ops`.
 - `vector_store` is deliberately *not* in Prisma's managed schemas, so the
   runtime-created tables never show up as `prisma migrate dev` drift.
-- The `embedding Json` columns on `DataTraining`, `Datasource`, `Table`
-  and `MetricDef` remain the source of truth. The vector tables are a
-  rebuildable index.
+- The `embedding Json` columns on `Datasource`, `Table` and `MetricDef`
+  remain the source of truth. The vector tables are a rebuildable index.
 
 The baseline migration runs:
 
@@ -65,7 +64,7 @@ identical, `2` = opposite), matching the previous sqlite-vec semantics:
 
 ```sql
 SELECT id, embedding <=> $1::vector AS distance
-FROM "vector_store"."vec_data_training"
+FROM "vector_store"."vec_table"
 ORDER BY embedding <=> $1::vector
 LIMIT $2;
 ```

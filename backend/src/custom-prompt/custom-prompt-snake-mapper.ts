@@ -2,7 +2,7 @@
 // prisma row to the snake_case shape the frontend (api/prompt.ts +
 // views/system/prompt/index.vue) reads. Applied in the controller layer;
 // the service pre-builds the datasourceNamesMap + advancedAppNamesMap so the
-// mapper stays a pure function (mirrors terminology-snake-mapper).
+// mapper stays a pure function.
 //
 // The frontend reads 11 fields per row (derived from the template +
 // form interface):
@@ -20,7 +20,7 @@
 //     String? column
 //     + coerces back to a number here so the edit form's el-select binds against
 //     the numeric assistant id returned by getAdvancedApplicationList — same
-//     pattern as terminology/data-training)
+//     convention as other assistant-scoped resources)
 //   - advanced_application_name (string|null; JOIN-enriched from Assistant.name)
 
 /** Subset of the CustomPrompt prisma row the mapper reads. Structural type. */

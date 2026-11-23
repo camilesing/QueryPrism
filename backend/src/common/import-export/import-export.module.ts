@@ -1,7 +1,7 @@
 // ImportExportModule — shared Excel import-error file storage + the
 // /system/download-fail-info download surface. Feature modules (semantic /
-// data-training / custom-prompt / user) import this module to write error
-// workbooks; the controller is registered once here.
+// custom-prompt / user) import this module to write error workbooks; the
+// controller is registered once here.
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../../auth/auth.module';
 import { DownloadFailInfoController } from './download-fail-info.controller';

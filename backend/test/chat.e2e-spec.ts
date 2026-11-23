@@ -18,7 +18,6 @@ import { AiQuestionService } from './../src/llm/ai-question.service';
 import { GeneratorService } from './../src/llm/generator.service';
 import type { LlmGenEvent } from './../src/llm/generator.service';
 import { SqlSafetyService } from './../src/chat/sql-safety.service';
-import { DataTrainingService } from './../src/data-training/data-training.service';
 
 const TOKEN_HEADER = 'X-QUERYPRISM-TOKEN';
 
@@ -856,8 +855,8 @@ describe('Chat SSE §111 row-permission (e2e)', () => {
 
 // ---------------------------------------------------------------------------
 // §110 custom_prompt runtime matching — REAL AiQuestionService + REAL
-// CustomPromptService; downstream Datasource/DataTraining are mocked so the
-// real context assembly runs without live introspection or embedding calls.
+// CustomPromptService; the downstream Datasource is mocked so the real
+// context assembly runs without live introspection or embedding calls.
 // The GeneratorService.generateSql spy captures the assembled ctx; the
 // assertion verifies the seeded custom_prompt body reached it.
 // ---------------------------------------------------------------------------
@@ -950,10 +949,6 @@ describe('Chat SSE §110 custom_prompt (e2e)', () => {
           }),
         execSql: () => Promise.resolve({ columns: ['id'], rows: [[1]] }),
         recallTables: () => Promise.resolve([]),
-      })
-      .overrideProvider(DataTrainingService)
-      .useValue({
-        getDataTrainingTemplate: () => Promise.resolve('<data_training/>'),
       })
       .overrideProvider(SqlSafetyService)
       .useValue({

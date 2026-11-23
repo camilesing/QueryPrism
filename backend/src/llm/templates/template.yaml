@@ -27,9 +27,6 @@ generate_sql: |
   Standard enterprise translations for terms in the question.
   {naming_rules}
 
-  ## Similar Question → SQL
-  {data_training}
-
   ## Table Sample Data
   {sample_data}
 

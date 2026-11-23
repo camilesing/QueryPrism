@@ -1,12 +1,12 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 26 runtime parameters resolve with the priority
+// 21 runtime parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
-//   chat.sample_data_enabled uses. The 10 embedding.* keys drive vector/k
-//   keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
+//   chat.sample_data_enabled uses. The 5 embedding.* keys drive table /
+//   datasource vector+keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
 //   clarify gate (ask-the-user before stuffing an ambiguous schema); the
 //   5 semantic.* keys drive the semantic layer (M2 rule 2 + the M3
 //   dimension-enum collector); the 4 metric.*/naming.* keys drive the M4
@@ -29,10 +29,6 @@ import { jsonValueToString } from '../utils/json-value';
 /** Immutable snapshot — take once at the start of a chat task / background
  *  job; rules must not switch mid-task (ADR 0001). */
 export interface EmbeddingConfig {
-  /** Knowledge vectorization (data-training) generation/recall. */
-  enabled: boolean;
-  dataTrainingSimilarity: number;
-  dataTrainingTopCount: number;
   /** Table + datasource vector generation / pre-filtering. */
   tableEnabled: boolean;
   tableCount: number;
@@ -93,9 +89,6 @@ export interface EmbeddingConfig {
 
 /** camelCase field → persisted parameter key. */
 const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
-  enabled: 'embedding.enabled',
-  dataTrainingSimilarity: 'embedding.data_training_similarity',
-  dataTrainingTopCount: 'embedding.data_training_top_count',
   tableEnabled: 'embedding.table_enabled',
   tableCount: 'embedding.table_count',
   tableAlpha: 'embedding.table_alpha',
@@ -134,7 +127,6 @@ export function embeddingFieldOfKey(key: string): keyof EmbeddingConfig | null {
 }
 
 const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
-  'enabled',
   'tableEnabled',
   'keywordEnabled',
   'clarifyEnabled',
@@ -144,7 +136,6 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'cacheEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
-  'dataTrainingTopCount',
   'tableCount',
   'datasourceCount',
   'clarifyTableThreshold',
@@ -235,23 +226,9 @@ function envNumber(
   return fallback;
 }
 
-/** Startup (env) layer — code defaults. Legacy MCB keys (EMBEDDING_THRESHOLD
- *  / EMBEDDING_TOP_K) feed the data-training pair when the current keys are
- *  absent. */
+/** Startup (env) layer — code defaults. */
 function envDefaults(): EmbeddingConfig {
   return {
-    enabled: envBool('EMBEDDING_ENABLED', true),
-    dataTrainingSimilarity: envNumber(
-      'EMBEDDING_DATA_TRAINING_SIMILARITY',
-      'EMBEDDING_THRESHOLD',
-      0.4,
-    ),
-    dataTrainingTopCount: Math.max(
-      1,
-      Math.floor(
-        envNumber('EMBEDDING_DATA_TRAINING_TOP_COUNT', 'EMBEDDING_TOP_K', 5),
-      ),
-    ),
     tableEnabled: envBool('TABLE_EMBEDDING_ENABLED', true),
     tableCount: Math.max(
       1,
@@ -300,8 +277,8 @@ function envDefaults(): EmbeddingConfig {
       1,
       Math.floor(envNumber('METRIC_MAX_DEFINITIONS', undefined, 5)),
     ),
-    // Stricter than the data-training default (0.4): metric names are short and
-    // domain-adjacent ("订单量" vs "支付金额"), so a loose threshold would
+    // Stricter than the 0.4 default used for table vector fusion: metric names
+    // are short and domain-adjacent ("订单量" vs "支付金额"), so a loose threshold would
     // force-stuff unrelated metric tables into the prompt.
     metricSimilarityThreshold: envNumber(
       'METRIC_SIMILARITY_THRESHOLD',

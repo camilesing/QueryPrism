@@ -1,14 +1,14 @@
 // EmbeddingBackfillService — fills embeddings for rows that were written
 // while no embedding key was configured (their `embedding` Json column is
-// SQL NULL). Covers data-training (knowledge), datasource / table (metadata)
-// AND metric definitions (metric recall):
+// SQL NULL). Covers datasource / table (metadata) AND metric definitions
+// (metric recall):
 //
 //   - startup run (non-blocking) + manual POST /embedding/backfill
-//     + re-enable trigger from ParameterService (enabled / table_enabled /
+//     + re-enable trigger from ParameterService (table_enabled /
 //     metric.enabled flipping false→true re-fills).
-//   - per-collection runtime gating: knowledge fills need
-//     embedding.enabled, metadata fills need embedding.table_enabled, metric
-//     fills need metric.enabled (the same switch that gates metric recall).
+//   - per-collection runtime gating: metadata fills need
+//     embedding.table_enabled, metric fills need metric.enabled (the same
+//     switch that gates metric recall).
 //   - batches of 32 with 3 attempts per batch; a failed batch stays NULL
 //     (never marked complete) and the next run retries it.
 //   - race protection: before write-back each row is re-read (still NULL)
@@ -34,7 +34,6 @@ const BATCH_SIZE = 32;
 const ATTEMPTS = 3;
 
 export interface BackfillCounts {
-  dataTraining: number;
   datasource: number;
   table: number;
   metric: number;
@@ -93,23 +92,16 @@ export class EmbeddingBackfillService implements OnModuleInit {
   async run(): Promise<BackfillCounts> {
     if (!this.embedding.available)
       return {
-        dataTraining: 0,
         datasource: 0,
         table: 0,
         metric: 0,
       };
     const cfg = await resolveEmbeddingConfig(this.prisma);
     const counts: BackfillCounts = {
-      dataTraining: 0,
       datasource: 0,
       table: 0,
       metric: 0,
     };
-    if (!cfg.enabled) {
-      this.logger.log('embedding.enabled=false — knowledge backfill skipped');
-    } else {
-      counts.dataTraining = await this.fill('data_training');
-    }
     if (!cfg.tableEnabled) {
       this.logger.log(
         'embedding.table_enabled=false — datasource/table backfill skipped',
@@ -126,19 +118,10 @@ export class EmbeddingBackfillService implements OnModuleInit {
       counts.metric = await this.fill('metric_def');
     }
     this.logger.log(
-      `backfill complete: ${counts.dataTraining} data-training, ` +
-        `${counts.datasource} datasource, ${counts.table} table, ${counts.metric} metric rows processed`,
+      `backfill complete: ${counts.datasource} datasource, ` +
+        `${counts.table} table, ${counts.metric} metric rows processed`,
     );
     return counts;
-  }
-
-  /** Knowledge half only (data-training). ParameterService calls this when
-   *  embedding.enabled flips false→true. */
-  async runKnowledge(): Promise<void> {
-    if (!this.embedding.available) return;
-    const cfg = await resolveEmbeddingConfig(this.prisma);
-    if (!cfg.enabled) return;
-    await this.fill('data_training');
   }
 
   /** Metadata half only (datasource + table). ParameterService calls this
@@ -234,30 +217,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
   private adapterOf(collection: VectorCollection): CollectionAdapter {
     const dbNull = { equals: Prisma.DbNull };
     switch (collection) {
-      case 'data_training':
-        return {
-          load: async (ids) =>
-            (
-              await this.prisma.dataTraining.findMany({
-                where: ids
-                  ? { id: { in: ids }, embedding: dbNull }
-                  : { embedding: dbNull },
-                select: { id: true, question: true, description: true },
-                orderBy: { id: 'asc' },
-              })
-            ).map((r) => ({
-              id: r.id,
-              text: embedRowText(r.question, r.description),
-              match: { question: r.question, description: r.description },
-            })),
-          write: async (row, vector, client) =>
-            (
-              await (client ?? this.prisma).dataTraining.updateMany({
-                where: { id: row.id, embedding: dbNull, ...row.match },
-                data: { embedding: vector },
-              })
-            ).count,
-        };
       case 'datasource':
         return {
           load: async (ids) =>

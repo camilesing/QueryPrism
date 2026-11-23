@@ -5,18 +5,17 @@
 // type: GENERATE_SQL | ANALYSIS | PREDICT_DATA — single table filtered by
 // type (kept as String + validated at the controller boundary via the path
 // segment). No AES (prompt is plaintext).
-// No embedding (chat pipeline uses find_custom_prompts directly, not a vec0
-// index — unlike terminology/data-training). advancedApplication is a
-// stringified Assistant.id (kept as String? + coerced on read, same as
-// Terminology/DataTraining).
+// No embedding (the chat pipeline uses find_custom_prompts directly, not a
+// vector index). advancedApplication is a stringified Assistant.id (kept as
+// String? + coerced on read).
 //
-// Excel import/export mirrors terminology (exceljs; cellText helper
+// Excel import/export uses the shared import helpers (exceljs; cellText
 // coerces rich-text/formula cells to strings). List filter contract:
 // page + export are POSTs whose JSON body carries
 // `{ name?, ds_list?: number[], adv_list?: number[] }` — the pre-upgrade
 // non-standard `?name=foo_5_12&dslist=5_12` underscore-bundled GET query is
 // REPLACED (the frontend posts a plain object via request.post(url, params)).
-// Filter semantics mirror terminology:
+// Filter semantics:
 // ds match = specific_ds=false OR (specific_ds=true AND datasource_ids hits
 // one of ds_list); adv match = advanced_application IN adv_list; all
 // conditions AND-combined.
@@ -32,8 +31,8 @@ import ExcelJS from 'exceljs';
 import { PrismaService } from '../database/prisma.service';
 import { RequestContext } from '../common/context/request-context';
 import { ImportErrorFileService } from '../common/import-export/import-error-file.service';
-// P3-3: the ds/adv filter + name-map + cellText helpers were copy-pasted in
-// terminology + custom-prompt (drift risk) — shared implementations.
+// P3-3: the ds/adv filter + name-map + cellText helpers live in the shared
+// import-export helpers so feature modules cannot drift.
 import {
   applyDsAdvFilters,
   buildAdvancedAppNamesMap,

@@ -8,16 +8,11 @@ import {
 } from './embedding-config';
 
 const ENV_KEYS = [
-  'EMBEDDING_ENABLED',
-  'EMBEDDING_DATA_TRAINING_SIMILARITY',
-  'EMBEDDING_DATA_TRAINING_TOP_COUNT',
   'TABLE_EMBEDDING_ENABLED',
   'TABLE_EMBEDDING_COUNT',
   'TABLE_EMBEDDING_ALPHA',
   'TABLE_EMBEDDING_KEYWORD_ENABLED',
   'DS_EMBEDDING_COUNT',
-  'EMBEDDING_THRESHOLD',
-  'EMBEDDING_TOP_K',
   'CLARIFY_ENABLED',
   'CLARIFY_TABLE_THRESHOLD',
   'CLARIFY_MAX_SELECT',
@@ -42,11 +37,11 @@ function makePrisma(rows: { name: string; value: unknown }[] = []) {
 
 describe('parseEmbeddingParameter', () => {
   it('accepts real booleans and "true"/"false" strings only', () => {
-    expect(parseEmbeddingParameter('enabled', true)).toBe(true);
-    expect(parseEmbeddingParameter('enabled', 'false')).toBe(false);
-    expect(() => parseEmbeddingParameter('enabled', 1)).toThrow();
-    expect(() => parseEmbeddingParameter('enabled', 'yes')).toThrow();
-    expect(() => parseEmbeddingParameter('enabled', null)).toThrow();
+    expect(parseEmbeddingParameter('tableEnabled', true)).toBe(true);
+    expect(parseEmbeddingParameter('tableEnabled', 'false')).toBe(false);
+    expect(() => parseEmbeddingParameter('tableEnabled', 1)).toThrow();
+    expect(() => parseEmbeddingParameter('tableEnabled', 'yes')).toThrow();
+    expect(() => parseEmbeddingParameter('tableEnabled', null)).toThrow();
   });
 
   it('counts must be positive integer strings/numbers', () => {
@@ -92,9 +87,6 @@ describe('resolveEmbeddingConfig', () => {
   it('returns code defaults when nothing is saved or set in env', async () => {
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
     expect(cfg).toEqual({
-      enabled: true,
-      dataTrainingSimilarity: 0.4,
-      dataTrainingTopCount: 5,
       tableEnabled: true,
       tableCount: 10,
       tableAlpha: 0.4,
@@ -133,14 +125,6 @@ describe('resolveEmbeddingConfig', () => {
     expect(cfg.tableCount).toBe(15);
   });
 
-  it('legacy MCB keys feed the data-training pair when upstream keys absent', async () => {
-    process.env.EMBEDDING_THRESHOLD = '0.55';
-    process.env.EMBEDDING_TOP_K = '7';
-    const cfg = await resolveEmbeddingConfig(makePrisma() as never);
-    expect(cfg.dataTrainingSimilarity).toBe(0.55);
-    expect(cfg.dataTrainingTopCount).toBe(7);
-  });
-
   it('an invalid saved row throws instead of silently degrading', async () => {
     const rows = [{ name: 'embedding.table_alpha', value: 'banana' }];
     await expect(
@@ -170,11 +154,11 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the twenty-four persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(24);
+  it('exposes exactly the twenty-one persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(21);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
-    ).toHaveLength(8);
+    ).toHaveLength(5);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('clarify.')),
     ).toHaveLength(4);

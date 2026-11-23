@@ -157,7 +157,8 @@ export class ParameterService {
     // 9e6070e8 lifecycle: re-enabling a disabled embedding half must backfill
     // the rows whose embedding stayed NULL while it was off. Snapshot the
     // config before/after the save; a false→true flip fires the matching
-    // backfill fire-and-forget (never blocks the save response).
+    // backfill fire-and-forget (never blocks the save response). Table and
+    // metric recall each keep their own switch.
     const previous = await resolveEmbeddingConfig(this.prisma);
     const result = await this.prisma.$transaction(async (tx) => {
       const byKey = new Map(items.map((i) => [i.pkey, i.pval] as const));
@@ -191,17 +192,6 @@ export class ParameterService {
       return toParameterItems(rows);
     });
     const current = await resolveEmbeddingConfig(this.prisma);
-    if (!previous.enabled && current.enabled) {
-      void this.embeddingBackfill
-        .runKnowledge()
-        .catch((e) =>
-          this.logger.error(
-            `knowledge backfill after embedding.enabled re-enable failed: ${
-              e instanceof Error ? e.message : String(e)
-            }`,
-          ),
-        );
-    }
     if (!previous.tableEnabled && current.tableEnabled) {
       void this.embeddingBackfill
         .runTablesAndDatasources()

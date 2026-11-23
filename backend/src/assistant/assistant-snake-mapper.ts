@@ -13,7 +13,7 @@
 //    NEVER emitted (security — AES-encrypted at rest; plaintext only
 //    returned by the type-4 embedded create/rotate, cycle 3).
 // 2. toAdvancedApplicationSnake → GET /advanced_application list. Frontend
-//    el-option picker (professional/training/prompt) reads {id, name} only.
+//    el-option picker (custom-prompt) reads {id, name} only.
 //
 // configuration is serialized to a JSON STRING (frontend
 // JSON.parse's it — mirrors the dashboard canvas-field pattern); domain

@@ -75,9 +75,6 @@ export function configuration() {
       dimension: parseOptionalPositiveInt(process.env.EMBEDDING_DIMENSION),
       localModel:
         process.env.EMBEDDING_LOCAL_MODEL ?? 'Xenova/all-MiniLM-L6-v2',
-      // cosine threshold / top-k for RAG retrieval.
-      threshold: parseFloat(process.env.EMBEDDING_THRESHOLD ?? '0.4'),
-      topK: parseInt(process.env.EMBEDDING_TOP_K ?? '5', 10),
     },
 
     // Chat pipeline behaviour (Phase 5).
@@ -117,8 +114,8 @@ export function configuration() {
       storeSchema: process.env.EXCEL_STORE_SCHEMA ?? 'excel_store',
     },
 
-    // Import failure workbooks (data-training / custom-prompt /
-    // user batch import) + the /system/download-fail-info download route.
+    // Import failure workbooks (custom-prompt / user batch import) +
+    // the /system/download-fail-info download route.
     importError: {
       dir: process.env.IMPORT_ERROR_DIR ?? 'uploads/import-errors',
     },

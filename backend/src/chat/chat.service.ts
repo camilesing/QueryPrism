@@ -974,8 +974,8 @@ export class ChatService {
       question: string;
       sql: string | null;
       sqlExecResult: unknown;
-      /** Analysis re-retrieves data-training with the record's
-       *  saved keywords instead of re-matching on the raw question. */
+      /** Analysis re-runs table recall with the record's saved
+       *  keywords instead of re-matching on the raw question. */
       expandedKeywords?: string | null;
       extractedKeywords?: string | null;
     },
@@ -996,13 +996,11 @@ export class ChatService {
     const ds = await this.datasourceService.findOne(chat.datasourceId);
     const engine = engineFromDatasourceType(ds.type);
     if (!engine) return msgs.unsupportedEngine;
-    // 3fd6fa86 (P1S4): the record's saved keywords drive BOTH the table
-    // recall here and the data-training re-retrieval in buildSqlContext
-    // (upstream generate_analysis re-matches on the saved keywords).
+    // 3fd6fa86 (P1S4): the record's saved keywords drive the table recall
+    // here (upstream generate_analysis re-matches on the saved keywords).
     const savedKeywords = source.expandedKeywords ?? source.extractedKeywords;
-    // Task-start retrieval snapshot (ADR 0001): one config read drives BOTH
-    // the table recall and the data-training retrieval inside
-    // buildForResult — an admin save mid-task must not split the snapshot.
+    // Task-start retrieval snapshot (ADR 0001): one config read drives the
+    // table recall — an admin save mid-task must not split the snapshot.
     const cfg = await resolveEmbeddingConfig(this.prisma);
     const tableIds = await this.recallNarrowedSchema(
       chat.datasourceId,
@@ -1019,8 +1017,6 @@ export class ChatService {
       history,
       tableIds,
       customPromptType,
-      knowledgeQuery: savedKeywords ?? undefined,
-      embeddingConfig: cfg,
       lang,
     });
   }
@@ -1423,7 +1419,6 @@ export class ChatService {
       history,
       tableIds,
       customPromptType: 'GENERATE_SQL',
-      embeddingConfig: cfg,
       lang,
       semantics: semanticAnnotations,
       metrics: metricText,
@@ -1686,8 +1681,6 @@ export class ChatService {
 
     // --- generate chart ------------------------------------------------
     yield { type: 'info', data: { msg: msgs.generateChart } };
-    // Same task-start snapshot `cfg` as the SQL step — the chart context's
-    // data-training retrieval must not re-resolve mid-task.
     const chartCtx = await this.aiQuestionService.buildForResult({
       question: content,
       datasourceId,
@@ -1696,7 +1689,6 @@ export class ChatService {
       sqlResult: JSON.stringify(queryResult),
       history,
       tableIds,
-      embeddingConfig: cfg,
       lang,
       semantics: semanticAnnotations,
       metrics: metricText,
@@ -2405,7 +2397,6 @@ export class ChatService {
         engine,
         history,
         tableIds,
-        embeddingConfig: cfg,
         // The recommended questions follow the record question's language.
         lang: this.detectLang(record.question),
       });
@@ -2541,8 +2532,8 @@ export class ChatService {
   }
 
   /** Export a record's query result to an .xlsx buffer. `rid` picks a specific
-   *  record; omitted → the chat's latest record. Mirrors
-   *  DataTrainingService.exportExcel (export-only needs no LoadParam cast). */
+   *  record; omitted → the chat's latest record. Mirrors the admin export
+   *  paths (export-only needs no LoadParam cast). */
   async exportRecordExcel(chatId: number, rid?: number): Promise<Buffer> {
     const oid = this.currentOid();
     const record =
@@ -2628,7 +2619,6 @@ export class ChatService {
       engine,
       history,
       tableIds,
-      embeddingConfig: cfg,
       // The recommended questions follow the triggering turn's language.
       lang,
     });
