@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { renderChart, type G2Spec } from './render';
+import { parseRequestUrl } from './http-utils';
 
 const PORT = parseInt(process.env.G2_SSR_PORT ?? '3001', 10);
 const BASE_URL =
@@ -35,7 +36,13 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  // A malformed Host header makes `new URL` throw; inside this async
+  // listener the rejection is unhandled and would terminate the process.
+  const url = parseRequestUrl(req.url, req.headers.host);
+  if (!url) {
+    sendJson(res, 400, { error: 'bad request' });
+    return;
+  }
 
   // CORS preflight + permissive headers (the Nest backend is cross-origin).
   if (req.method === 'OPTIONS') {
