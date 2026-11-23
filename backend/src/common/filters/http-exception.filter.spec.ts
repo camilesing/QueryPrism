@@ -137,6 +137,35 @@ describe('HttpExceptionFilter', () => {
       }
     });
 
+    it('does not write again once the response headers are already sent (streaming routes)', () => {
+      // An SSE handler that throws after the stream opened leaves headersSent;
+      // a second status()/send() would be a write-after-end error.
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        type: jest.fn().mockReturnThis(),
+        send: jest.fn(),
+        headersSent: true,
+      };
+      const host = {
+        switchToHttp: () => ({
+          getResponse: () => res,
+          getRequest: () => ({}),
+        }),
+        getArgByIndex: () => ({}),
+        getClass: () => Object,
+        getHandler: () => () => {},
+        getType: () => 'http',
+        switchToRpc: () => ({}) as never,
+        switchToWs: () => ({}) as never,
+        getArgs: () => [] as never,
+        toArray: () => [] as never,
+      } as unknown as ArgumentsHost;
+
+      expect(() => filter.catch(new Error('boom'), host)).not.toThrow();
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.send).not.toHaveBeenCalled();
+    });
+
     it('falls back to the internal-error message for non-Error throws', () => {
       expect(run('just a string')).toEqual({
         status: 500,

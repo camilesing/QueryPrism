@@ -78,6 +78,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     }
 
+    // A streaming route (SSE) that throws after its headers went out cannot
+    // receive a second status line; writing would be a write-after-end error.
+    if (response.headersSent) return;
     response.status(status).type('text/plain').send(message);
   }
 }
