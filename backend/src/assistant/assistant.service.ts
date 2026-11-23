@@ -445,8 +445,13 @@ export class AssistantService {
     if (assistant.type !== 0) return [];
 
     const config = this.parseConfiguration(assistant.configuration);
-    const oid = Number(config.oid);
-    if (!Number.isInteger(oid) || oid <= 0) return [];
+    const configOid = Number(config.oid);
+    if (!Number.isInteger(configOid) || configOid <= 0) return [];
+    // The scope is the assistant's OWN workspace. `configuration` is plain
+    // admin-writable JSON, so a configuration.oid that points somewhere else
+    // exposes nothing instead of listing that workspace's datasources.
+    if (configOid !== assistant.oid) return [];
+    const oid = assistant.oid;
 
     const online = assistant.online === true;
     const publicList = Array.isArray(config.public_list)

@@ -1109,6 +1109,22 @@ describe('AssistantService', () => {
       expect(findMany).not.toHaveBeenCalled();
     });
 
+    it('exposes nothing when configuration.oid points at another workspace (configuration is admin-writable JSON)', async () => {
+      const { svc, findMany } = dsService();
+      await withAssistant(
+        // the assistant row belongs to workspace 1; its configuration claims 2
+        assistant({
+          online: true,
+          configuration: '{"oid":2,"public_list":[9]}',
+        }),
+        () => svc.listRuntimeDatasources(),
+      ).then(
+        (out) => expect(out).toEqual([]),
+        () => void 0,
+      );
+      expect(findMany).not.toHaveBeenCalled();
+    });
+
     it('online type-0 exposes every workspace datasource', async () => {
       const { svc, findMany } = dsService();
       findMany.mockResolvedValue([
