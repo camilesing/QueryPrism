@@ -416,6 +416,7 @@
     }
   },
   "dashboard": {
+    "more": "More",
     "open_dashboard": "Open Dashboard",
     "add_dashboard_name_tips": "Please Input Dashboard Name",
     "existing_dashboard": "Existing Dashboard",
