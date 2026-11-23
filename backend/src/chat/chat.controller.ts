@@ -335,8 +335,7 @@ export class ChatController {
     const keepAlive = setInterval(() => sse.ping(), 15_000);
     try {
       while (!next.done) {
-        // Client disconnected — stop consuming the LLM stream (the
-        // generator's finally blocks run on abandon).
+        // Client disconnected — stop consuming the LLM stream.
         if (sse.isClosed) break;
         await sse.send(next.value.type, next.value.data);
         try {
@@ -351,6 +350,15 @@ export class ChatController {
     } finally {
       clearInterval(keepAlive);
       sse.close();
+      // Unwind the abandoned generator: a dropped client or a mid-stream
+      // error must still run its finally blocks (the quota tail charge, the
+      // provider-stream cancellation, the open log rows). A generator that is
+      // merely left alone never runs them.
+      try {
+        await gen.return?.(undefined);
+      } catch {
+        // its cleanup failed; the response is already closed
+      }
     }
   }
 }

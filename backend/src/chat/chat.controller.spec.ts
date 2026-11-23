@@ -499,6 +499,37 @@ describe('ChatController', () => {
     expect(res.end).toHaveBeenCalledTimes(1);
   });
 
+  it('returns the abandoned generator on disconnect so its finally blocks run', async () => {
+    const { res, fireClose } = mkRes();
+    let pull = 0;
+    const abandoned = sseFrom(() => {
+      pull += 1;
+      if (pull === 1) {
+        return Promise.resolve({
+          done: false as const,
+          value: { type: 'id', data: { id: 1 } },
+        });
+      }
+      fireClose(); // client disconnects between the two events
+      return Promise.resolve({
+        done: false as const,
+        value: { type: 'finish', data: {} },
+      });
+    });
+    // AsyncGenerator.return() is what runs a generator's finally blocks
+    // (quota tail charge, provider-stream cancellation, open log rows).
+    const returned = jest.fn().mockResolvedValue(undefined);
+    (abandoned as unknown as { return: typeof returned }).return = returned;
+    service.runPipeline.mockReturnValue(abandoned);
+
+    await controller.question(
+      { chat_id: 1, question: 'q' },
+      res as unknown as Response,
+    );
+
+    expect(returned).toHaveBeenCalledTimes(1);
+  });
+
   it('writes : ping heartbeat comments every 15s and clears the interval on finish', async () => {
     jest.useFakeTimers();
     let release!: () => void;
