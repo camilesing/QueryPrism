@@ -196,6 +196,13 @@ describe('SqliteConnector', () => {
       const result = await connector.execSql(sql);
       expect(result.columns.length).toBeGreaterThan(0);
     });
+
+    it('rejects a multi-statement string even though it starts with SELECT', async () => {
+      const connector = makeSeededConnector();
+      await expect(
+        connector.execSql('SELECT 1; DELETE FROM users; SELECT 1'),
+      ).rejects.toThrow('datasource.query_only');
+    });
   });
 
   describe('execSql LIMIT handling (real appendLimit)', () => {

@@ -11,6 +11,7 @@ import type {
   TableMeta,
 } from './db-connector.interface';
 import { appendLimit } from './limit-clause';
+import { assertSingleStatement } from './single-statement';
 import { tr } from '../../common/i18n/translate';
 
 type SqliteDatabase = InstanceType<typeof Database>;
@@ -139,6 +140,7 @@ export class SqliteConnector implements DbConnector {
     ) {
       throw new Error(tr('datasource.query_only'));
     }
+    assertSingleStatement(sql);
 
     let finalSql = sql;
     if (limit !== undefined) {

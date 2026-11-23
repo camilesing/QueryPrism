@@ -11,6 +11,7 @@ import type {
   TableMeta,
 } from './db-connector.interface';
 import { appendLimit } from './limit-clause';
+import { assertSingleStatement } from './single-statement';
 import { tr } from '../../common/i18n/translate';
 
 /** Build the libpq startup option that pins search_path to `schema`.
@@ -132,6 +133,8 @@ ORDER BY a.attnum`;
     if (!allowed.some((k) => upper.startsWith(k))) {
       throw new Error(tr('datasource.query_only'));
     }
+    // pg runs every `;`-separated statement of a bind-parameter-less string.
+    assertSingleStatement(sql);
     let finalSql = sql.trim();
     if (limit !== undefined) {
       finalSql = appendLimit(finalSql, limit);

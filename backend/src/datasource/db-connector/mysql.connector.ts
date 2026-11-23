@@ -12,6 +12,7 @@ import type {
   TableMeta,
 } from './db-connector.interface';
 import { appendLimit } from './limit-clause';
+import { assertSingleStatement } from './single-statement';
 import { tr } from '../../common/i18n/translate';
 
 /** First-token keywords allowed by the read-only execSql guard. */
@@ -115,6 +116,7 @@ export class MysqlConnector implements DbConnector {
     if (!READONLY_PREFIXES.test(trimmed)) {
       throw new Error(tr('datasource.query_only'));
     }
+    assertSingleStatement(sql);
     let finalSql = sql;
     if (limit !== undefined) {
       finalSql = appendLimit(sql, limit);

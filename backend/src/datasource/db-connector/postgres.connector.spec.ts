@@ -192,6 +192,26 @@ describe('PostgresConnector.getTables / getFields', () => {
 });
 
 describe('PostgresConnector.execSql', () => {
+  it('rejects a multi-statement string: the prefix check only sees the first keyword, but pg runs the whole string', async () => {
+    const connector = new PostgresConnector({ host: 'h', db: 'a' });
+    const { query } = stubbed(connector);
+    query.mockResolvedValue({ rows: [], fields: [] });
+    await expect(
+      connector.execSql('SELECT 1; DROP TABLE orders; SELECT 1'),
+    ).rejects.toThrow('datasource.query_only');
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('still executes one statement that merely contains semicolons', async () => {
+    const connector = new PostgresConnector({ host: 'h', db: 'a' });
+    const { query } = stubbed(connector);
+    query.mockResolvedValue({ rows: [], fields: [] });
+    await expect(
+      connector.execSql(`SELECT ';' AS a, "b;c" FROM t -- ; not a separator`),
+    ).resolves.toEqual({ columns: [], rows: [] });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects non-read statements', async () => {
     const connector = new PostgresConnector({ host: 'h', db: 'a' });
     const { query } = stubbed(connector);
