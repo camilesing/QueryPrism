@@ -443,6 +443,9 @@ onMounted(() => {
   getTableData()
 })
 onBeforeUnmount(() => {
+  // Dispose releases the canvas and the document-level listeners X6 attaches;
+  // dropping the reference alone leaked them on every visit of the editor.
+  graph?.dispose()
   graph = null
 })
 const dragover = () => {
