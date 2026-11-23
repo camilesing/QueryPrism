@@ -72,6 +72,7 @@ cd backend
 pnpm install
 pnpm run prisma:generate
 pnpm run prisma:migrate
+pnpm run prisma:seed   # 首次执行：创建 admin / admin 与基线数据
 pnpm run start:dev
 ```
 
@@ -89,7 +90,7 @@ npm run dev
 
 ### 默认登录账号
 
-初次启动（执行过 `prisma:seed`）后可用的管理员账号：
+管理员账号（由 `pnpm run prisma:seed` 创建）：
 
 | 账号 | 密码 |
 | --- | --- |
@@ -142,27 +143,28 @@ npm run preview
 
 ## API 文档
 
-### 数据源管理 (`/api/datasource`)
+基础前缀：`/api/v1`。路由为动作式（如 `POST /datasource/add`，而非 `PATCH /datasource/:id`）。成功响应为 `{ success: true, code: 0, msg: 'success', data }`；
+错误为纯文本响应体，HTTP 状态码即错误类型。需要登录的路由通过 `X-QUERYPRISM-TOKEN: Bearer <token>` 携带 JWT（`Authorization: Bearer` 亦可）。
+完整的资源列表见 [AGENTS.md 的 API 设计](AGENTS.md#api-design)。
 
-- `POST /api/datasource` - 创建数据源
-- `GET /api/datasource` - 获取所有数据源
-- `GET /api/datasource/:id` - 获取单个数据源
-- `PATCH /api/datasource/:id` - 更新数据源
-- `DELETE /api/datasource/:id` - 删除数据源
-- `POST /api/datasource/:id/test` - 测试数据源连接
-- `POST /api/datasource/:id/sync` - 同步数据源表结构
+### 数据源管理 (`/api/v1/datasource`)
 
-### 聊天会话 (`/api/chat`)
+- `GET /api/v1/datasource/list` - 获取当前工作空间的数据源列表
+- `POST /api/v1/datasource/add` - 创建数据源
+- `POST /api/v1/datasource/get/:id` - 获取单个数据源
+- `POST /api/v1/datasource/update` - 更新数据源（id 在请求体中）
+- `POST /api/v1/datasource/delete/:id/:name` - 删除数据源
+- `POST /api/v1/datasource/check` - 用提交的连接配置测试连接
+- `GET /api/v1/datasource/check/:id` - 测试已保存数据源的连接
+- `POST /api/v1/datasource/chooseTables/:id` - 选择要使用的表并同步表结构
 
-- `POST /api/chat` - 创建新的聊天会话
-- `GET /api/chat` - 获取最近的聊天会话（最多20条）
-- `GET /api/chat/:id` - 获取单个聊天会话详情
-- `DELETE /api/chat/:id` - 删除聊天会话
+### 聊天 (`/api/v1/chat`)
 
-### 消息发送 (`/api/chat/:id/message`)
-
-- `POST /api/chat/:id/message` - 发送消息并生成图表
-- `POST /api/chat/:id/message/regenerate` - 重新生成图表
+- `POST /api/v1/chat/start` - 创建新的聊天会话
+- `GET /api/v1/chat/list` - 获取最近的聊天会话（最多20条）
+- `GET /api/v1/chat/:id` - 获取单个聊天会话详情
+- `DELETE /api/v1/chat/:id` - 删除聊天会话
+- `POST /api/v1/chat/question` - 发送问题；SQL 与图表以 SSE 流式返回
 
 ## 数据库模型
 
@@ -189,6 +191,7 @@ PORT=3000
 cd backend
 pnpm run prisma:deploy
 NODE_ENV=production pnpm run prisma:seed   # 仅首次
+pnpm run build                            # 启动前必须先有 dist/
 node dist/src/main
 ```
 
@@ -197,14 +200,17 @@ node dist/src/main
 ### Frontend (.env)
 
 ```env
-VITE_API_BASE_URL=http://localhost:3000/api
+VITE_API_BASE_URL=http://localhost:3000/api/v1
 ```
+
+生产构建使用 `./api/v1`（见 `frontend/.env.production`）。
 
 ## 核心特性说明
 
 - **数据源管理**: 支持连接数据库，自动同步表结构
 - **智能SQL生成**: 基于 LLM 的 NL2SQL（LangChain，SSE 流式）
 - **图表自动选择**: 由 LLM 选择图表类型，前端用 AntV G2 渲染
+- **表召回**: 关键词融合排序（LLM 关键词抽取 → 语义别名扩展 → α·向量 + (1-α)·关键词）；明确点名的表始终保留，兜底为全部勾选表。关键词抽取始终执行、召回宽度固定为 Top-3，二者均不可配置；抽取出的关键词也是指标口径、命名规则与语义提示注释的唯一匹配来源
 - **对话历史**: 保留最近20条对话记录
 - **数据存储**: 查询结果和图表配置以JSON格式存储
 - **向量检索**: PostgreSQL pgvector，支持表召回的混合检索（指标口径、命名词典与语义注释按抽取关键词精确匹配，不走向量）
@@ -218,7 +224,6 @@ VITE_API_BASE_URL=http://localhost:3000/api
 
 ## 开发注意事项
 
-- TypeScript版本不匹配: 前端使用TS 6.x，后端使用TS 5.x
 - 修改Prisma schema后需运行 `prisma:generate` 重新生成Prisma Client
 - 端口配置: 后端3000，前端5173
 - CORS配置: 确保 `.env` 中 `FRONTEND_URL` 设置正确

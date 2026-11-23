@@ -74,6 +74,7 @@ cd backend
 pnpm install
 pnpm run prisma:generate
 pnpm run prisma:migrate
+pnpm run prisma:seed   # first time: admin / admin + baseline rows
 pnpm run start:dev
 ```
 
@@ -91,7 +92,7 @@ The frontend runs at http://localhost:5173
 
 ### Default Login
 
-Admin account available after initial startup (once `prisma:seed` has run):
+Admin account (created by `pnpm run prisma:seed`):
 
 | Username | Password |
 | -------- | -------- |
@@ -144,29 +145,30 @@ npm run preview
 
 ## API Reference
 
-Base prefix: `/api/v1`
+Base prefix: `/api/v1`. Routes are action-style (`POST /datasource/add`, not
+`PATCH /datasource/:id`). A success is `{ success: true, code: 0, msg: 'success', data }`;
+errors are plain-text bodies carrying the HTTP status. Authenticated routes take the
+JWT in `X-QUERYPRISM-TOKEN: Bearer <token>` (`Authorization: Bearer` also works).
+The full resource list is in the [API design notes](AGENTS.md#api-design).
 
-### Datasources (`/api/datasource`)
+### Datasources (`/api/v1/datasource`)
 
-- `POST /api/datasource` - Create a datasource
-- `GET /api/datasource` - List all datasources
-- `GET /api/datasource/:id` - Get a single datasource
-- `PATCH /api/datasource/:id` - Update a datasource
-- `DELETE /api/datasource/:id` - Delete a datasource
-- `POST /api/datasource/:id/test` - Test the datasource connection
-- `POST /api/datasource/:id/sync` - Sync table schemas from the datasource
+- `GET /api/v1/datasource/list` - List the workspace's datasources
+- `POST /api/v1/datasource/add` - Create a datasource
+- `POST /api/v1/datasource/get/:id` - Get a single datasource
+- `POST /api/v1/datasource/update` - Update a datasource (id in the body)
+- `POST /api/v1/datasource/delete/:id/:name` - Delete a datasource
+- `POST /api/v1/datasource/check` - Test a connection described by the submitted configuration
+- `GET /api/v1/datasource/check/:id` - Test a saved datasource's connection
+- `POST /api/v1/datasource/chooseTables/:id` - Choose the tables to use and sync their schemas
 
-### Chat sessions (`/api/chat`)
+### Chat (`/api/v1/chat`)
 
-- `POST /api/chat` - Create a new chat session
-- `GET /api/chat` - List recent chat sessions (up to 20)
-- `GET /api/chat/:id` - Get chat session details
-- `DELETE /api/chat/:id` - Delete a chat session
-
-### Messages (`/api/chat/:id/message`)
-
-- `POST /api/chat/:id/message` - Send a message and generate a chart
-- `POST /api/chat/:id/message/regenerate` - Regenerate the chart
+- `POST /api/v1/chat/start` - Create a new chat session
+- `GET /api/v1/chat/list` - List recent chat sessions (up to 20)
+- `GET /api/v1/chat/:id` - Get chat session details
+- `DELETE /api/v1/chat/:id` - Delete a chat session
+- `POST /api/v1/chat/question` - Send a question; SQL and the chart stream back as SSE
 
 ## Data Model
 
@@ -193,6 +195,7 @@ In production, `DATABASE_URL` is injected by the deployment platform. Before sta
 cd backend
 pnpm run prisma:deploy
 NODE_ENV=production pnpm run prisma:seed   # first time only
+pnpm run build                            # dist/ must exist before start
 node dist/src/main
 ```
 
@@ -201,8 +204,10 @@ Run the server with `NODE_ENV=production`: it then refuses to start unless `JWT_
 ### Frontend (`.env`)
 
 ```env
-VITE_API_BASE_URL=http://localhost:3000/api
+VITE_API_BASE_URL=http://localhost:3000/api/v1
 ```
+
+Production builds use `./api/v1` (see `frontend/.env.production`).
 
 ## How It Works
 
@@ -223,7 +228,6 @@ VITE_API_BASE_URL=http://localhost:3000/api
 
 ## Development Notes
 
-- **TypeScript versions differ**: the frontend uses TS 6.x, the backend TS 5.x
 - Run `prisma:generate` after changing the Prisma schema
 - **Ports**: backend 3000, frontend 5173
 - **CORS**: make sure `FRONTEND_URL` in `.env` is correct
