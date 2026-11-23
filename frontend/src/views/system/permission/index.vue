@@ -438,7 +438,7 @@ const saveHandler = () => {
   })
 }
 const preview = () => {
-  currentPermission.user = selectPermissionRef.value.checkTableList.map((ele: any) => ele.id)
+  currentPermission.users = selectPermissionRef.value.checkTableList.map((ele: any) => ele.id)
   activeStep.value = 0
 }
 const next = () => {
