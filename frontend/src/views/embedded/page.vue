@@ -32,7 +32,6 @@ const appearanceStore = useAppearanceStoreWithOut()
 const assistantStore = useAssistantStore()
 assistantStore.setPageEmbedded(true)
 const route = useRoute()
-const assistantName = ref('')
 const dynamicType = ref(0)
 const customSet = reactive({
   name: '',
@@ -203,10 +202,6 @@ onBeforeMount(async () => {
   const history: boolean = route.query.history !== 'false'
   assistantStore.setHistory(history)
 
-  let name = route.query.name
-  if (name) {
-    assistantName.value = decodeURIComponent(name.toString())
-  }
   let userFlag = route.query.userFlag
   if (userFlag && userFlag === '1') {
     userFlag = '100001'
