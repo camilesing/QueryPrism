@@ -107,6 +107,23 @@ describe('JwtAuthGuard', () => {
     expect(verify).toHaveBeenCalledWith('abc.def.ghi');
   });
 
+  it('rejects a token without a numeric `sub` (e.g. an assistant JWT) before any lookup', async () => {
+    // The assistant JWT is signed with the same secret but carries no `sub`;
+    // it used to reach `findUnique({ where: { id: undefined } })` and 500.
+    const verify = jest.fn().mockResolvedValue({
+      id: 1,
+      account: 'queryprism-inner-assistant',
+      oid: 1,
+      assistant_id: 42,
+    });
+    const prisma = makePrisma();
+    const guard = makeGuard(verify, undefined, prisma);
+    await expect(
+      guard.canActivate(makeContext({ 'X-QUERYPRISM-TOKEN': 'Bearer a.b.c' })),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
   it('accepts a raw token in X-QUERYPRISM-TOKEN (no Bearer prefix)', async () => {
     const verify = jest.fn().mockResolvedValue(PAYLOAD);
     const guard = makeGuard(verify);

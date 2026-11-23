@@ -89,6 +89,13 @@ export class JwtAuthGuard implements CanActivate {
     } catch {
       throw new UnauthorizedException(tr('auth.token_expired'));
     }
+    // Only the login token shape is accepted here. The assistant JWT is
+    // signed with the same secret but carries `id`/`assistant_id` and no
+    // `sub`; on a JWT route that must be a 401, not a user lookup by
+    // `undefined`.
+    if (typeof payload.sub !== 'number' || !Number.isInteger(payload.sub)) {
+      throw new UnauthorizedException(tr('auth.not_logged_in'));
+    }
 
     // Current workspace is DB-authoritative. The JWT oid is only a signed
     // snapshot taken at login, so trusting it made `PUT /user/ws/:oid`
