@@ -20,6 +20,19 @@ export function parseRequestUrl(
 /** A G2 spec is a few KB; payloads that embed data rows stay far below this. */
 export const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
+export const MIN_CANVAS = 64;
+export const MAX_CANVAS = 4096;
+
+/** Canvas dimensions must be integers within [MIN_CANVAS, MAX_CANVAS]. The
+ *  renderer scales by the device pixel ratio, so the largest accepted canvas
+ *  (4096²) still costs ~270 MB; node-canvas itself would allow 32767², which
+ *  measured at 3 GB RSS and a render that outlasted the caller's timeout. */
+export function isCanvasSizeOk(width: number, height: number): boolean {
+  return [width, height].every(
+    (n) => Number.isInteger(n) && n >= MIN_CANVAS && n <= MAX_CANVAS,
+  );
+}
+
 export class BodyTooLargeError extends Error {
   readonly status = 413;
   constructor() {

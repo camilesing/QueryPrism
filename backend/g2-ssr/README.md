@@ -26,9 +26,10 @@ Errors are JSON: `{ "error": "<message>" }` with the HTTP status.
 
 ### Limits
 
-| Condition                       | Status |
-| ------------------------------- | ------ |
-| Request body larger than 2 MB   | `413`  |
+| Condition                                            | Status |
+| --------------------------------------------------- | ------ |
+| Request body larger than 2 MB                       | `413`  |
+| `width` / `height` outside 64–4096, or not integers | `400`  |
 
 ## Setup
 

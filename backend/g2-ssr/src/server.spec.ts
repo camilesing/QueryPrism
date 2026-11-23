@@ -1,7 +1,12 @@
 // Request-parsing guards of the g2-ssr HTTP server (no port is bound here).
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
-import { BodyTooLargeError, parseRequestUrl, readBody } from './http-utils';
+import {
+  BodyTooLargeError,
+  isCanvasSizeOk,
+  parseRequestUrl,
+  readBody,
+} from './http-utils';
 
 describe('g2-ssr request parsing', () => {
   it('returns null for a malformed Host header instead of throwing', () => {
@@ -12,6 +17,16 @@ describe('g2-ssr request parsing', () => {
       '/healthz',
     );
     expect(parseRequestUrl(undefined, undefined)?.pathname).toBe('/');
+  });
+
+  it('bounds the canvas size to integers within the allowed range', () => {
+    // node-canvas accepts up to 32767²: 3 GB RSS and a render the caller never
+    // sees. The backend only uses the defaults (640×480).
+    expect(isCanvasSizeOk(640, 480)).toBe(true);
+    expect(isCanvasSizeOk(64, 4096)).toBe(true);
+    expect(isCanvasSizeOk(32767, 32767)).toBe(false);
+    expect(isCanvasSizeOk(640.5, 480)).toBe(false);
+    expect(isCanvasSizeOk(0, 480)).toBe(false);
   });
 });
 

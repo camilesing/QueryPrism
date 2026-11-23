@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { renderChart, type G2Spec } from './render';
 import {
   BodyTooLargeError,
+  isCanvasSizeOk,
   parseRequestUrl,
   readBody,
 } from './http-utils';
@@ -84,10 +85,20 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'spec is required' });
         return;
       }
+      // Same defaults as renderChart; a client-supplied size must be a sane
+      // integer, or one request allocates a multi-gigabyte canvas.
+      const width = parsed.width ?? 640;
+      const height = parsed.height ?? 480;
+      if (!isCanvasSizeOk(width, height)) {
+        sendJson(res, 400, {
+          error: 'width/height must be integers between 64 and 4096',
+        });
+        return;
+      }
       const { buffer } = await renderChart({
         spec: parsed.spec,
-        width: parsed.width,
-        height: parsed.height,
+        width,
+        height,
       });
       const filename = `${randomUUID()}.png`;
       await fs.promises.mkdir(IMAGE_DIR, { recursive: true });
