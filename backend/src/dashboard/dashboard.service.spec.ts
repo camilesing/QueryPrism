@@ -223,6 +223,19 @@ describe('DashboardService', () => {
       expect(prisma.user.findUnique).not.toHaveBeenCalled();
     });
 
+    it('lets uid 1 load a legacy NULL-createBy row it lists (P1-3); other users still get 403', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 11, name: 'legacy', createBy: null }),
+      );
+      const svc = makeService(prisma);
+      await expect(
+        withUser(1, () => svc.loadResource(11)),
+      ).resolves.toMatchObject({ id: 11 });
+      await expect(
+        withUser(1, () => svc.loadResource(11), 2),
+      ).rejects.toMatchObject({ status: 403 });
+    });
+
     it('falls back create_name to account when User.name is null (§85 fallback)', async () => {
       prisma.coreDashboard.findFirst.mockResolvedValue(
         dash({ id: 1, name: 'n', createBy: 1, updateBy: null }),
@@ -372,6 +385,17 @@ describe('DashboardService', () => {
         withUser(1, () => svc.updateResource(99, { name: 'x' })),
       ).rejects.toMatchObject({ status: 404 });
     });
+
+    it('throws 403 when the row belongs to another user (ownership, like load/delete/move)', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 7, name: 'n', createBy: 999 }),
+      );
+      const svc = makeService(prisma);
+      await expect(
+        withUser(1, () => svc.updateResource(7, { name: 'x' })),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(prisma.coreDashboard.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('updateCanvas (name + canvas, no version bump)', () => {
@@ -403,6 +427,17 @@ describe('DashboardService', () => {
           canvasViewInfo: { c1: { x: 1 } },
         },
       });
+    });
+
+    it('throws 403 when the row belongs to another user (no overwrite of a foreign canvas)', async () => {
+      prisma.coreDashboard.findFirst.mockResolvedValue(
+        dash({ id: 8, name: 'n', createBy: 999 }),
+      );
+      const svc = makeService(prisma);
+      await expect(
+        withUser(1, () => svc.updateCanvas(8, { name: 'x' })),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(prisma.coreDashboard.update).not.toHaveBeenCalled();
     });
   });
 

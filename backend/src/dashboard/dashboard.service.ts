@@ -7,6 +7,7 @@
 // - create_resource/create_canvas: NO backend name-uniqueness check (frontend
 //   gates via check_name — the client-side check is trusted). Sets createBy = uid.
 // - update_resource/update_canvas: NO uniqueness check. Sets updateBy = uid.
+//   Ownership 403 like load/delete/move (a canvas is private to its creator).
 // - check_name (validate_name): opt-based uniqueness, returns boolean
 // - delete_resource: ownership 403 + folder-not-empty guard (safety: refuse
 //   to delete a non-empty folder)
@@ -38,6 +39,7 @@ import { DatasourceService } from '../datasource/datasource.service';
 import { toQueryPrismDataShape } from '../common/utils/queryprism-data-shape';
 import { parseStrictInt } from '../common/utils/parse-int';
 import { RequestContext } from '../common/context/request-context';
+import { ADMIN_UID } from '../auth/admin.guard';
 import { tr } from '../common/i18n/translate';
 
 /** A dashboard node with its nested children (for the resource tree view). */
@@ -155,7 +157,7 @@ export class DashboardService {
     });
     if (!row)
       throw new NotFoundException(tr('dashboard.dashboard_not_found', { id }));
-    if (row.createBy !== uid) {
+    if (!this.isOwned(row, uid)) {
       throw new ForbiddenException(
         'You do not have permission to access this resource',
       );
@@ -277,13 +279,15 @@ export class DashboardService {
 
   // --- update (update_resource + update_canvas) --------------------------
 
-  /** update_resource: rename only. Sets updateBy = uid. No uniqueness check. */
+  /** update_resource: rename only. Sets updateBy = uid. No uniqueness check.
+   *  Creator-only (403), like every other route that reads or writes a row. */
   async updateResource(
     id: number,
     dto: DashboardMutateBody,
   ): Promise<CoreDashboard> {
     const { oid, uid } = this.currentUser();
-    await this.findOneOrFail(id, oid);
+    const existing = await this.findOneOrFail(id, oid);
+    this.assertOwned(existing, uid);
     return this.prisma.coreDashboard.update({
       where: { id },
       data: {
@@ -294,13 +298,14 @@ export class DashboardService {
   }
 
   /** update_canvas: update name + canvas fields + updateBy. No version bump
-   *  (distinct from saveCanvas, which bumps version). */
+   *  (distinct from saveCanvas, which bumps version). Creator-only (403). */
   async updateCanvas(
     id: number,
     dto: DashboardMutateBody,
   ): Promise<CoreDashboard> {
     const { oid, uid } = this.currentUser();
-    await this.findOneOrFail(id, oid);
+    const existing = await this.findOneOrFail(id, oid);
+    this.assertOwned(existing, uid);
     const data: Prisma.CoreDashboardUpdateInput = {
       name: dto.name,
       updateBy: uid,
@@ -356,11 +361,7 @@ export class DashboardService {
   async remove(id: number): Promise<{ success: true }> {
     const { oid, uid } = this.currentUser();
     const existing = await this.findOneOrFail(id, oid);
-    if (existing.createBy !== uid) {
-      throw new ForbiddenException(
-        `Resource with id ${id} not owned by the current user`,
-      );
-    }
+    this.assertOwned(existing, uid);
     if (existing.nodeType === 'folder') {
       const childCount = await this.prisma.coreDashboard.count({
         where: { pid: id, oid },
@@ -383,11 +384,7 @@ export class DashboardService {
   ): Promise<{ success: true }> {
     const { oid, uid } = this.currentUser();
     const existing = await this.findOneOrFail(id, oid);
-    if (existing.createBy !== uid) {
-      throw new ForbiddenException(
-        `Resource with id ${id} not owned by the current user`,
-      );
-    }
+    this.assertOwned(existing, uid);
     const level = await this.deriveLevel(pid, oid);
     await this.prisma.coreDashboard.update({
       where: { id },
@@ -409,7 +406,9 @@ export class DashboardService {
       mobileLayout?: unknown;
     },
   ): Promise<CoreDashboard> {
-    await this.findOneOrFail(id, this.currentUser().oid);
+    const { oid, uid } = this.currentUser();
+    const existing = await this.findOneOrFail(id, oid);
+    this.assertOwned(existing, uid);
     return this.prisma.coreDashboard.update({
       where: { id },
       data: {
@@ -423,6 +422,24 @@ export class DashboardService {
   }
 
   // --- helpers -----------------------------------------------------------
+
+  /** A dashboard row is private to the user who created it. Legacy rows that
+   *  predate `createBy` (NULL) belong to the system admin — the only user
+   *  listResource shows them to (P1-3). */
+  private isOwned(row: Pick<CoreDashboard, 'createBy'>, uid: number): boolean {
+    return row.createBy === uid || (row.createBy == null && uid === ADMIN_UID);
+  }
+
+  private assertOwned(
+    row: Pick<CoreDashboard, 'id' | 'createBy'>,
+    uid: number,
+  ): void {
+    if (!this.isOwned(row, uid)) {
+      throw new ForbiddenException(
+        `Resource with id ${row.id} not owned by the current user`,
+      );
+    }
+  }
 
   private currentUser(): { oid: number; uid: number } {
     const user = RequestContext.getUser();
