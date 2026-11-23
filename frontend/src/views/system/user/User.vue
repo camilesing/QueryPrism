@@ -465,7 +465,7 @@
     </el-form>
     <template #footer>
       <div class="dialog-footer">
-        <el-button secondary @click="closeForm">{{ $t('common.cancel') }}</el-button>
+        <el-button secondary @click="onFormClose">{{ $t('common.cancel') }}</el-button>
         <el-button type="primary" @click="saveHandler">
           {{ state.form.id ? $t('common.save') : $t('model.add') }}
         </el-button>
@@ -1000,9 +1000,6 @@ const deleteHandler = (row: any) => {
   })
 }
 
-const closeForm = () => {
-  dialogFormVisible.value = false
-}
 const onFormClose = () => {
   state.form = { ...defaultForm }
   dialogFormVisible.value = false
