@@ -22,6 +22,14 @@ content block (decision §51) — the backend keeps working.
 
 CORS is permissive (`*`); the Nest backend is cross-origin.
 
+Errors are JSON: `{ "error": "<message>" }` with the HTTP status.
+
+### Limits
+
+| Condition                       | Status |
+| ------------------------------- | ------ |
+| Request body larger than 2 MB   | `413`  |
+
 ## Setup
 
 ```bash

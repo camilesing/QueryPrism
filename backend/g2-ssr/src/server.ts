@@ -12,7 +12,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { renderChart, type G2Spec } from './render';
-import { parseRequestUrl } from './http-utils';
+import {
+  BodyTooLargeError,
+  parseRequestUrl,
+  readBody,
+} from './http-utils';
 
 const PORT = parseInt(process.env.G2_SSR_PORT ?? '3001', 10);
 const BASE_URL =
@@ -24,15 +28,6 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   const payload = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(payload);
-}
-
-function readBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -103,7 +98,10 @@ const server = http.createServer(async (req, res) => {
         url: `${BASE_URL}/images/${filename}`,
       });
     } catch (e) {
-      sendJson(res, 500, { error: (e as Error).message });
+      // BodyTooLargeError carries 413; everything else is a render failure.
+      sendJson(res, e instanceof BodyTooLargeError ? e.status : 500, {
+        error: (e as Error).message,
+      });
     }
     return;
   }
