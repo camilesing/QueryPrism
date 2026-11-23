@@ -178,19 +178,19 @@ const open = async (id: any) => {
     workspaceList(),
     workspaceModelMapping(id),
   ])
-  workspace.value =
-    workspaceListResult.status === 'fulfilled'
-      ? JSON.parse(JSON.stringify(workspaceListResult.value))
-      : []
-  checkedWorkspace.value =
-    workspaceMappingResult.status === 'fulfilled'
-      ? workspace.value.filter((ele: any) => workspaceMappingResult.value.includes(`${ele.id}`))
-      : []
-  handleCheckedWorkspaceChange(
-    workspaceMappingResult.status === 'fulfilled'
-      ? workspace.value.filter((ele: any) => workspaceMappingResult.value.includes(`${ele.id}`))
-      : []
-  )
+  // Confirm REPLACES the model's whole mapping. Opening with an unknown
+  // current selection (a failed request) would let one click on Confirm drop
+  // every existing authorization, so a failed load aborts instead; the
+  // request interceptor has already reported the error.
+  if (workspaceListResult.status !== 'fulfilled' || workspaceMappingResult.status !== 'fulfilled') {
+    loading.value = false
+    return
+  }
+  workspace.value = JSON.parse(JSON.stringify(workspaceListResult.value))
+  // Both sides as strings: the API may hand back numbers or strings.
+  const mappedIds = new Set(workspaceMappingResult.value.map((id: any) => `${id}`))
+  checkedWorkspace.value = workspace.value.filter((ele: any) => mappedIds.has(`${ele.id}`))
+  handleCheckedWorkspaceChange(checkedWorkspace.value)
   loading.value = false
   centerDialogVisible.value = true
 }
