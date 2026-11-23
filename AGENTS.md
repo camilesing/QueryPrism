@@ -70,7 +70,7 @@ npm install
 - Build/typecheck: `npm run build` (`vue-tsc -b` + Vite)
 - Preview: `npm run preview`
 - Lint: `npm run lint` (ESLint, auto-fixes)
-- i18n check: `npm run check:i18n` (en/zh-CN key parity; run after adding strings)
+- i18n check: `npm run check:i18n` (en/zh-CN key + interpolation-placeholder parity; run after adding strings)
 
 **Important:**
 - Path alias `@` → `src/`; strict TS with `noUnusedLocals` / `noUnusedParameters`
@@ -118,7 +118,7 @@ npm install
 RESTful, prefix `/api/v1`:
 - `/login`, `/user`, `/system/workspace` — auth, profile, workspace/member admin
 - `/datasource`, `/table_relation` — CRUD, test connection, sync/choose tables, Excel import, relationships, relation version history
-- `/chat` — sessions (limited to 20 recent) + `/chat/:id/message` SSE, regenerate chart
+- `/chat` — sessions (limited to 20 recent) + `POST /chat/question` SSE (the `/regenerate`, `/analysis` and `/predict` quick commands arrive on the same route)
 - `/dashboard` — dashboard builder CRUD
 - `/system/{custom_prompt,aimodel,parameter,appearance,audit,apikey,embedded,assistant,mcp-integration}` — RAG context + admin surfaces
 - `/recommended_problem`, `/ds_permission`, `/sys_variable` — recommended questions, row permissions, system variables
