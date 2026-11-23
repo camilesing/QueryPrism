@@ -87,7 +87,10 @@ describe('buildG2Spec', () => {
     ).toEqual({ type: 'line', data, encode: { x: 'category', y: 'value' } });
   });
 
-  it('builds a pie: theta coordinate + stack, yField→y, xField→color', () => {
+  it('builds a pie: theta coordinate + stackY, yField→y, xField→color', () => {
+    // `stackY` is the G2 5.x mark transform (same as the frontend's Pie.ts).
+    // The old `stack` name is rejected by G2 ("Unknown Component:
+    // transform.stack"), which made every pie image fail in g2-ssr.
     expect(
       buildG2Spec(
         'pie',
@@ -100,8 +103,39 @@ describe('buildG2Spec', () => {
       data,
       encode: { y: 'value', color: 'category' },
       coordinate: { type: 'theta' },
-      transform: [{ type: 'stack' }],
+      transform: [{ type: 'stackY' }],
     });
+  });
+
+  it('matches the chart type case- and whitespace-insensitively, like chart-object.builder', () => {
+    expect(
+      buildG2Spec(
+        ' Column ',
+        { xField: 'category', yField: 'value' },
+        rows,
+        columns,
+      ),
+    ).toEqual({
+      type: 'interval',
+      data,
+      encode: { x: 'category', y: 'value' },
+    });
+    expect(
+      buildG2Spec(
+        'PIE',
+        { xField: 'category', yField: 'value' },
+        rows,
+        columns,
+      ),
+    ).toMatchObject({ transform: [{ type: 'stackY' }] });
+    expect(
+      buildG2Spec(
+        ' Table ',
+        { xField: 'category', yField: 'value' },
+        rows,
+        columns,
+      ),
+    ).toBeNull();
   });
 
   it('returns null for table (no image rendered)', () => {

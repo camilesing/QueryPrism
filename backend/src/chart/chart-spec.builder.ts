@@ -37,7 +37,9 @@ function toObjects(
  *  - column: category→x, value→y, seriesField→color
  *  - bar:    horizontal — swap so value→x, category→y, seriesField→color
  *  - line:   category→x, value→y, seriesField→color
- *  - pie:    value→y, category→color, theta coordinate + stack transform
+ *  - pie:    value→y, category→color, theta coordinate + stackY transform
+ *    (`stackY` is the G2 5.x name, as in the frontend's Pie.ts; the older
+ *    `stack` is rejected by G2 and made every pie image fail in g2-ssr)
  */
 export function buildG2Spec(
   chartType: string,
@@ -45,6 +47,7 @@ export function buildG2Spec(
   rows: unknown[][],
   columns: string[],
 ): G2Spec | null {
+  const type = chartType.trim().toLowerCase(); // same normalization as chart-object.builder
   const data = toObjects(rows, columns);
   const xField = asField(config.xField);
   const yField = asField(config.yField);
@@ -57,7 +60,7 @@ export function buildG2Spec(
     return encode;
   };
 
-  switch (chartType) {
+  switch (type) {
     case 'column':
       if (!xField || !yField) return null;
       return {
@@ -88,7 +91,7 @@ export function buildG2Spec(
         data,
         encode,
         coordinate: { type: 'theta' },
-        transform: [{ type: 'stack' }],
+        transform: [{ type: 'stackY' }],
       };
     }
     default:
