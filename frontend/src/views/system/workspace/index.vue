@@ -140,16 +140,25 @@ const pageInfo = reactive({
   total: 0,
 })
 
+/** Drop the member selection. It belongs to ONE workspace: rows picked under
+ *  another one are not on the current page, so handleSelectionChange (which
+ *  only evicts ids of the current page) would keep them, and "Remove" would
+ *  send those uids with the new workspace's oid. */
+const clearSelection = () => {
+  multipleSelectionAll.value = []
+  checkAll.value = false
+  isIndeterminate.value = false
+}
+
 const clickTable = (table: any) => {
   currentTable.value = table
   pageInfo.currentPage = 1
+  clearSelection()
   search()
 }
 const cancelDelete = () => {
   handleToggleRowSelection(false)
-  multipleSelectionAll.value = []
-  checkAll.value = false
-  isIndeterminate.value = false
+  clearSelection()
 }
 const deleteBatchUser = () => {
   ElMessageBox.confirm(
@@ -328,6 +337,7 @@ const delWorkspace = (row: any) => {
       init()
       if (row.id === currentTable.value.id) {
         currentTable.value = {}
+        clearSelection()
       }
       if (String(row.id) === String(userStore.getOid)) {
         userStore.setOid('1')
