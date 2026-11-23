@@ -28,12 +28,21 @@ export function highlightKeyword(
 ): string {
   if (!keyword) return escapeHtml(text)
 
-  const escapedText = escapeHtml(text)
-  const escapedKeyword = escapeHtml(keyword)
-
-  // Use case-insensitive replace
-  const regex = new RegExp(escapedKeyword, 'gi')
-  return escapedText.replace(regex, (match) => `<span class="${highlightClass}">${match}</span>`)
+  // The keyword is literal input from a search box, so regex metacharacters
+  // must be escaped: "(" or "[" would otherwise throw a SyntaxError while the
+  // list re-renders. Match on the ORIGINAL text and escape every piece on its
+  // own, so a keyword such as "lt" cannot match inside an entity like "&lt;".
+  const pattern = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(pattern, 'gi')
+  let result = ''
+  let last = 0
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    result += escapeHtml(text.slice(last, match.index))
+    result += `<span class="${highlightClass}">${escapeHtml(match[0])}</span>`
+    last = match.index + match[0].length
+  }
+  return result + escapeHtml(text.slice(last))
 }
 
 /**
