@@ -144,7 +144,10 @@ export class AuthService {
     }
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { password: bcrypt.hashSync(newPassword, 10) },
+      // async hash like every other site: hashSync stalled the event loop
+      // (and with it every SSE stream) for the whole bcrypt cost on a route
+      // any logged-in user can call.
+      data: { password: await bcrypt.hash(newPassword, 10) },
     });
     return { success: true };
   }

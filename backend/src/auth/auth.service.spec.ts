@@ -144,7 +144,9 @@ describe('AuthService (#1355 initial-password policy)', () => {
       ).resolves.toEqual({ success: true });
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: baseUser.id },
-        data: { password: 'hashed-new-pwd' },
+        // hashed through the ASYNC bcrypt.hash (hashSync would block the
+        // event loop on this public route)
+        data: { password: 'hashed-NewP@ssw0rd' },
       });
     });
 
