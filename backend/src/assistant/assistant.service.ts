@@ -224,7 +224,7 @@ export class AssistantService {
 
     // Route each uploaded file to its flag.
     for (const file of files) {
-      const { flagName } = this.fileService.splitFilenameAndFlag(
+      const { fileName, flagName } = this.fileService.splitFilenameAndFlag(
         file.originalname,
       );
       if (!FILE_FLAGS.includes(flagName as FileFlag)) {
@@ -233,12 +233,16 @@ export class AssistantService {
         );
       }
       const flag = flagName as FileFlag;
-      this.fileService.checkFile(file);
+      // The `,flag` suffix only routes the file. The extension check and the
+      // stored file id must see the real name (`logo.png`), never
+      // `logo.png,logo`, whose "extension" fails the allow-list.
+      const upload: Express.Multer.File = { ...file, originalname: fileName };
+      this.fileService.checkFile(upload);
       // delete the prior file for this flag (if any) before overwriting.
       const oldFileId = configObj[flag];
       if (typeof oldFileId === 'string')
         await this.fileService.delete(oldFileId);
-      const fileId = await this.fileService.upload(file);
+      const fileId = await this.fileService.upload(upload);
       configObj[flag] = fileId;
       uiDict[flag] = fileId;
     }

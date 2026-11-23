@@ -5,7 +5,12 @@
 // mutation invalidation. Prisma + ConfigService are mocked; the workspace oid
 // comes from running calls inside the real RequestContext AsyncLocalStorage.
 import { BadRequestException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { requestContextStorage } from '../common/context/request-context';
+import { AssistantFileService } from './assistant-file.service';
 import { AssistantService } from './assistant.service';
 import { encrypt } from '../common/utils/aes';
 import type { Assistant } from '@prisma/client';
@@ -346,12 +351,14 @@ describe('AssistantService', () => {
         ),
       );
 
-      // file routed via the comma-split flag; validated + uploaded; old deleted
+      // file routed via the comma-split flag; validated + uploaded under its
+      // REAL name (the ",flag" suffix stays out of the extension); old deleted
+      const realName = { ...f, originalname: 'logo.png' };
       expect(fileMock.splitFilenameAndFlag).toHaveBeenCalledWith(
         'logo.png,logo',
       );
-      expect(fileMock.checkFile).toHaveBeenCalledWith(f);
-      expect(fileMock.upload).toHaveBeenCalledWith(f);
+      expect(fileMock.checkFile).toHaveBeenCalledWith(realName);
+      expect(fileMock.upload).toHaveBeenCalledWith(realName);
       expect(fileMock.delete).toHaveBeenCalledWith('OLD.png');
       // persisted configuration merges the new logo file_id + the theme attr
       expect(prisma.assistant.update).toHaveBeenCalledWith({
@@ -359,6 +366,47 @@ describe('AssistantService', () => {
         data: { configuration: { logo: 'NEW.png', theme: 'blue' } },
       });
       expect(row).toBe(updated);
+    });
+
+    it('stores an upload through the REAL file service: the ",flag" suffix is not part of the extension', async () => {
+      // The frontend names every upload "<name>,<flag>" (SetUi.vue). The
+      // suffix used to reach extname(), so ".png,logo" failed the allow-list
+      // and no logo could ever be uploaded.
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'qp-assistant-ui-'));
+      try {
+        const realFiles = new AssistantFileService({
+          get: () => dir,
+        } as unknown as ConfigService);
+        prisma.assistant.findFirst.mockResolvedValue(
+          ast({ id: 5, name: 'A', type: 0, configuration: {} }),
+        );
+        prisma.assistant.findUnique.mockResolvedValue(
+          ast({ id: 5, name: 'A', type: 0, configuration: {} }),
+        );
+        prisma.assistant.update.mockResolvedValue(
+          ast({ id: 5, name: 'A', type: 0 }),
+        );
+        await withUser(1, () =>
+          makeService(
+            prisma,
+            config,
+            realFiles as unknown as MockFileService,
+          ).updateUi({ id: 5 }, [
+            file('logo.png,logo', Buffer.from('png-bytes')),
+          ]),
+        );
+        const stored = (
+          prisma.assistant.update.mock.calls[0][0] as {
+            data: { configuration: { logo: string } };
+          }
+        ).data.configuration.logo;
+        expect(stored).toMatch(/^[0-9a-f]{16}\.png$/);
+        await expect(fs.readFile(path.join(dir, stored), 'utf8')).resolves.toBe(
+          'png-bytes',
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
     });
 
     it('clears an existing logo when the schema does not resend it', async () => {
