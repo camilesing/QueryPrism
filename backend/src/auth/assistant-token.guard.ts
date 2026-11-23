@@ -190,6 +190,19 @@ export class AssistantTokenGuard implements CanActivate {
         tr('auth.admin_account_embedded_forbidden'),
       );
     }
+    // The app secret lets its holder assert ANY account name, and any
+    // workspace admin can create a type-4 app and read its secret. The
+    // asserted user must therefore belong to the assistant's own workspace —
+    // otherwise a token minted in one tenant could act as a user of another.
+    const membership = await this.prisma.userWs.findFirst({
+      where: { uid: user.id, oid: assistant.oid },
+      select: { oid: true },
+    });
+    if (!membership) {
+      throw new UnauthorizedException(
+        tr('auth.workspace_missing_or_forbidden'),
+      );
+    }
     const userCtx: CurrentUserInfo = {
       id: user.id,
       account: user.account,

@@ -63,6 +63,9 @@ function makeGuard() {
   const prisma = {
     assistant: { findFirst: jest.fn() },
     user: { findUnique: jest.fn() },
+    // Embedded scheme: the asserted account's membership of the assistant's
+    // workspace. A member by default; tests narrow it with mockResolvedValue.
+    userWs: { findFirst: jest.fn().mockResolvedValue({ oid: 1 }) },
   };
   const guard = new AssistantTokenGuard(
     jwtService as unknown as JwtService,
@@ -249,6 +252,11 @@ describe('AssistantTokenGuard', () => {
       expect(m.prisma.user.findUnique).toHaveBeenCalledWith({
         where: { account: 'admin' },
       });
+      // ...and must be a member of the assistant's own workspace (oid 1).
+      expect(m.prisma.userWs.findFirst).toHaveBeenCalledWith({
+        where: { uid: 7, oid: 1 },
+        select: { oid: true },
+      });
       // req.user uses the USER's oid (5), not the assistant's oid (1).
       expect(req.user).toEqual({
         id: 7,
@@ -261,6 +269,44 @@ describe('AssistantTokenGuard', () => {
         type: 4,
         appId: 'uuid-42',
       });
+    });
+
+    it('rejects an asserted account from another workspace: an app secret must not impersonate other tenants', async () => {
+      const m = makeGuard();
+      m.jwtService.decode.mockReturnValue({ id: 42 });
+      m.assistantService.decryptAppSecret.mockReturnValue(
+        'plaintext-app-secret',
+      );
+      m.jwtService.verifyAsync.mockResolvedValue({
+        id: 42,
+        account: 'alice',
+        oid: 9,
+        assistant_id: 42,
+      });
+      m.prisma.assistant.findFirst.mockResolvedValue({
+        id: 42,
+        oid: 1, // the app belongs to workspace 1 …
+        type: 4,
+        domain: 'https://embed.example.com',
+        appId: 'uuid-42',
+        configuration: null,
+        appSecret: 'encrypted',
+      });
+      m.prisma.user.findUnique.mockResolvedValue({
+        id: 7,
+        account: 'alice',
+        oid: 9, // … while alice only belongs to workspace 9
+        status: 1,
+        language: 'en-US',
+      });
+      m.prisma.userWs.findFirst.mockResolvedValue(null);
+
+      const { ctx } = makeContext({
+        'x-queryprism-assistant-token': 'Embedded fake.jwt.token',
+      });
+      await expect(
+        runInCtx(async () => m.guard.canActivate(ctx)),
+      ).rejects.toMatchObject({ status: 401 });
     });
 
     it('falls back to xor_decrypt(app_id) when unverified decode has no id', async () => {
