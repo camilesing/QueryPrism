@@ -3,6 +3,5 @@
   "invalid_daily_limit": "The daily LLM character limit must be a positive integer",
   "default_has_no_subject": "The workspace default budget has no subject id",
   "subject_id_required": "A subject id is required for this subject type",
-  "budget_not_found": "LLM character budget row not found",
-  "exceeded": "Daily LLM character budget ({{limit}}) exhausted — try again tomorrow or ask an admin to raise it"
+  "budget_not_found": "LLM character budget row not found"
 }

@@ -3,6 +3,5 @@
   "invalid_daily_limit": "每日 LLM 交互字数上限必须是正整数",
   "default_has_no_subject": "工作空间默认预算不需要指定主体 id",
   "subject_id_required": "该主体类型必须指定主体 id",
-  "budget_not_found": "LLM 字数预算不存在",
-  "exceeded": "今日 LLM 交互字数预算({{limit}} 字)已用完,请明天再试或联系管理员调整"
+  "budget_not_found": "LLM 字数预算不存在"
 }
