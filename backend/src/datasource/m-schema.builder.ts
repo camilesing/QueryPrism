@@ -289,8 +289,7 @@ function edgesFromX6Cells(
       const portId = cellString(item, 'id');
       if (!portId) continue;
       const attrs = (item as Record<string, unknown>).attrs as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       const label = attrs?.portNameLabel as Record<string, unknown> | undefined;
       const text = typeof label?.text === 'string' ? label.text.trim() : '';
       const fromRow = names?.fieldByPort.get(`${id}:${portId}`);
@@ -354,6 +353,31 @@ function commentFor(
   if (c) return c;
   const d = (dbComment ?? '').trim();
   return d ? d : null;
+}
+
+/** Lowercased exact terms of the table metadata the M-Schema renders for
+ *  these tables: table/field names and their effective comments (same
+ *  precedence as the schema lines). This is the "table metadata" side of
+ *  naming-rule matching — a naming entry renders when its term equals one of
+ *  these OR one of the question's keywords. Unchecked tables/fields are
+ *  skipped: the LLM never sees them. */
+export function schemaTerms(tables: readonly MSchemaTable[]): Set<string> {
+  const terms = new Set<string>();
+  const add = (text: string | null | undefined): void => {
+    const t = (text ?? '').trim().toLowerCase();
+    if (t) terms.add(t);
+  };
+  for (const table of tables) {
+    if (!table.checked) continue;
+    add(table.tableName);
+    add(commentFor(table.tableComment, table.customComment));
+    for (const field of table.fields) {
+      if (!field.checked) continue;
+      add(field.fieldName);
+      add(commentFor(field.fieldComment, field.customComment));
+    }
+  }
+  return terms;
 }
 
 /** Build the M-Schema string for the generate_sql prompt. */

@@ -9,22 +9,16 @@
 // (see metric-policy); dangling references and cycles skip at RUNTIME
 // resolution instead of failing the request.
 //
-// Recall (M4 follow-up): literal name/alias inclusion FIRST, then a vector
-// supplement over the metric_def collection. Every committed write (direct
-// edit, approval, enable toggle) re-embeds the row fire-and-forget; rows
-// written while no embedding key was configured stay NULL and are filled by
-// the startup/manual backfill. The index is advisory: any failure (no key,
-// no pgvector, provider error) degrades to the literal matcher and only sets
-// `degradeReason` — a dictionary outage never fails a chat request.
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+// Recall: EXACT keyword equality — a definition renders only when its name or
+// an alias equals one of the question's LLM-extracted keywords (metric-policy
+// `matchesKeyword`). No vector index, no similarity threshold. Known
+// limitation: with no keywords (extraction failed / EMPTY / NOT_DATA_QUERY)
+// nothing matches at all.
+import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { tr } from '../common/i18n/translate';
-import {
-  pickEffectiveRow,
-  type SemanticActor,
-  type SemanticScope,
-} from './semantic-policy';
+import { pickEffectiveRow, type SemanticScope } from './semantic-policy';
 import {
   METRIC_KINDS,
   definitionProblem,
@@ -33,7 +27,6 @@ import {
   parseMetricDefinition,
   type MetricKind,
   type MetricMatchResult,
-  type MetricRecallDegradeReason,
 } from './metric-policy';
 import {
   GovernedDictService,
@@ -47,24 +40,12 @@ import {
   type SemanticPage,
   type SemanticVersionSnake,
 } from './semantic-snake-mapper';
-import { EmbeddingService } from '../embedding/embedding.service';
-import { metricDefEmbedText } from '../embedding/embed-text';
-import { VectorService } from '../vector/vector.service';
-import type { EmbeddingConfig } from '../common/config/embedding-config';
 import { RegressionTriggerService } from '../regression/regression-trigger.service';
 import { DatasourceService } from '../datasource/datasource.service';
 
 /** Codes are identifier tokens — they must survive the composite-expression
  *  tokenizer (metric-policy CODE_TOKEN). */
 const CODE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
-
-/** pgvector collection holding one vector per MetricDef.id. */
-const METRIC_COLLECTION = 'metric_def';
-
-/** Most candidate ids a recall asks pgvector for: enough to absorb rows the
- *  actor cannot see (another workspace/personal layer), bounded so a large
- *  index cannot turn one chat question into a huge re-read. */
-const RECALL_CANDIDATES = 50;
 
 export interface MetricUpsertInfo {
   kind: MetricKind;
@@ -89,14 +70,11 @@ type MetricTarget = {
 @Injectable()
 export class MetricService extends GovernedDictService<MetricUpsertInfo> {
   protected readonly entityType = 'metric' as const;
-  private readonly logger = new Logger(MetricService.name);
 
   constructor(
     prisma: PrismaService,
     regressionTrigger: RegressionTriggerService,
     private readonly standards: DataStandardService,
-    private readonly embedding: EmbeddingService,
-    private readonly vector: VectorService,
     private readonly datasources: DatasourceService,
   ) {
     super(prisma, regressionTrigger);
@@ -225,157 +203,24 @@ export class MetricService extends GovernedDictService<MetricUpsertInfo> {
 
   // ---- runtime: prompt integration --------------------------------------
 
-  /** Match a question against the actor-visible enabled metric rows of ONE
-   *  datasource and render the `<metric_definitions>` prompt block. Tables of
-   *  every rendered metric are returned so the chat pipeline can force-stuff
-   *  them into the M-Schema.
-   *
-   *  `cfg` is the task-start strategy snapshot. Without it (direct service
-   *  calls, tests) the matcher stays literal — the vector stage only runs when
-   *  the caller explicitly supplies a snapshot, so no hidden network call can
-   *  appear in a path that never opted in.
-   *
-   *  Vector recall order: embed the question → nearest metric ids → re-read
-   *  with the actor visibility + enabled filter (a foreign/scoped row ranked by
-   *  the shared index is dropped here) → keep ids whose cosine similarity is
-   *  strictly above `metric.similarity_threshold` → map to `kind:code` keys in
-   *  similarity order. The pure matcher then renders literal hits first and
-   *  fills the remaining slots with ATOMIC fuzzy hits only (metric-policy
-   *  header). Any failure degrades to literal and is reported, never thrown. */
+  /** Match the question's extracted keywords against the actor-visible enabled
+   *  metric rows of ONE datasource and render the `<metric_definitions>` prompt
+   *  block. Tables of every rendered metric are returned so the chat pipeline
+   *  can force-stuff them into the M-Schema. Exact keyword equality only
+   *  (metric-policy `matchesKeyword`) — an empty keyword set matches nothing. */
   async matchDefinitions(
     datasourceId: number,
-    question: string,
+    keywords: ReadonlySet<string>,
     max: number,
-    cfg?: EmbeddingConfig,
   ): Promise<MetricMatchResult> {
     const actor = this.actor();
     const rows = await this.prisma.metricDef.findMany({
       where: { enabled: true, ...this.visibleFilter(actor) },
     });
     const timeFields = await this.timeFieldsByTable(datasourceId, actor);
-    const recall = await this.fuzzyCandidates(question, max, cfg, actor);
-    const result = matchMetricDefinitions(
-      rows,
-      datasourceId,
-      question,
-      max,
-      (t) => timeFields.get(t),
-      recall.keys.length > 0 ? { fuzzy: recall.keys } : undefined,
+    return matchMetricDefinitions(rows, datasourceId, keywords, max, (t) =>
+      timeFields.get(t),
     );
-    if (!recall.reason) return result;
-    if (recall.reason === 'error') {
-      // already warned where the failure happened; only annotate the result
-      return { ...result, degradeReason: recall.reason };
-    }
-    this.logger.debug(
-      `metric vector recall skipped (${recall.reason}) — literal-only`,
-    );
-    return { ...result, degradeReason: recall.reason };
-  }
-
-  /** Nearest metric-definition ids above the configured threshold, mapped to
-   *  `kind:code` keys (most similar first) so the policy layer resolves the
-   *  EFFECTIVE row for the key. Empty + a reason when the stage is skipped. */
-  private async fuzzyCandidates(
-    question: string,
-    max: number,
-    cfg: EmbeddingConfig | undefined,
-    actor: SemanticActor,
-  ): Promise<{ keys: string[]; reason?: MetricRecallDegradeReason }> {
-    if (!cfg) return { keys: [], reason: 'no_config' };
-    if (!cfg.metricEnabled) return { keys: [], reason: 'disabled' };
-    if (!this.embedding.available) return { keys: [], reason: 'no_embedding' };
-    if (!this.vector.available) return { keys: [], reason: 'no_vector' };
-    try {
-      const query = await this.embedding.embed(question);
-      // At most `max` fuzzy entries can render, so max*2 candidates already
-      // leave little room for invisible rows without scanning the index.
-      const k = Math.min(RECALL_CANDIDATES, Math.max(10, Math.floor(max) * 2));
-      const hits = (await this.vector.search(METRIC_COLLECTION, query, k))
-        // strict > (upstream threshold semantics)
-        .filter((h) => 1 - h.distance > cfg.metricSimilarityThreshold)
-        .filter((h) => Number.isInteger(h.id));
-      if (hits.length === 0) return { keys: [] };
-      const visible = new Map(
-        (
-          await this.prisma.metricDef.findMany({
-            where: {
-              id: { in: hits.map((h) => h.id) },
-              enabled: true,
-              ...this.visibleFilter(actor),
-            },
-            select: { id: true, kind: true, code: true },
-          })
-        ).map((r) => [r.id, r]),
-      );
-      const keys: string[] = [];
-      for (const hit of hits) {
-        const row = visible.get(hit.id);
-        if (!row) continue;
-        keys.push(`${row.kind}:${row.code}`);
-        if (keys.length >= max) break;
-      }
-      return { keys };
-    } catch (e) {
-      this.logger.warn(
-        `metric vector recall failed, literal-only: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-      return { keys: [], reason: 'error' };
-    }
-  }
-
-  // ---- search index (fire-and-forget) ------------------------------------
-
-  /** Governance write committed → refresh this row's vector. Called by the
-   *  base after a direct upsert, an approved request and an enable toggle. */
-  protected afterCommit(ids: number[]): void {
-    if (ids.length === 0) return;
-    void this.indexMetricDefs(ids).catch((e) =>
-      this.logger.warn(
-        `metric embedding index refresh failed (rows ${ids.join(',')}): ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      ),
-    );
-  }
-
-  /** Embed + index a batch of metric rows. Disabled rows are skipped (they are
-   *  filtered everywhere at runtime and get indexed when re-enabled). The Json
-   *  column and the pgvector row commit in ONE transaction, so a committed row
-   *  can never look indexed to the NULL-scan while being absent from the
-   *  index (same rule as the embedding backfill); a vector write failure rolls
-   *  the Json write back and leaves the row NULL for the next backfill. */
-  private async indexMetricDefs(ids: number[]): Promise<void> {
-    if (!this.embedding.available) return;
-    const rows = await this.prisma.metricDef.findMany({
-      where: { id: { in: ids }, enabled: true },
-      select: { id: true, name: true, aliases: true, description: true },
-    });
-    const embeddable = rows
-      .map((row) => ({ id: row.id, text: metricDefEmbedText(row) }))
-      .filter((row) => row.text.trim().length > 0);
-    if (embeddable.length === 0) return;
-    const vectors = await this.embedding.embedBatch(
-      embeddable.map((r) => r.text),
-    );
-    if (vectors.length !== embeddable.length) {
-      throw new Error(
-        `embedding provider returned ${vectors.length}/${embeddable.length} vectors`,
-      );
-    }
-    await this.prisma.$transaction(async (tx) => {
-      for (const [i, row] of embeddable.entries()) {
-        await tx.metricDef.update({
-          where: { id: row.id },
-          data: { embedding: vectors[i] },
-        });
-        if (this.vector.available) {
-          await this.vector.upsert(METRIC_COLLECTION, row.id, vectors[i], tx);
-        }
-      }
-    });
   }
 
   /** Default time field per table: the effective (layer-priority) FieldSemantic

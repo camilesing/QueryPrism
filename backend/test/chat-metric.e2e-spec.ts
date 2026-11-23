@@ -1,10 +1,13 @@
-// Chat metric e2e — MetaDataImprove M4: a question naming a derived metric
-// injects its caliber into the generate_sql prompt block and force-stuffs
-// the atomic table into the schema; naming-dictionary matches inject the
-// standard translations; metric.enabled=false disables the injection.
-// The LLM/datasource/safety providers are faked (SSE-block pattern from
-// chat-semantic.e2e-spec); MetricService/DataStandardService are REAL (real
-// Prisma rows seeded per case) so matching + resolution run for true.
+// Chat metric e2e — MetaDataImprove M4: a question whose extracted keyword IS
+// a metric name injects its caliber into the generate_sql prompt block and
+// force-stuffs the atomic table into the schema; naming-dictionary entries
+// inject the standard translations when a keyword or a piece of the stuffed
+// schema's metadata equals the term; metric.enabled=false disables the
+// injection. Matching is EXACT keyword equality — the raw question is never
+// substring-matched. The LLM/datasource/safety providers are faked
+// (SSE-block pattern from chat-semantic.e2e-spec); MetricService /
+// DataStandardService are REAL (real Prisma rows seeded per case) so matching
+// + resolution run for true.
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -82,18 +85,23 @@ describe('Chat metric definitions + naming rules (e2e)', () => {
   let capturedTableIds: number[] | undefined;
   let capturedMetrics: string | undefined;
   let capturedNamingRules: string | undefined;
+  /** What the faked keyword extraction returns for a turn ('EMPTY' = none). */
+  let extractedKeywords: string;
 
   beforeEach(async () => {
     capturedTableIds = undefined;
     capturedMetrics = undefined;
     capturedNamingRules = undefined;
+    extractedKeywords = 'EMPTY';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(GeneratorService)
       .useValue({
         extractKeywords: () =>
-          asyncFrom<LlmGenEvent>([{ type: 'content', delta: 'EMPTY' }]),
+          asyncFrom<LlmGenEvent>([
+            { type: 'content', delta: extractedKeywords },
+          ]),
         generateSql: () =>
           asyncFrom<LlmGenEvent>([
             {
@@ -130,6 +138,9 @@ describe('Chat metric definitions + naming rules (e2e)', () => {
       .overrideProvider(AiQuestionService)
       .useValue({
         buildForSelectDatasource: () => ({ engine: 'MySQL' }),
+        // without this the real extractKeywords step throws before calling the
+        // faked generator and silently degrades to "no keywords"
+        buildForKeywords: () => ({}),
         buildSqlContext: (ctx: {
           tableIds?: number[];
           metrics?: string;
@@ -224,7 +235,7 @@ describe('Chat metric definitions + naming rules (e2e)', () => {
       .send({ id: chatId });
   }
 
-  it('a named derived metric injects its caliber and force-stuffs its table', async () => {
+  it('a derived metric named by a keyword injects its caliber and force-stuffs its table', async () => {
     await prisma.metricDef.create({
       data: {
         kind: 'atomic',
@@ -251,6 +262,8 @@ describe('Chat metric definitions + naming rules (e2e)', () => {
         definition: { atomic_code: 'pay_amount' },
       },
     });
+    // the extractor produced the derived metric's OWN name
+    extractedKeywords = '近7天支付金额';
     const chatId = await startChat();
     try {
       const res = await ask(chatId, '统计近7天支付金额');
@@ -268,7 +281,38 @@ describe('Chat metric definitions + naming rules (e2e)', () => {
     }
   });
 
-  it('naming-dictionary matches inject standard translations', async () => {
+  it('a metric name that is only PART of a keyword is not matched (no substring)', async () => {
+    await prisma.metricDef.create({
+      data: {
+        kind: 'atomic',
+        code: 'pay_amount',
+        name: '支付金额',
+        scope: 'WORKSPACE',
+        oid: 1,
+        definition: {
+          datasource_id: 1,
+          table_name: 'sales_order',
+          field_name: 'amount',
+          aggregation: 'SUM',
+        },
+      },
+    });
+    // the question contains 支付金额 verbatim, but the extracted keyword is
+    // the longer phrase — exact equality fails
+    extractedKeywords = '支付金额趋势';
+    const chatId = await startChat();
+    try {
+      const res = await ask(chatId, '统计支付金额');
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"type":"sql"');
+      expect(capturedMetrics).toBe('');
+      expect(capturedTableIds).toEqual([2, 3]);
+    } finally {
+      await cleanupChat(chatId);
+    }
+  });
+
+  it('naming entries inject on an exact keyword OR on stuffed schema metadata', async () => {
     await prisma.dataStandard.create({
       data: {
         kind: 'naming',
@@ -280,14 +324,32 @@ describe('Chat metric definitions + naming rules (e2e)', () => {
         oid: 1,
       },
     });
+    // no keyword names this entry — the COMMENT of a stuffed table does
+    // (recall returns crm_customer whose comment is 客户信息)
+    await prisma.dataStandard.create({
+      data: {
+        kind: 'naming',
+        code: 'customer_master',
+        term: '客户信息',
+        name: '客户主数据',
+        category: 'business_noun',
+        scope: 'WORKSPACE',
+        oid: 1,
+      },
+    });
+    extractedKeywords = '年营收';
     const chatId = await startChat();
     try {
       const res = await ask(chatId, '今年的年营收是多少');
       expect(res.status).toBe(200);
       expect(res.text).toContain('"type":"sql"');
       expect(capturedNamingRules).toContain('<naming_rules>');
+      // keyword hit
       expect(capturedNamingRules).toContain('term="年营收"');
       expect(capturedNamingRules).toContain('standard="年度总营业额"');
+      // schema-metadata hit (table comment of a stuffed table)
+      expect(capturedNamingRules).toContain('term="客户信息"');
+      expect(capturedNamingRules).toContain('standard="客户主数据"');
       // No metric matched → the metric block stays empty.
       expect(capturedMetrics).toBe('');
     } finally {

@@ -35,11 +35,14 @@ database name with `_test`), reset that database, and seed it.
 
 - Prisma models live in the `public` schema (`backend/prisma/schema.prisma`).
 - Derived vector tables live in the **`vector_store`** schema:
-  `vec_datasource`, `vec_table`, `vec_metric_def`.
-  Each has an HNSW index using `vector_cosine_ops`.
+  `vec_datasource`, `vec_table`.
+  Each has an HNSW index using `vector_cosine_ops`. (Metric definitions are
+  matched by exact keyword and have no vector — `vec_metric_def` and the
+  `MetricDef.embedding` column were dropped by migration
+  `20261123190000_exact_keyword_matching_drop_metric_vector`.)
 - `vector_store` is deliberately *not* in Prisma's managed schemas, so the
   runtime-created tables never show up as `prisma migrate dev` drift.
-- The `embedding Json` columns on `Datasource`, `Table` and `MetricDef`
+- The `embedding Json` columns on `Datasource` and `Table`
   remain the source of truth. The vector tables are a rebuildable index.
 
 The baseline migration runs:

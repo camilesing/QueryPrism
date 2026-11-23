@@ -518,9 +518,10 @@ describe('Attribution governance (e2e)', () => {
     expect(period.id).toBeTruthy();
     expect(atv.id).toBeTruthy();
 
-    // Literal name match by the QUESTION naming the metric.
+    // Exact match: the extracted keyword IS the metric name. (For
+    // "统计各流量来源的首触归因GMV" the extractor yields 首触归因GMV.)
     const m1 = await admin(() =>
-      metric.matchDefinitions(ds.dsId, '统计各流量来源的首触归因GMV', 5),
+      metric.matchDefinitions(ds.dsId, new Set(['首触归因GMV']), 5),
     );
     expect(m1.text).toContain('<metric_definitions>');
     expect(m1.text).toContain(
@@ -530,16 +531,27 @@ describe('Attribution governance (e2e)', () => {
 
     // Alias match works too.
     const m2 = await admin(() =>
-      metric.matchDefinitions(ds.dsId, '首触GMV按渠道拆分', 5),
+      metric.matchDefinitions(ds.dsId, new Set(['首触GMV']), 5),
     );
     expect(m2.text).toContain('first_touch_gmv');
+
+    // No substring: the raw question is not a keyword, so nothing matches.
+    const raw = await admin(() =>
+      metric.matchDefinitions(
+        ds.dsId,
+        new Set(['统计各流量来源的首触归因GMV']),
+        5,
+      ),
+    );
+    expect(raw.text).toBe('');
+    expect(raw.matched).toBe(0);
 
     // Disabled metrics drop out of matching.
     await request(app.getHttpServer())
       .get(`/api/v1/system/metric/${metricIds[0]}/enable/false`)
       .set(TOKEN_HEADER, token);
     const m3 = await admin(() =>
-      metric.matchDefinitions(ds.dsId, '统计各流量来源的首触归因GMV', 5),
+      metric.matchDefinitions(ds.dsId, new Set(['首触归因GMV']), 5),
     );
     expect(m3.text).not.toContain('first_touch_gmv');
     await request(app.getHttpServer())
@@ -565,7 +577,7 @@ describe('Attribution governance (e2e)', () => {
     metricIds.push((res.body.data as { id: number }).id);
 
     const m = await admin(() =>
-      metric.matchDefinitions(ds.dsId, '统计悬空客单价', 5),
+      metric.matchDefinitions(ds.dsId, new Set(['悬空客单价']), 5),
     );
     expect(m.text).not.toContain('broken_atv');
     expect(m.text).not.toContain('悬空客单价');
@@ -644,19 +656,27 @@ describe('Attribution governance (e2e)', () => {
     expect(versions.status).toBe(200);
     expect((versions.body.data as unknown[]).length).toBe(1);
 
+    // Terms = the extracted keywords (plus the stuffed schema metadata, which
+    // the chat pipeline adds). The alias 交易额 matches like the term GMV.
     const rendered = await admin(() =>
-      standard.namingTemplateFor('按流量来源统计GMV和交易额', 5),
+      standard.namingTemplateFor(new Set(['GMV', '交易额']), 5),
     );
     expect(rendered).toContain('<naming_rules>');
     expect(rendered).toContain('term="GMV"');
     expect(rendered).toContain('standard="商品交易总额"');
+    // No substring: the raw question is not a term.
+    expect(
+      await admin(() =>
+        standard.namingTemplateFor(new Set(['按流量来源统计GMV和交易额']), 5),
+      ),
+    ).toBe('');
 
     // Disabled naming rows are excluded from the template.
     await request(app.getHttpServer())
       .get(`/api/v1/system/standard/${gmv.id}/enable/false`)
       .set(TOKEN_HEADER, token);
     const after = await admin(() =>
-      standard.namingTemplateFor('按流量来源统计GMV', 5),
+      standard.namingTemplateFor(new Set(['GMV']), 5),
     );
     expect(after).not.toContain('term="GMV"');
   });

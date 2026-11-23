@@ -9,8 +9,8 @@ const { t } = useI18n()
 // 9e6070e8：检索策略参数（embedding.*）。默认值与后端代码默认一致；页面加载后
 // 由后端返回的有效值（已保存 > 启动配置 > 代码默认）覆盖。
 // MetaDataImprove M1：clarify.* 反问收敛参数走同一注册表与校验链路。
+// 关键词抽取始终开启、表召回固定 Top-3，二者都不是参数，故不在页面上。
 const EMBEDDING_NUMBER_KEYS = [
-  'embedding.table_count',
   'embedding.table_alpha',
   'embedding.datasource_count',
   'clarify.table_threshold',
@@ -18,7 +18,6 @@ const EMBEDDING_NUMBER_KEYS = [
   'clarify.max_rounds',
   'semantic.max_tables',
   'metric.max_definitions',
-  'metric.similarity_threshold',
   // MetaDataImprove M7: query-cost keys
   'quota.max_rows',
   'cache.ttl_seconds',
@@ -34,19 +33,16 @@ const state = reactive({
     'chat.show_log': false,
     'chat.sample_data_enabled': true,
     'embedding.table_enabled': true,
-    'embedding.table_count': 10,
     'embedding.table_alpha': 0.4,
-    'embedding.keyword_enabled': true,
     'embedding.datasource_count': 10,
     'clarify.enabled': true,
     'clarify.table_threshold': 3,
     'clarify.max_select': 3,
     'clarify.max_rounds': 1,
     'semantic.enabled': true,
-    'semantic.max_tables': 1,
+    'semantic.max_tables': 3,
     'metric.enabled': true,
     'metric.max_definitions': 5,
-    'metric.similarity_threshold': 0.55,
     'naming.enabled': true,
     // MetaDataImprove M7: query-cost keys (defaults mirror the backend).
     'quota.max_rows': 1000,
@@ -301,19 +297,6 @@ onMounted(() => {
           </div>
           <div class="card-item">
             <div class="label">
-              {{ t('parameter.embedding_table_count') }}
-            </div>
-            <div class="value">
-              <el-input-number
-                v-model.number="state.parameterForm['embedding.table_count']"
-                :min="1"
-                step="1"
-                controls-position="right"
-              />
-            </div>
-          </div>
-          <div class="card-item">
-            <div class="label">
               {{ t('parameter.embedding_table_alpha') }}
               <el-tooltip
                 effect="dark"
@@ -334,23 +317,6 @@ onMounted(() => {
                 :precision="2"
                 controls-position="right"
               />
-            </div>
-          </div>
-          <div class="card-item">
-            <div class="label">
-              {{ t('parameter.embedding_keyword_enabled') }}
-              <el-tooltip
-                effect="dark"
-                :content="t('parameter.embedding_keyword_enabled_hint')"
-                placement="top"
-              >
-                <el-icon size="16">
-                  <icon_info_outlined_1></icon_info_outlined_1>
-                </el-icon>
-              </el-tooltip>
-            </div>
-            <div class="value">
-              <el-switch v-model="state.parameterForm['embedding.keyword_enabled']" />
             </div>
           </div>
           <div class="card-item">
@@ -547,30 +513,6 @@ onMounted(() => {
                 v-model.number="state.parameterForm['metric.max_definitions']"
                 :min="1"
                 step="1"
-                controls-position="right"
-              />
-            </div>
-          </div>
-          <div class="card-item">
-            <div class="label">
-              {{ t('parameter.metric_similarity_threshold') }}
-              <el-tooltip
-                effect="dark"
-                :content="t('parameter.metric_similarity_threshold_hint')"
-                placement="top"
-              >
-                <el-icon size="16">
-                  <icon_info_outlined_1></icon_info_outlined_1>
-                </el-icon>
-              </el-tooltip>
-            </div>
-            <div class="value">
-              <el-input-number
-                v-model.number="state.parameterForm['metric.similarity_threshold']"
-                :min="0"
-                :max="1"
-                :step="0.01"
-                :precision="2"
                 controls-position="right"
               />
             </div>

@@ -1,8 +1,12 @@
 // Chat semantic e2e — MetaDataImprove M2 rule 2: effective table semantics
-// narrow the stuffed schema to semantic.max_tables (default 1) and the LLM's
-// need_clarify contract reuses the M1 clarify flow. The LLM/datasource/
-// safety providers are faked (SSE-block pattern); SemanticService is REAL
-// (real Prisma rows seeded per case) so the priority resolution runs.
+// narrow the stuffed schema to semantic.max_tables and the LLM's need_clarify
+// contract reuses the M1 clarify flow. Rule 2 only engages BELOW the recall
+// width (Top-3), so the narrowing cases pin semantic.max_tables = 1. On the
+// prompt side a curated meaning is injected only when an extracted keyword
+// equals the table name or one of its aliases (exact-keyword gate). The
+// LLM/datasource/safety providers are faked (SSE-block pattern);
+// SemanticService is REAL (real Prisma rows seeded per case) so the priority
+// resolution and the alias expansion run.
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -122,6 +126,8 @@ describe('Chat semantic rule 2 (e2e)', () => {
   let sqlMode: 'sql' | 'need_clarify';
   /** Tables the faked need_clarify response asks for. */
   let needClarifyTables: string[];
+  /** What the faked keyword extraction returns for a turn ('EMPTY' = none). */
+  let extractedKeywords: string;
 
   beforeEach(async () => {
     capturedTableIds = undefined;
@@ -130,13 +136,16 @@ describe('Chat semantic rule 2 (e2e)', () => {
     recallSlice = 3;
     sqlMode = 'sql';
     needClarifyTables = [];
+    extractedKeywords = 'EMPTY';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(GeneratorService)
       .useValue({
         extractKeywords: () =>
-          asyncFrom<LlmGenEvent>([{ type: 'content', delta: 'EMPTY' }]),
+          asyncFrom<LlmGenEvent>([
+            { type: 'content', delta: extractedKeywords },
+          ]),
         generateSql: () =>
           asyncFrom<LlmGenEvent>(
             sqlMode === 'sql'
@@ -190,6 +199,9 @@ describe('Chat semantic rule 2 (e2e)', () => {
       .overrideProvider(AiQuestionService)
       .useValue({
         buildForSelectDatasource: () => ({ engine: 'MySQL' }),
+        // without this the real extractKeywords step throws before calling the
+        // faked generator and silently degrades to "no keywords"
+        buildForKeywords: () => ({}),
         buildSqlContext: (ctx: {
           tableIds?: number[];
           candidateTables?: string;
@@ -220,7 +232,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
           }),
         execSql: () => Promise.resolve({ columns: ['id'], rows: [[1]] }),
         recallTables: () =>
-          // ranked recall: 3 candidates (ids 1-3) — semantic.max_tables = 1.
+          // ranked recall: 3 candidates (ids 1-3) — the Top-3 width.
           // Tests can shrink the slice to simulate a single-table hit.
           Promise.resolve(FAKE_TABLES.slice(0, recallSlice)),
       })
@@ -237,14 +249,35 @@ describe('Chat semantic rule 2 (e2e)', () => {
     prisma = app.get(PrismaService);
     token = await login(app);
     await prisma.tableSemantic.deleteMany({ where: { datasourceId: 1 } });
+    await prisma.systemVariable.deleteMany({
+      where: { type: 'parameter', name: 'semantic.max_tables' },
+    });
   });
 
   afterEach(async () => {
     await prisma.tableSemantic
       .deleteMany({ where: { datasourceId: 1 } })
       .catch(() => undefined);
+    await prisma.systemVariable
+      .deleteMany({
+        where: { type: 'parameter', name: 'semantic.max_tables' },
+      })
+      .catch(() => undefined);
     await app.close();
   });
+
+  /** Rule 2 only engages below the recall width (a Top-3 recall never
+   *  exceeds the default 3) — pin the cap so the 3-candidate recall narrows. */
+  async function pinMaxTables(n: number): Promise<void> {
+    await prisma.systemVariable.create({
+      data: {
+        type: 'parameter',
+        varType: 'str',
+        name: 'semantic.max_tables',
+        value: String(n),
+      },
+    });
+  }
 
   async function startChat(): Promise<number> {
     const start = await request(app.getHttpServer())
@@ -263,6 +296,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
   }
 
   it('valid semantics narrow the schema to 1 table and skip the clarify gate', async () => {
+    await pinMaxTables(1);
     // WORKSPACE-layer meaning for sales_order (oid 1 = the admin's ws).
     await prisma.tableSemantic.create({
       data: {
@@ -291,7 +325,37 @@ describe('Chat semantic rule 2 (e2e)', () => {
     }
   });
 
+  it('at the default cap a Top-3 recall is NOT narrowed and the gate asks instead', async () => {
+    // One candidate carries a meaning — enough to narrow under a lower cap.
+    await prisma.tableSemantic.create({
+      data: {
+        scope: 'WORKSPACE',
+        oid: 1,
+        datasourceId: 1,
+        tableName: 'sales_order',
+        meaning: '销售订单主表',
+        enabled: true,
+      },
+    });
+    const chatId = await startChat();
+    try {
+      // The question names no table: 3 candidates ≥ clarify.table_threshold 3.
+      const res = await ask(chatId);
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain('"type":"sql"');
+      const clarify = sseFrames(res.text).find((f) => f.type === 'clarify');
+      expect(clarify).toBeDefined();
+      expect(clarify!.candidates).toHaveLength(3);
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
   it('PERSONAL semantics beat WORKSPACE for the acting user', async () => {
+    await pinMaxTables(1);
     // Same natural key on BOTH layers: only an actual priority inversion
     // would make the WORKSPACE meaning win.
     await prisma.tableSemantic.create({
@@ -312,9 +376,14 @@ describe('Chat semantic rule 2 (e2e)', () => {
         datasourceId: 1,
         tableName: 'sales_order',
         meaning: '个人层含义',
+        // only the effective (PERSONAL) row's alias list drives the expansion
+        aliases: ['销售单'],
         enabled: true,
       },
     });
+    // the extractor produced the table ALIAS → the real SemanticService folds
+    // `sales_order` in → the table is "named" for the prompt gate
+    extractedKeywords = '销售单';
     const chatId = await startChat();
     try {
       const res = await ask(chatId);
@@ -332,8 +401,6 @@ describe('Chat semantic rule 2 (e2e)', () => {
   });
 
   it('injects table semantics when recall returns just one table', async () => {
-    // No rule-2 narrowing happens (1 candidate <= semantic.max_tables), but
-    // the curated meaning must still decorate the prompt.
     recallSlice = 1;
     await prisma.tableSemantic.create({
       data: {
@@ -345,6 +412,8 @@ describe('Chat semantic rule 2 (e2e)', () => {
         enabled: true,
       },
     });
+    // the extractor keeps a concrete table name verbatim
+    extractedKeywords = 'sales_order';
     const chatId = await startChat();
     try {
       const res = await ask(chatId, '查一下sales_order');
@@ -354,6 +423,34 @@ describe('Chat semantic rule 2 (e2e)', () => {
       expect(capturedSemantics?.tableMeanings).toMatchObject({
         sales_order: '销售订单主表',
       });
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
+  it('a table the keywords do NOT name keeps its raw comment (no curated meaning)', async () => {
+    recallSlice = 1;
+    await prisma.tableSemantic.create({
+      data: {
+        scope: 'WORKSPACE',
+        oid: 1,
+        datasourceId: 1,
+        tableName: 'sales_order',
+        meaning: '销售订单主表',
+        enabled: true,
+      },
+    });
+    // the question text names the table, but the extracted keyword does not
+    extractedKeywords = '金额';
+    const chatId = await startChat();
+    try {
+      const res = await ask(chatId, '查一下sales_order');
+      expect(res.text).toContain('"type":"sql"');
+      expect(capturedTableIds).toEqual([1]);
+      expect(capturedSemantics?.tableMeanings).toEqual({});
     } finally {
       await request(app.getHttpServer())
         .delete(`/api/v1/chat/${chatId}`)
@@ -518,6 +615,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
   });
 
   it('need_clarify suggests recalled tables and shows their meanings', async () => {
+    await pinMaxTables(1);
     sqlMode = 'need_clarify';
     needClarifyTables = ['crm_customer'];
     await prisma.tableSemantic.createMany({
@@ -536,10 +634,13 @@ describe('Chat semantic rule 2 (e2e)', () => {
           datasourceId: 1,
           tableName: 'crm_customer',
           meaning: '客户主表',
+          // the extracted keyword names this table through its alias
+          aliases: ['客户'],
           enabled: true,
         },
       ],
     });
+    extractedKeywords = '客户';
     const chatId = await startChat();
     try {
       const q = await ask(chatId, '查一下sales_order的金额');
@@ -548,7 +649,8 @@ describe('Chat semantic rule 2 (e2e)', () => {
       const clarify = frames.find((f) => f.type === 'clarify');
       expect(clarify).toBeDefined();
 
-      // Candidates carry the effective semantic (not just the table comment).
+      // The clarify card carries the effective semantic for EVERY candidate
+      // (not just the table comment) — it is shown to the user, not the LLM.
       const candidates = clarify!.candidates as Array<{
         table_name: string;
         meaning?: string;
@@ -563,7 +665,9 @@ describe('Chat semantic rule 2 (e2e)', () => {
       // Current schema (sales_order) + the LLM's requested table.
       expect(clarify!.suggested_table_ids).toEqual([1, 2]);
 
-      // The prompt lists the omitted candidates, not the stuffed table.
+      // The PROMPT block follows the exact-keyword gate: crm_customer is named
+      // by the keyword 客户 (alias) so its meaning shows; inv_stock has no
+      // semantic and falls back to the comment.
       expect(capturedCandidateTables).toContain('- crm_customer: 客户主表');
       expect(capturedCandidateTables).toContain('- inv_stock: 库存记录');
       expect(capturedCandidateTables).not.toContain('- sales_order:');
@@ -575,7 +679,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
     }
   });
 
-  it('injects semantics for a table picked on the clarify resume', async () => {
+  it('a hand-picked table the keywords do NOT name gets no curated meaning on resume', async () => {
     sqlMode = 'need_clarify';
     await prisma.tableSemantic.create({
       data: {
@@ -592,13 +696,51 @@ describe('Chat semantic rule 2 (e2e)', () => {
       const q = await ask(chatId, '查一下sales_order的金额');
       const rid = recordIdFromSse(q.text);
 
-      // Resume with the hand-picked customer table; forcedTableIds skips
-      // rule 2, but the semantics of the picked table still decorate it.
+      // forcedTableIds skips rule 2 — but the exact-keyword gate still
+      // applies: picking a table in the UI is not "naming" it.
       sqlMode = 'sql';
       const res = await request(app.getHttpServer())
         .post(`/api/v1/chat/record/${rid}/clarify`)
         .set(TOKEN_HEADER, token)
         .send({ table_ids: [2] });
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"type":"sql"');
+      expect(capturedTableIds).toEqual([2]);
+      expect(capturedSemantics?.tableMeanings).toEqual({});
+    } finally {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/chat/${chatId}`)
+        .set(TOKEN_HEADER, token)
+        .send({ id: chatId });
+    }
+  });
+
+  it('injects semantics for a picked table when the resume keywords name it', async () => {
+    sqlMode = 'need_clarify';
+    await prisma.tableSemantic.create({
+      data: {
+        scope: 'WORKSPACE',
+        oid: 1,
+        datasourceId: 1,
+        tableName: 'crm_customer',
+        meaning: '客户主表',
+        enabled: true,
+      },
+    });
+    const chatId = await startChat();
+    try {
+      const q = await ask(chatId, '查一下sales_order的金额');
+      const rid = recordIdFromSse(q.text);
+
+      // The resume is a full run: keyword extraction runs again on the
+      // question + supplements, so a supplement naming the table lets its
+      // meaning through the gate.
+      sqlMode = 'sql';
+      extractedKeywords = 'crm_customer';
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/chat/record/${rid}/clarify`)
+        .set(TOKEN_HEADER, token)
+        .send({ table_ids: [2], text: '只看crm_customer' });
       expect(res.status).toBe(200);
       expect(res.text).toContain('"type":"sql"');
       expect(capturedTableIds).toEqual([2]);

@@ -8,6 +8,12 @@
 // four governance features AND the SQL execution against the live SQLite file
 // (expected values recomputed from the CSVs — never hard-coded).
 //
+// The faked keyword extraction returns the business nouns a real extractor
+// would produce for the question. Matching is EXACT keyword equality, so the
+// seeded semantics carry aliases that make the table/field "named": 首触归因
+// (table alias) folds the table name in, 流量来源 (field alias) folds the
+// field name in, and 首触归因GMV / GMV are the metric name and the naming term.
+//
 // clarify.enabled is switched off via a SystemVariable parameter row for this
 // suite: table recall always returns [] in the test env (no embedding
 // provider), so the pipeline wants to stuff all 4 checked tables and
@@ -109,6 +115,8 @@ describe('Attribution chat pipeline (e2e)', () => {
   let prisma: PrismaService;
   let ds: AttributionDatasource;
   let captured: CapturedContext | undefined;
+  /** What the faked extraction returns for the turn (reset per test). */
+  let extractedKeywords: string;
   const stamp = Date.now();
   const dsName = `attribution-chat-${stamp}`;
 
@@ -131,7 +139,9 @@ describe('Attribution chat pipeline (e2e)', () => {
       .overrideProvider(GeneratorService)
       .useValue({
         extractKeywords: () =>
-          asyncFrom<LlmGenEvent>([{ type: 'content', delta: 'EMPTY' }]),
+          asyncFrom<LlmGenEvent>([
+            { type: 'content', delta: extractedKeywords },
+          ]),
         generateSql: (ctx: CapturedContext) => {
           captured = ctx;
           return asyncFrom<LlmGenEvent>([
@@ -207,6 +217,7 @@ describe('Attribution chat pipeline (e2e)', () => {
 
   beforeEach(async () => {
     captured = undefined;
+    extractedKeywords = '首触归因GMV,首触归因,流量来源,GMV';
 
     // Deterministic switches: recall-off → clarify gate must not pause; other
     // feature switches reset to their enabled defaults per test.
@@ -232,6 +243,8 @@ describe('Attribution chat pipeline (e2e)', () => {
         datasourceId: ds.dsId,
         tableName: 'sl_dm_store_referrer_utm_rt',
         meaning: '店铺维度流量来源UTM日汇总(首触/末触两行一组)',
+        // recall synonym: the keyword 首触归因 names the table
+        aliases: ['首触归因'],
         enabled: true,
       },
     });
@@ -244,6 +257,8 @@ describe('Attribution chat pipeline (e2e)', () => {
         fieldName: 'utm_source',
         role: 'dimension',
         meaning: 'UTM流量来源(渠道标识)',
+        // the keyword 流量来源 names the field
+        aliases: ['流量来源'],
         enabled: true,
       },
     });
@@ -409,6 +424,19 @@ describe('Attribution chat pipeline (e2e)', () => {
       // The other injections are unaffected.
       expect(captured!.schema).toContain('店铺维度流量来源UTM日汇总');
       expect(captured!.customPrompt).toContain('金额单位一律为分');
+    } finally {
+      await cleanupChat(chatId);
+    }
+  });
+
+  it('a field the keywords do NOT name keeps its raw comment (exact-keyword gate)', async () => {
+    // The table is still named through its alias, but nothing equals
+    // `utm_source` / 流量来源 any more → its curated note is withheld.
+    extractedKeywords = '首触归因GMV,首触归因,GMV';
+    const { chatId } = await ask('首触归因GMV');
+    try {
+      expect(captured!.schema).toContain('店铺维度流量来源UTM日汇总');
+      expect(captured!.schema).not.toContain('UTM流量来源(渠道标识)');
     } finally {
       await cleanupChat(chatId);
     }

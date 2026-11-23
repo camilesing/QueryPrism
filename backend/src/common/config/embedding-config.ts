@@ -1,17 +1,21 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 21 runtime parameters resolve with the priority
+// 18 runtime parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
-//   chat.sample_data_enabled uses. The 5 embedding.* keys drive table /
+//   chat.sample_data_enabled uses. The 3 embedding.* keys drive table /
 //   datasource vector+keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
 //   clarify gate (ask-the-user before stuffing an ambiguous schema); the
 //   5 semantic.* keys drive the semantic layer (M2 rule 2 + the M3
-//   dimension-enum collector); the 4 metric.*/naming.* keys drive the M4
+//   dimension-enum collector); the 3 metric.*/naming.* keys drive the M4
 //   metric-definition and naming-rule prompt injection (metric.enabled /
-//   metric.max_definitions / metric.similarity_threshold / naming.enabled).
+//   metric.max_definitions / naming.enabled).
+// Not tunable (deliberately hard-coded): keyword extraction always runs —
+// the extracted keywords are the ONLY match source for metric definitions,
+// naming rules and the semantic prompt decoration; the table-recall width is
+// the constant TABLE_RECALL_TOP_K (datasource/table-recall.ts).
 // MetaDataImprove M7 adds 3 query-cost keys: quota.max_rows caps the rows
 //   of ONE execSql call (the funnel every chat/dashboard/MCP query goes
 //   through); cache.enabled + cache.ttl_seconds drive the SQL result cache
@@ -19,7 +23,7 @@
 //
 // Parsing is STRICT on saved values:
 // booleans only accept real booleans or "true"/"false" (never 0/1), counts
-// only positive integers, similarities/alpha only finite numbers in [0,1].
+// only positive integers, alpha only a finite number in [0,1].
 // An invalid saved row throws — save-side validation rejects bad input up
 // front, so a load-time failure means the row was hand-edited and silently
 // falling back would run a different strategy than the page displays.
@@ -31,11 +35,8 @@ import { jsonValueToString } from '../utils/json-value';
 export interface EmbeddingConfig {
   /** Table + datasource vector generation / pre-filtering. */
   tableEnabled: boolean;
-  tableCount: number;
   /** Vector weight in table fusion; keyword weight is 1 - alpha. */
   tableAlpha: number;
-  /** Keyword extraction / semantic-alias expansion / fusion (independent). */
-  keywordEnabled: boolean;
   datasourceCount: number;
   /** Clarify gate (MetaDataImprove M1): ask the user to narrow candidate
    *  tables before stuffing the schema when the question is ambiguous. */
@@ -49,7 +50,10 @@ export interface EmbeddingConfig {
    *  is spent (supplement texts accumulate across rounds). */
   clarifyMaxRounds: number;
   /** Semantic layer (MetaDataImprove M2 rule 2): when candidate tables have
-   *  effective semantics, stuff only the top semantic.max_tables of them. */
+   *  effective semantics, stuff only the top semantic.max_tables of them.
+   *  Only engages below the recall width (TABLE_RECALL_TOP_K): at the default
+   *  3 a Top-3 recall never exceeds it, so rule 2 narrows nothing until an
+   *  admin lowers this. */
   semanticEnabled: boolean;
   semanticMaxTables: number;
   /** Dimension-enum collector (MetaDataImprove M3.3): a field with more
@@ -62,18 +66,16 @@ export interface EmbeddingConfig {
   /** Per-datasource cooldown (seconds) between collect runs — the rate
    *  limit that keeps repeated clicks from hammering the source DB. */
   semanticEnumCooldown: number;
-  /** Metric system (MetaDataImprove M4): match the question against the
-   *  actor's metric dictionary and inject the matched definitions' calibers
-   *  into the generate_sql prompt. */
+  /** Metric system (MetaDataImprove M4): match the question's extracted
+   *  keywords (exact name/alias equality) against the actor's metric
+   *  dictionary and inject the matched definitions' calibers into the
+   *  generate_sql prompt. */
   metricEnabled: boolean;
   /** Cap on rendered metric definitions per question (prompt budget). */
   metricMaxDefinitions: number;
-  /** Cosine similarity a metric vector hit must EXCEED to supplement the
-   *  literal matcher (metric recall degrades to literal-only when the vector
-   *  index or the embedding provider is unavailable). */
-  metricSimilarityThreshold: number;
   /** Data standards (M4): inject naming-dictionary standard translations
-   * matched by the question text into the generate_sql prompt. */
+   *  whose term/alias equals an extracted keyword or a name/comment of a
+   *  stuffed table into the generate_sql prompt. */
   namingEnabled: boolean;
   /** Query quota (MetaDataImprove M7): row cap for ONE execSql call. The
    * funnel-level guard for agent cost — downstream agents cannot be trusted
@@ -90,9 +92,7 @@ export interface EmbeddingConfig {
 /** camelCase field → persisted parameter key. */
 const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   tableEnabled: 'embedding.table_enabled',
-  tableCount: 'embedding.table_count',
   tableAlpha: 'embedding.table_alpha',
-  keywordEnabled: 'embedding.keyword_enabled',
   datasourceCount: 'embedding.datasource_count',
   clarifyEnabled: 'clarify.enabled',
   clarifyTableThreshold: 'clarify.table_threshold',
@@ -105,7 +105,6 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   semanticEnumCooldown: 'semantic.enum_cooldown',
   metricEnabled: 'metric.enabled',
   metricMaxDefinitions: 'metric.max_definitions',
-  metricSimilarityThreshold: 'metric.similarity_threshold',
   namingEnabled: 'naming.enabled',
   quotaMaxRows: 'quota.max_rows',
   cacheEnabled: 'cache.enabled',
@@ -128,7 +127,6 @@ export function embeddingFieldOfKey(key: string): keyof EmbeddingConfig | null {
 
 const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'tableEnabled',
-  'keywordEnabled',
   'clarifyEnabled',
   'semanticEnabled',
   'metricEnabled',
@@ -136,7 +134,6 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
   'cacheEnabled',
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
-  'tableCount',
   'datasourceCount',
   'clarifyTableThreshold',
   'clarifyMaxSelect',
@@ -230,12 +227,7 @@ function envNumber(
 function envDefaults(): EmbeddingConfig {
   return {
     tableEnabled: envBool('TABLE_EMBEDDING_ENABLED', true),
-    tableCount: Math.max(
-      1,
-      Math.floor(envNumber('TABLE_EMBEDDING_COUNT', undefined, 10)),
-    ),
     tableAlpha: envNumber('TABLE_EMBEDDING_ALPHA', undefined, 0.4),
-    keywordEnabled: envBool('TABLE_EMBEDDING_KEYWORD_ENABLED', true),
     datasourceCount: Math.max(
       1,
       Math.floor(envNumber('DS_EMBEDDING_COUNT', undefined, 10)),
@@ -258,7 +250,7 @@ function envDefaults(): EmbeddingConfig {
     semanticEnabled: envBool('SEMANTIC_ENABLED', true),
     semanticMaxTables: Math.max(
       1,
-      Math.floor(envNumber('SEMANTIC_MAX_TABLES', undefined, 1)),
+      Math.floor(envNumber('SEMANTIC_MAX_TABLES', undefined, 3)),
     ),
     semanticEnumMaxValues: Math.max(
       1,
@@ -276,14 +268,6 @@ function envDefaults(): EmbeddingConfig {
     metricMaxDefinitions: Math.max(
       1,
       Math.floor(envNumber('METRIC_MAX_DEFINITIONS', undefined, 5)),
-    ),
-    // Stricter than the 0.4 default used for table vector fusion: metric names
-    // are short and domain-adjacent ("订单量" vs "支付金额"), so a loose threshold would
-    // force-stuff unrelated metric tables into the prompt.
-    metricSimilarityThreshold: envNumber(
-      'METRIC_SIMILARITY_THRESHOLD',
-      undefined,
-      0.55,
     ),
     namingEnabled: envBool('NAMING_ENABLED', true),
     // M7: QUOTA_MAX_ROWS wins, legacy CHAT_LIMIT_ROWS (the pre-parameter env

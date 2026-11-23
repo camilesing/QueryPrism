@@ -75,6 +75,11 @@ import {
   SemanticService,
   type SemanticAnnotations,
 } from '../semantic/semantic.service';
+import {
+  keywordSet,
+  matchedAnnotations,
+  matchesNameOrAlias,
+} from '../semantic/keyword-expansion';
 import { MetricService } from '../semantic/metric.service';
 import { DataStandardService } from '../semantic/standard.service';
 import {
@@ -90,6 +95,7 @@ import {
 import {
   normalizeTableRelation,
   relationIdNamesOf,
+  schemaTerms,
 } from '../datasource/m-schema.builder';
 import { joinBridgeTables } from '../datasource/join-path';
 import { buildQueryPrismChartObject } from '../chart/chart-object.builder';
@@ -1067,41 +1073,48 @@ export class ChatService {
     // Pauses already spent on this record; a pause increments the column, so
     // `rounds < clarify.max_rounds` is the real remaining-budget check.
     const rounds = record.clarifyRound ?? 0;
-    // A forced table subset means the user already chose the tables — keyword
-    // extraction (an LLM call) and recall would both be wasted.
     const forcedTableIds = opts?.forcedTableIds;
     // 3fd6fa86→bc3403b8: LLM keyword extraction + semantic-alias expansion feed
     // the fusion table ranking (the removed Terminology synonym groups now
     // live on TableSemantic/FieldSemantic.aliases); failures degrade to the
     // raw question (we do NOT reject non-data queries like upstream).
+    // Extraction runs on EVERY turn — a user-picked table subset included:
+    // the keywords are the ONLY match source for metric definitions, naming
+    // rules and the semantic prompt decoration, so skipping the call on a
+    // forced-table resume would silently strip all three from the SQL prompt.
+    // Known limitation: when extraction yields nothing (provider failure /
+    // EMPTY / ERROR:NOT_DATA_QUERY) nothing is matched or injected; tables
+    // still come back from recall on the raw question.
+    const extracted = await this.extractKeywords(
+      record.id,
+      chatId,
+      content,
+      engine,
+      lang,
+      modelId,
+    );
     let expandedKeywords: string | null = null;
-    if (cfg.keywordEnabled && !forcedTableIds) {
-      const extracted = await this.extractKeywords(
-        record.id,
-        chatId,
-        content,
-        engine,
-        lang,
-        modelId,
-      );
-      if (extracted) {
-        expandedKeywords = cfg.semanticEnabled
-          ? await this.semanticService.expandKeywordsByAliases(
-              extracted,
-              datasourceId,
-            )
-          : extracted;
-        await this.prisma.chatRecord.update({
-          where: { id: record.id },
-          data: {
-            extractedKeywords: extracted,
-            expandedKeywords,
-          },
-        });
-      }
+    if (extracted) {
+      expandedKeywords = cfg.semanticEnabled
+        ? await this.semanticService.expandKeywordsByAliases(
+            extracted,
+            datasourceId,
+          )
+        : extracted;
+      await this.prisma.chatRecord.update({
+        where: { id: record.id },
+        data: {
+          extractedKeywords: extracted,
+          expandedKeywords,
+        },
+      });
     }
+    /** The exact-match set for metrics / naming rules / semantic decoration:
+     *  extracted keywords ∪ alias-expanded tokens (lowercased). */
+    const keywords = keywordSet(extracted, expandedKeywords);
     // Keyword-fused table pre-filter (degrades to all-checked when
-    // embedding/vector unavailable — recallTables returns []).
+    // embedding/vector unavailable — recallTables returns []). A forced table
+    // subset replaces recall — the user already chose the tables.
     let tableIds = forcedTableIds
       ? forcedTableIds
       : await this.recallNarrowedSchema(datasourceId, content, {
@@ -1183,12 +1196,16 @@ export class ChatService {
 
     // --- rule 2: semantic narrowing (MetaDataImprove M2) ------------------
     // When candidate tables carry effective semantics ("valid semantics"),
-    // stuff only the top semantic.max_tables of the covered ones (default 1);
+    // stuff only the top semantic.max_tables of the covered ones (default 3);
     // the LLM may still request more via the need_clarify contract. Runs
     // BEFORE the M1 gate: valid semantics answer the ambiguity the gate would
     // ask about. Skipped when the user hand-picked tables (forcedTableIds) —
     // their explicit choice wins. Join paths to uncovered tables are covered
-    // by the M3 bridge expansion below (join-path.ts).
+    // by the M3 bridge expansion below (join-path.ts). Note the width: a
+    // Top-3 recall never exceeds the default 3, so this only narrows after an
+    // admin lowers semantic.max_tables to 1–2. "Covered" means the table HAS
+    // a semantic row — whether its meaning reaches the prompt is a separate
+    // exact-keyword decision (the decoration step below).
     let semanticAnnotations: SemanticAnnotations | undefined;
     /** Table names the current `semanticAnnotations` were resolved for. Lets
      *  the final decoration step below reuse the candidate load instead of
@@ -1283,44 +1300,36 @@ export class ChatService {
       }
     }
 
-    // --- metric definitions + naming rules (MetaDataImprove M4) ----------
+    // --- metric definitions (MetaDataImprove M4) --------------------------
     // A matched metric outranks both recall ranking and the rule-2 cut: its
     // atomic tables are force-stuffed (checked tables only — an unchecked
     // binding still injects its caliber and the need_clarify contract covers
     // the missing table) so what the prompt teaches is computable from the
     // schema. Runs after the clarify gate and BEFORE the M3 bridge expansion
-    // so join connectors see the final set. Dictionary failures degrade to
-    // no injection (enrichment, never a hard dependency — vector-recall
-    // degradation rule).
+    // so join connectors see the final set. Matching is EXACT keyword
+    // equality (metric-policy `matchesKeyword`): a definition renders only
+    // when its name or an alias is one of the turn's extracted keywords — no
+    // substring, no vector similarity. Dictionary failures degrade to no
+    // injection (enrichment, never a hard dependency).
     let metricText = '';
-    let namingText = '';
-    if (cfg.metricEnabled || cfg.namingEnabled) {
+    if (cfg.metricEnabled) {
       try {
-        if (cfg.metricEnabled) {
-          const matched = await this.metricService.matchDefinitions(
-            datasourceId,
-            content,
-            cfg.metricMaxDefinitions,
-            cfg,
-          );
-          if (matched.text) {
-            metricText = matched.text;
-            if (tableIds) {
-              const extraIds = matched.atomicTableNames
-                .filter((n) => checkedTableNames.has(n))
-                .map((n) => tableByName.get(n)?.id)
-                .filter(
-                  (id): id is number => id != null && !tableIds!.includes(id),
-                );
-              if (extraIds.length > 0) tableIds = [...tableIds, ...extraIds];
-            }
+        const matched = await this.metricService.matchDefinitions(
+          datasourceId,
+          keywords,
+          cfg.metricMaxDefinitions,
+        );
+        if (matched.text) {
+          metricText = matched.text;
+          if (tableIds) {
+            const extraIds = matched.atomicTableNames
+              .filter((n) => checkedTableNames.has(n))
+              .map((n) => tableByName.get(n)?.id)
+              .filter(
+                (id): id is number => id != null && !tableIds!.includes(id),
+              );
+            if (extraIds.length > 0) tableIds = [...tableIds, ...extraIds];
           }
-        }
-        if (cfg.namingEnabled) {
-          namingText = await this.standardService.namingTemplateFor(
-            content,
-            cfg.metricMaxDefinitions,
-          );
         }
       } catch (e) {
         this.logger.warn(
@@ -1357,6 +1366,30 @@ export class ChatService {
     const stuffedIds = new Set(
       tableIds ?? dsTables.tables.filter((t) => t.checked).map((t) => t.id),
     );
+
+    // --- naming rules (MetaDataImprove M4) --------------------------------
+    // A naming-dictionary entry renders when its term or an alias equals one
+    // of the turn's keywords OR one of the stuffed schema's table/field names
+    // and comments. Runs AFTER the bridge expansion so the terms cover the
+    // final schema. Dictionary failures degrade to no injection (same rule
+    // as the metric block).
+    let namingText = '';
+    if (cfg.namingEnabled) {
+      try {
+        const terms = schemaTerms(
+          dsTables.tables.filter((t) => stuffedIds.has(t.id)),
+        );
+        for (const k of keywords) terms.add(k);
+        namingText = await this.standardService.namingTemplateFor(
+          terms,
+          cfg.metricMaxDefinitions,
+        );
+      } catch (e) {
+        this.logger.warn(
+          `naming rules skipped: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
     const clarifyOptionIds = new Set(clarifyOptions.map((o) => o.id));
     const needClarifyOptions: ClarifyOption[] = [...clarifyOptions];
     for (const id of tableIds ?? []) {
@@ -1370,9 +1403,20 @@ export class ChatService {
       });
       clarifyOptionIds.add(id);
     }
+    // Same exact-match rule as the M-Schema decoration: a candidate's curated
+    // meaning enters the PROMPT block only when a keyword equals its table
+    // name or an alias, else the block falls back to the DB comment. (The
+    // clarify card shown to the user still carries every meaning.)
     const decoratedClarifyOptions = needClarifyOptions.map((o) => {
       const meaning = clarifyAnnotations?.tableMeanings[o.tableName];
-      return meaning ? { ...o, meaning } : o;
+      return meaning &&
+        matchesNameOrAlias(
+          keywords,
+          o.tableName,
+          clarifyAnnotations?.tableAliases?.[o.tableName],
+        )
+        ? { ...o, meaning }
+        : o;
     });
     // While the round budget has room the LLM may name more tables via
     // need_clarify; once it is spent (or the user chose skip) the block would
@@ -1385,12 +1429,12 @@ export class ChatService {
         ? this.renderCandidateTables(decoratedClarifyOptions, stuffedIds)
         : '';
 
-    // --- always-on semantic decoration (MetaDataImprove M2) --------------
+    // --- semantic decoration (MetaDataImprove M2) -------------------------
     // Rule-2 narrowing is a gate, not the only reason to read semantics: a
     // single recalled table, a user-picked subset, metric force-stuffing and
-    // bridge expansion all still benefit from table meanings, field notes and
-    // cached dimension enums. Resolve once for the FINAL stuffed set, reusing
-    // the pre-gate candidate load when it already covers every final table.
+    // bridge expansion all still need the table meanings and field notes.
+    // Resolve once for the FINAL stuffed set, reusing the pre-gate candidate
+    // load when it already covers every final table.
     if (cfg.semanticEnabled) {
       const finalNames = tableIds
         ? tableIds.map((id) => nameById.get(id)).filter((n): n is string => !!n)
@@ -1407,6 +1451,13 @@ export class ChatService {
         semanticAnnotatedNames = finalNames;
       }
     }
+    // Exact-keyword gate on the prompt side: a table meaning / field note is
+    // injected ONLY when a keyword equals the table/field name or one of its
+    // aliases; everything else keeps its raw DB comment. With no keywords
+    // (extraction yielded nothing) the schema carries no curated semantics.
+    const promptSemantics = semanticAnnotations
+      ? matchedAnnotations(semanticAnnotations, keywords)
+      : undefined;
 
     const history = await this.getHistory(chatId, this.historyRounds());
 
@@ -1420,7 +1471,7 @@ export class ChatService {
       tableIds,
       customPromptType: 'GENERATE_SQL',
       lang,
-      semantics: semanticAnnotations,
+      semantics: promptSemantics,
       metrics: metricText,
       namingRules: namingText,
       candidateTables: candidateTablesText || undefined,
@@ -1690,7 +1741,7 @@ export class ChatService {
       history,
       tableIds,
       lang,
-      semantics: semanticAnnotations,
+      semantics: promptSemantics,
       metrics: metricText,
       namingRules: namingText,
     });

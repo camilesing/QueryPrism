@@ -59,8 +59,7 @@ export interface GovernedInfo {
 }
 
 export type GovernedUpsertResult =
-  | { applied: true; id: number }
-  | { applied: false; request_id: number };
+  { applied: true; id: number } | { applied: false; request_id: number };
 
 @Injectable()
 export abstract class GovernedDictService<Info extends GovernedInfo> {
@@ -182,15 +181,6 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     changedBy: number,
   ): Promise<void>;
 
-  /** Called AFTER a governance write committed, with the affected entity ids.
-   *  Overridden by dictionaries that maintain a derived search index (metric
-   *  vector recall); the default is a no-op (data standards have none). It must
-   *  be synchronous and swallow its own errors — a search-index refresh must
-   *  never fail or roll back a governance write. Remove paths pass no ids:
-   *  a stale vector row is harmless because recall re-reads the entity and
-   *  drops ids that no longer exist. */
-  protected afterCommit(_ids: number[]): void {}
-
   // ---- the shared governance flow ---------------------------------------
 
   /** Upsert one entry. Direct edit when the actor owns the target layer's
@@ -212,7 +202,6 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
           ),
         () => new ConflictException(this.t('write_conflict')),
       );
-      this.afterCommit([id]);
       return { applied: true, id };
     }
     const requestId = await this.prisma.$transaction(async (tx) => {
@@ -291,9 +280,6 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     await this.prisma.$transaction((tx) =>
       this.setEnabledTx(tx, id, enabled, actor.id),
     );
-    // An enabled row with no vector (it was disabled while the index was
-    // built, or the key was missing) must become recallable again.
-    this.afterCommit([id]);
   }
 
   /** The approval inbox. `pending` = requests the actor can review (workspace
@@ -379,11 +365,9 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
     ) {
       throw new ForbiddenException(this.t('review_forbidden'));
     }
-    let affected: number[] = [];
     await withNaturalKeyRetry(
       () =>
         this.prisma.$transaction(async (tx) => {
-          affected = [];
           const claimed = await tx.semanticChangeRequest.updateMany({
             where: { id, status: 'pending' },
             data: {
@@ -407,16 +391,13 @@ export abstract class GovernedDictService<Info extends GovernedInfo> {
                 }
               : { scope: 'GLOBAL' as const, oid: null, ownerUid: null };
           if (request.action === 'upsert') {
-            affected = [
-              await this.applyUpsertTx(tx, info, target, actor.id, reviewNote),
-            ];
+            await this.applyUpsertTx(tx, info, target, actor.id, reviewNote);
           } else {
             await this.applyRemoveTx(tx, info, target);
           }
         }),
       () => new ConflictException(this.t('write_conflict')),
     );
-    this.afterCommit(affected);
     // MetaDataImprove M6: an approved change just moved the semantic layer —
     // schedule a debounced regression run (fire-and-forget; the approval
     // transaction must never depend on the suite). A GLOBAL change runs in

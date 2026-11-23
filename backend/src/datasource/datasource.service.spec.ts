@@ -649,9 +649,7 @@ describe('DatasourceService', () => {
     // explicit snapshot so the tests never read the real SystemVariable table
     const cfg = {
       tableEnabled: true,
-      tableCount: 10,
       tableAlpha: 0.4,
-      keywordEnabled: true,
       datasourceCount: 10,
     };
 
@@ -728,7 +726,31 @@ describe('DatasourceService', () => {
       expect(result.map((t) => t.tableName)).toEqual(['sales_order']);
     });
 
-    it('keywordEnabled=false → pure vector ranking (explicit mention still applies)', async () => {
+    it('defaults to Top-3 (TABLE_RECALL_TOP_K) when no topK is passed', async () => {
+      const extras = [
+        mkTable(7, 'a_table'),
+        mkTable(8, 'b_table'),
+        mkTable(9, 'c_table'),
+      ];
+      vectorMock.search.mockReturnValue([
+        { id: 5, distance: 0.1 },
+        { id: 6, distance: 0.2 },
+        { id: 7, distance: 0.3 },
+        { id: 8, distance: 0.4 },
+        { id: 9, distance: 0.5 },
+      ]);
+      jest
+        .spyOn(prismaService.table, 'findMany')
+        .mockResolvedValue([table5, table6, ...extras]);
+
+      // The width is a constant, not a parameter: five candidates, three kept.
+      const result = await service.recallTables(1, '随便问点东西', {
+        config: cfg,
+      });
+      expect(result.map((t) => t.id)).toEqual([5, 6, 7]);
+    });
+
+    it('keyword scores always join the fusion (there is no keyword switch)', async () => {
       vectorMock.search.mockReturnValue([
         { id: 5, distance: 0.1 },
         { id: 6, distance: 0.2 },
@@ -737,11 +759,11 @@ describe('DatasourceService', () => {
         .spyOn(prismaService.table, 'findMany')
         .mockResolvedValue([table5, table6]);
 
-      // keyword scores are ignored, but the question names `orders` (id 6) —
-      // upstream test_keyword_disabled: retention survives the keyword switch
-      const result = await service.recallTables(1, '查 orders', {
+      // `orders` is an exact keyword hit on table 6, so it outranks the
+      // nearer-vector table 5 even though the question does not name it.
+      const result = await service.recallTables(1, '统计一下', {
         keywords: 'orders',
-        config: { ...cfg, keywordEnabled: false },
+        config: cfg,
       });
       expect(result.map((t) => t.id)).toEqual([6, 5]);
     });
@@ -2082,22 +2104,19 @@ describe('DatasourceService', () => {
         service.recallTables(1, '问', {
           config: {
             tableEnabled: true,
-            tableCount: 10,
             tableAlpha: 0.4,
-            keywordEnabled: true,
             datasourceCount: 10,
             clarifyEnabled: true,
             clarifyTableThreshold: 3,
             clarifyMaxSelect: 3,
             clarifyMaxRounds: 1,
             semanticEnabled: true,
-            semanticMaxTables: 1,
+            semanticMaxTables: 3,
             semanticEnumMaxValues: 50,
             semanticEnumScanRows: 10000,
             semanticEnumCooldown: 60,
             metricEnabled: true,
             metricMaxDefinitions: 5,
-            metricSimilarityThreshold: 0.55,
             namingEnabled: true,
             quotaMaxRows: 1000,
             cacheEnabled: false,

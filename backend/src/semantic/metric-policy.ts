@@ -1,28 +1,26 @@
 // metric-policy — pure policy for the MetaDataImprove M4 metric system +
 // data standards: kind discriminators, strict definition parsing/validation,
 // effective resolution by (kind, code) (reusing semantic-policy's layer
-// priority), question matching, and prompt rendering for derived/composite
+// priority), keyword matching, and prompt rendering for derived/composite
 // metrics and naming rules. No Nest/Prisma imports so the rules stay
 // unit-testable in isolation — services own all persistence.
 //
-// Matching is literal-first with an optional vector supplement (M4 follow-up):
-// `matchMetricDefinitions` renders every name/alias substring hit, THEN fills
-// the remaining `max` slots with ATOMIC metrics whose `kind:code` the caller
-// selected via metric vector recall (`opts.fuzzy`, most similar first). The
-// ranking guarantees are deliberate:
-// - a literal hit is never dropped or reordered for a fuzzy one;
-// - derived/composite metrics expand ONLY on a literal hit — a fuzzy hit never
-//   invents a composed caliber (a wrong composition is worse than none);
-// - modifiers/periods stay literal-only: they inject WHERE constraints, and a
-//   fuzzy wrong modifier silently changes the result set;
-// - a fuzzy atomic is otherwise rendered exactly like a literal one (same
-//   datasource binding, same literal-matched modifiers/period, same tables).
-// Services decide whether to consult the vector index at all; with no `fuzzy`
-// option the behavior is byte-for-byte the pre-vector matcher.
+// Matching is EXACT keyword equality — no substring, no vector similarity: a
+// definition renders only when its name or one of its aliases equals one of
+// the question's LLM-extracted keywords (`matchesKeyword`, case-insensitive).
+// `matchMetricDefinitions` renders in this order, all under the `max` cap:
+// - derived/composite metrics whose OWN name/alias hits (a derived carries its
+//   atomic's caliber, so that atomic is not restated as an ad-hoc entry);
+// - atomic metrics whose name/alias hits, composed with the modifiers of the
+//   same table and the first period whose name/alias ALSO hits.
+// A derived is never triggered by its atomic's name alone, nor a composite by
+// its operands'.
 //
 // Known limitations (by design):
-// - fuzzy recall only supplements atomics; it cannot surface a derived or
-//   composite metric whose name the user never said
+// - recall depends on the keyword extractor naming the metric exactly; a
+//   question phrased around the concept ("金额" for 支付金额) does not match
+// - with no keywords (extraction failed / EMPTY / NOT_DATA_QUERY) nothing
+//   matches at all
 // - composite operands may only be atomic/derived/composite codes — modifier
 //   or period codes inside an expression are rejected as invalid references
 import { pickEffectiveRow } from './semantic-policy';
@@ -124,11 +122,7 @@ export interface CompositeDef {
 }
 
 export type MetricDefinition =
-  | AtomicDef
-  | ModifierDef
-  | PeriodDef
-  | DerivedDef
-  | CompositeDef;
+  AtomicDef | ModifierDef | PeriodDef | DerivedDef | CompositeDef;
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && !!v.trim();
 const isPosInt = (v: unknown): v is number =>
@@ -379,8 +373,8 @@ export function effectiveByCode<
 // ---- question matching ---------------------------------------------------
 
 /** The match candidates of one row: trimmed name + string aliases, dropping
- *  empties and sub-2-char noise (a 1-char CJK inclusion match is almost
- *  always a false positive). */
+ *  empties and sub-2-char noise (a 1-char name/alias is too ambiguous to be
+ *  a deliberate keyword). */
 export function matchNames(name: string, aliases: unknown): string[] {
   const out = [name];
   if (Array.isArray(aliases)) {
@@ -389,14 +383,20 @@ export function matchNames(name: string, aliases: unknown): string[] {
   return [...new Set(out.map((s) => s.trim()).filter((s) => s.length >= 2))];
 }
 
-/** Case-insensitive substring inclusion against the question. */
-export function matchesQuestion(
+/** Exact keyword hit: one of the row's match names equals one of the
+ *  question's extracted keywords. Case-insensitive and trimmed on BOTH sides
+ *  (the keyword set may be cased either way), never a substring. The ONLY
+ *  match rule for metrics and naming rules — no vectors. */
+export function matchesKeyword(
   name: string,
   aliases: unknown,
-  question: string,
+  keywords: ReadonlySet<string>,
 ): boolean {
-  const q = question.toLowerCase();
-  return matchNames(name, aliases).some((n) => q.includes(n.toLowerCase()));
+  const names = matchNames(name, aliases).map((n) => n.toLowerCase());
+  for (const keyword of keywords) {
+    if (names.includes((keyword ?? '').trim().toLowerCase())) return true;
+  }
+  return false;
 }
 
 // ---- rendering (prompt text) ---------------------------------------------
@@ -629,16 +629,6 @@ export function renderComposite(
 
 // ---- the whole-question matcher -------------------------------------------
 
-/** Why the service could not consult the vector index. Set by the service on
- *  the result (never by the pure matcher) so callers can log/diagnose a
- *  literal-only run without parsing logs. */
-export type MetricRecallDegradeReason =
-  | 'disabled'
-  | 'no_config'
-  | 'no_embedding'
-  | 'no_vector'
-  | 'error';
-
 export interface MetricMatchResult {
   /** `<metric_definitions>` block ('' when nothing matched). */
   text: string;
@@ -646,36 +636,23 @@ export interface MetricMatchResult {
   atomicTableNames: string[];
   /** How many metrics rendered (for the metric.max_definitions cap report). */
   matched: number;
-  /** Present when vector recall was skipped — the run is literal-only. */
-  degradeReason?: MetricRecallDegradeReason;
 }
 
-export interface MetricMatchOptions {
-  /** Vector-recall candidates as `kind:code` keys, most similar first. Only
-   *  ATOMIC entries are expanded (see the header rules); the caller has
-   *  already applied the similarity threshold and the row invisibility
-   *  filter, and builds the keys from the EFFECTIVE row so layer priority
-   *  still wins. Omitted → pure literal matching. */
-  fuzzy?: readonly string[];
-}
-
-/** Match a question against the actor-visible enabled metric rows of ONE
- *  datasource and render the definitions the LLM should honor:
- *  1. derived/composite metrics whose name/alias appears in the question
+/** Match the question's extracted keywords against the actor-visible enabled
+ *  metric rows of ONE datasource and render the definitions the LLM should
+ *  honor:
+ *  1. derived/composite metrics whose name/alias equals a keyword
  *  2. atomic metrics likewise — composed ad hoc with any modifier of the
- *     same table and the first matching period that also appears in the
- *     question
- *  3. then, only while `max` has room, atomic metrics from `opts.fuzzy`
+ *     same table and the first period that also equals a keyword
  *  Rows of other datasources never render (atomic/modifier defs are filtered
  *  by datasourceId; derived/composite only render through their atomics).
  *  Dangling references and cycles skip the metric, never the request. */
 export function matchMetricDefinitions(
   rows: MetricDefLike[],
   datasourceId: number,
-  question: string,
+  keywords: ReadonlySet<string>,
   max: number,
   timeFieldOf: (tableName: string) => string | undefined,
-  opts?: MetricMatchOptions,
 ): MetricMatchResult {
   const effective = effectiveByCode(rows);
   const ctx: MetricRenderContext = {
@@ -687,9 +664,7 @@ export function matchMetricDefinitions(
   const isDsBound = (row: MetricDefLike): boolean => {
     if (row.kind === 'atomic' || row.kind === 'modifier') {
       const def = parseMetricDefinition(row.kind, row.definition) as
-        | AtomicDef
-        | ModifierDef
-        | null;
+        AtomicDef | ModifierDef | null;
       return def?.datasourceId === datasourceId;
     }
     return true; // period/derived/composite bind through their references
@@ -709,11 +684,11 @@ export function matchMetricDefinitions(
     return true;
   };
 
-  // 1) matched derived + composite metrics (question names them outright)
+  // 1) derived + composite metrics whose OWN name/alias equals a keyword
   for (const row of inScope) {
     if (row.kind !== 'derived' && row.kind !== 'composite') continue;
     if (blocks.length >= max) break;
-    if (!matchesQuestion(row.name, row.aliases, question)) continue;
+    if (!matchesKeyword(row.name, row.aliases, keywords)) continue;
     const rendered =
       row.kind === 'derived'
         ? renderDerived(row, ctx)
@@ -730,19 +705,17 @@ export function matchMetricDefinitions(
   }
 
   // 2) matched modifiers/periods for ad-hoc composition with matched atomics.
-  //    Literal-only on purpose: a modifier is a WHERE constraint, so a fuzzy
-  //    wrong one silently changes the numbers.
+  //    Each needs its OWN exact keyword: a modifier is a WHERE constraint, so
+  //    a wrong one silently changes the numbers.
   const matchedModifiers = inScope.filter(
-    (r) =>
-      r.kind === 'modifier' && matchesQuestion(r.name, r.aliases, question),
+    (r) => r.kind === 'modifier' && matchesKeyword(r.name, r.aliases, keywords),
   );
   const matchedPeriod = inScope.find(
-    (r) => r.kind === 'period' && matchesQuestion(r.name, r.aliases, question),
+    (r) => r.kind === 'period' && matchesKeyword(r.name, r.aliases, keywords),
   );
 
-  /** Render one atomic (with any literal-matched modifier/period of the same
-   *  table). Shared by the literal and fuzzy passes so both produce exactly
-   *  the same caliber text. */
+  /** Render one atomic (with any keyword-matched modifier/period of the same
+   *  table). */
   const renderAtomic = (row: MetricDefLike): string | null => {
     const def = parseMetricDefinition(
       'atomic',
@@ -783,34 +756,14 @@ export function matchMetricDefinitions(
     return line;
   };
 
-  const renderedAtomicCodes = new Set<string>();
   for (const row of inScope) {
     if (blocks.length >= max) break;
     if (row.kind !== 'atomic') continue;
     if (coveredAtomicCodes.has(row.code)) continue;
-    if (!matchesQuestion(row.name, row.aliases, question)) continue;
+    if (!matchesKeyword(row.name, row.aliases, keywords)) continue;
     const line = renderAtomic(row);
     if (!line) continue;
     blocks.push(`- ${line}`);
-    renderedAtomicCodes.add(row.code);
-  }
-
-  // 3) vector supplement: ATOMIC only, most-similar first, never evicting a
-  //    literal hit and never re-stating one (covered / already rendered).
-  for (const key of opts?.fuzzy ?? []) {
-    if (blocks.length >= max) break;
-    const row = effective.get(key);
-    if (!row || row.kind !== 'atomic') continue;
-    if (!row.enabled || !isDsBound(row)) continue;
-    if (coveredAtomicCodes.has(row.code)) continue;
-    if (renderedAtomicCodes.has(row.code)) continue;
-    // a literal hit would already be in `renderedAtomicCodes`; the guard
-    // keeps a caller-supplied key from bypassing the literal naming rule
-    if (matchesQuestion(row.name, row.aliases, question)) continue;
-    const line = renderAtomic(row);
-    if (!line) continue;
-    blocks.push(`- ${line}`);
-    renderedAtomicCodes.add(row.code);
   }
 
   if (blocks.length === 0)
@@ -831,19 +784,21 @@ const xmlEscape = (s: string): string =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-/** Match naming-dictionary entries against the question and render the
- *  `<naming_rules>` block ('' when nothing matched). Standard translation +
- *  description teach the LLM the enterprise vocabulary. */
+/** Match naming-dictionary entries against the exact terms of this turn —
+ *  the extracted keywords plus the stuffed schema's table/field names and
+ *  comments (the caller builds the set) — and render the `<naming_rules>`
+ *  block ('' when nothing matched). Standard translation + description teach
+ *  the LLM the enterprise vocabulary. */
 export function namingTemplate(
   rows: DataStandardLike[],
-  question: string,
+  terms: ReadonlySet<string>,
   max: number,
 ): string {
   const effective = effectiveByCode(
     rows.filter((r) => r.kind === 'naming' && r.enabled),
   );
   const matched = [...effective.values()].filter((r) =>
-    matchesQuestion(r.term, r.aliases, question),
+    matchesKeyword(r.term, r.aliases, terms),
   );
   if (matched.length === 0) return '';
   const lines = matched.slice(0, max).map((r) => {

@@ -1,14 +1,12 @@
 // EmbeddingBackfillService — fills embeddings for rows that were written
 // while no embedding key was configured (their `embedding` Json column is
-// SQL NULL). Covers datasource / table (metadata) AND metric definitions
-// (metric recall):
+// SQL NULL). Covers datasource / table metadata (table recall) only — metric
+// definitions match by exact keyword and are no longer embedded:
 //
 //   - startup run (non-blocking) + manual POST /embedding/backfill
-//     + re-enable trigger from ParameterService (table_enabled /
-//     metric.enabled flipping false→true re-fills).
-//   - per-collection runtime gating: metadata fills need
-//     embedding.table_enabled, metric fills need metric.enabled (the same
-//     switch that gates metric recall).
+//     + re-enable trigger from ParameterService (embedding.table_enabled
+//     flipping false→true re-fills).
+//   - runtime gating: metadata fills need embedding.table_enabled.
 //   - batches of 32 with 3 attempts per batch; a failed batch stays NULL
 //     (never marked complete) and the next run retries it.
 //   - race protection: before write-back each row is re-read (still NULL)
@@ -16,15 +14,12 @@
 //     an edit that landed mid-flight (or a synchronous re-embed by the
 //     upsert path) wins and the stale backfill write is skipped. The vector
 //     upsert is idempotent, so concurrent instances may race harmlessly.
-//   - metric rows are loaded only when `enabled`; the governance write hook
-//     indexes a row when it is enabled (so a disabled row never pays for an
-//     embedding call it cannot use).
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { resolveEmbeddingConfig } from '../common/config/embedding-config';
 import { EmbeddingService } from './embedding.service';
-import { embedRowText, metricDefEmbedText } from './embed-text';
+import { embedRowText } from './embed-text';
 import type { VectorCollection } from '../vector/vector.service';
 import { VectorService } from '../vector/vector.service';
 
@@ -36,7 +31,6 @@ const ATTEMPTS = 3;
 export interface BackfillCounts {
   datasource: number;
   table: number;
-  metric: number;
 }
 
 /** One NULL-embedding row staged for a batch: the text to embed plus the
@@ -87,21 +81,12 @@ export class EmbeddingBackfillService implements OnModuleInit {
     );
   }
 
-  /** Fill every collection (startup + manual trigger). Each branch is gated
-   *  by its own runtime switch so a disabled half stays untouched. */
+  /** Fill every collection (startup + manual trigger), gated by the runtime
+   *  switch so a disabled table recall stays untouched. */
   async run(): Promise<BackfillCounts> {
-    if (!this.embedding.available)
-      return {
-        datasource: 0,
-        table: 0,
-        metric: 0,
-      };
+    if (!this.embedding.available) return { datasource: 0, table: 0 };
     const cfg = await resolveEmbeddingConfig(this.prisma);
-    const counts: BackfillCounts = {
-      datasource: 0,
-      table: 0,
-      metric: 0,
-    };
+    const counts: BackfillCounts = { datasource: 0, table: 0 };
     if (!cfg.tableEnabled) {
       this.logger.log(
         'embedding.table_enabled=false — datasource/table backfill skipped',
@@ -110,16 +95,9 @@ export class EmbeddingBackfillService implements OnModuleInit {
       counts.datasource = await this.fill('datasource');
       counts.table = await this.fill('table');
     }
-    if (!cfg.metricEnabled) {
-      this.logger.log(
-        'metric.enabled=false — metric-definition backfill skipped',
-      );
-    } else {
-      counts.metric = await this.fill('metric_def');
-    }
     this.logger.log(
       `backfill complete: ${counts.datasource} datasource, ` +
-        `${counts.table} table, ${counts.metric} metric rows processed`,
+        `${counts.table} table rows processed`,
     );
     return counts;
   }
@@ -132,16 +110,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
     if (!cfg.tableEnabled) return;
     await this.fill('datasource');
     await this.fill('table');
-  }
-
-  /** Metric-definition half only. ParameterService calls this when
-   *  metric.enabled flips false→true (the same switch gates recall), so the
-   *  rows written while recall was off become searchable without a restart. */
-  async runMetrics(): Promise<void> {
-    if (!this.embedding.available) return;
-    const cfg = await resolveEmbeddingConfig(this.prisma);
-    if (!cfg.metricEnabled) return;
-    await this.fill('metric_def');
   }
 
   /** Fill one collection: scan NULL rows, then per 32-row batch (3
@@ -274,44 +242,6 @@ export class EmbeddingBackfillService implements OnModuleInit {
           write: async (row, vector, client) =>
             (
               await (client ?? this.prisma).table.updateMany({
-                where: { id: row.id, embedding: dbNull, ...row.match },
-                data: { embedding: vector },
-              })
-            ).count,
-        };
-      case 'metric_def':
-        return {
-          load: async (ids) =>
-            (
-              await this.prisma.metricDef.findMany({
-                where: {
-                  ...(ids ? { id: { in: ids } } : {}),
-                  embedding: dbNull,
-                  // disabled rows are not recallable — index them when the
-                  // enable toggle re-embeds (MetricService.afterCommit)
-                  enabled: true,
-                },
-                select: {
-                  id: true,
-                  name: true,
-                  aliases: true,
-                  description: true,
-                },
-                orderBy: { id: 'asc' },
-              })
-            ).map((r) => ({
-              id: r.id,
-              text: metricDefEmbedText(r),
-              // `aliases` is a Json column: JSONB equality has no portable
-              // Prisma filter, so the edit guard uses the scalar input
-              // columns. That is sufficient — a rename or description change
-              // makes the conditional write miss, and the eager write hook
-              // has already embedded the new text anyway.
-              match: { name: r.name, description: r.description },
-            })),
-          write: async (row, vector, client) =>
-            (
-              await (client ?? this.prisma).metricDef.updateMany({
                 where: { id: row.id, embedding: dbNull, ...row.match },
                 data: { embedding: vector },
               })

@@ -3,7 +3,8 @@
 // scope layers, append-only version history, cross-layer approval
 // (SemanticChangeRequest entityType 'standard').
 //
-// Runtime role: naming entries matched by the question text render the
+// Runtime role: naming entries whose term equals one of the turn's exact
+// terms (question keywords + stuffed schema metadata) render the
 // <naming_rules> prompt block (namingTemplateFor). The unit dictionary is
 // advisory — it feeds management/autocomplete and never validates existing
 // free-text unit strings (FieldSemantic.unit, MetricDef.unit).
@@ -124,10 +125,16 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
 
   // ---- runtime: prompt integration ----------------------------------------
 
-  /** The <naming_rules> prompt block for a question ('' when nothing
-   *  matched). Injected by the chat pipeline when naming.enabled is on. */
-  async namingTemplateFor(question: string, max: number): Promise<string> {
-    if (!question.trim()) return '';
+  /** The <naming_rules> prompt block for a turn ('' when nothing matched).
+   *  `terms` = the question's extracted keywords plus the stuffed schema's
+   *  table/field names and comments (the chat pipeline builds the set, see
+   *  m-schema.builder `schemaTerms`); an entry renders only when its term or
+   *  an alias equals one of them EXACTLY — no substring, no vectors. */
+  async namingTemplateFor(
+    terms: ReadonlySet<string>,
+    max: number,
+  ): Promise<string> {
+    if (terms.size === 0) return '';
     const actor = this.actor();
     const rows = await this.prisma.dataStandard.findMany({
       where: {
@@ -136,7 +143,7 @@ export class DataStandardService extends GovernedDictService<StandardUpsertInfo>
         ...this.visibleFilter(actor),
       },
     });
-    return namingTemplate(rows, question, max);
+    return namingTemplate(rows, terms, max);
   }
 
   // ---- governance hooks -----------------------------------------------------

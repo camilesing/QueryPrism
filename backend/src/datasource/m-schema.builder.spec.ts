@@ -3,6 +3,7 @@ import {
   diffRelationEdges,
   normalizeTableRelation,
   relationIdNamesOf,
+  schemaTerms,
   type TableRelationEdge,
 } from './m-schema.builder';
 
@@ -447,6 +448,65 @@ describe('buildMSchema semantics injection (MetaDataImprove M2)', () => {
     expect(out).toContain('枚举: a b');
     expect(out).not.toContain(long);
     expect(out.split('\n').every((line) => line.length < 500)).toBe(true);
+  });
+});
+
+describe('schemaTerms (the naming-rule "table metadata" side)', () => {
+  const table = {
+    tableName: 'Orders',
+    tableComment: 'db comment',
+    customComment: '订单表',
+    checked: true,
+    fields: [
+      {
+        fieldName: 'Amt',
+        fieldType: 'INTEGER',
+        fieldComment: 'amount',
+        customComment: '金额',
+        isPrimaryKey: false,
+        fieldIndex: 0,
+        checked: true,
+      },
+      {
+        fieldName: 'secret',
+        fieldType: 'TEXT',
+        fieldComment: 'hidden',
+        customComment: null,
+        isPrimaryKey: false,
+        fieldIndex: 1,
+        checked: false,
+      },
+    ],
+  };
+
+  it('collects lowercased table/field names and the EFFECTIVE comments', () => {
+    expect(schemaTerms([table])).toEqual(
+      new Set(['orders', '订单表', 'amt', '金额']),
+    );
+  });
+
+  it('falls back to the DB comment and skips blank comments', () => {
+    expect(schemaTerms([{ ...table, customComment: '  ' }])).toEqual(
+      new Set(['orders', 'db comment', 'amt', '金额']),
+    );
+    expect(
+      schemaTerms([
+        {
+          ...table,
+          tableComment: null,
+          customComment: null,
+          fields: [
+            { ...table.fields[0], fieldComment: null, customComment: null },
+          ],
+        },
+      ]),
+    ).toEqual(new Set(['orders', 'amt']));
+  });
+
+  it('skips unchecked tables and unchecked fields — the LLM never sees them', () => {
+    expect(schemaTerms([{ ...table, checked: false }])).toEqual(new Set());
+    expect(schemaTerms([table]).has('secret')).toBe(false);
+    expect(schemaTerms([])).toEqual(new Set());
   });
 });
 

@@ -11,7 +11,6 @@ import { createTestI18n } from '../common/i18n/test-i18n';
 import { MetricService, type MetricUpsertInfo } from './metric.service';
 import { DataStandardService } from './standard.service';
 import type { MetricDef } from '@prisma/client';
-import type { EmbeddingConfig } from '../common/config/embedding-config';
 
 setI18n(createTestI18n());
 
@@ -110,59 +109,21 @@ function makePrisma(): MetricPrismaMock {
   return prisma;
 }
 
-/** Embedding / vector stubs. `available: false` is the default so every
- *  pre-vector test keeps exercising the literal-only path (the vector stage
- *  only runs when a task snapshot is passed AND both are available). */
 function makeServices(prisma: MetricPrismaMock = makePrisma()) {
   const standard = new DataStandardService(prisma as never);
-  const embedding = {
-    available: false,
-    embed: jest.fn(),
-    embedBatch: jest.fn(),
-  };
-  const vector = {
-    available: false,
-    upsert: jest.fn(),
-    search: jest.fn(),
-  };
   const datasources = { findOne: jest.fn().mockResolvedValue({ id: 1 }) };
   return {
     metric: new MetricService(
       prisma as never,
       { onApproval: jest.fn() } as never,
       standard,
-      embedding as never,
-      vector as never,
       datasources as never,
     ),
     standard,
     prisma,
-    embedding,
-    vector,
+    datasources,
   };
 }
-
-/** Full strategy snapshot — the vector stage requires one explicitly. */
-const CONFIG: EmbeddingConfig = {
-  tableEnabled: true,
-  tableCount: 10,
-  tableAlpha: 0.4,
-  keywordEnabled: true,
-  datasourceCount: 10,
-  clarifyEnabled: true,
-  clarifyTableThreshold: 3,
-  clarifyMaxSelect: 3,
-  clarifyMaxRounds: 1,
-  semanticEnabled: true,
-  semanticMaxTables: 1,
-  semanticEnumMaxValues: 50,
-  semanticEnumScanRows: 10000,
-  semanticEnumCooldown: 60,
-  metricEnabled: true,
-  metricMaxDefinitions: 5,
-  metricSimilarityThreshold: 0.55,
-  namingEnabled: true,
-};
 
 const ATOMIC_INFO: MetricUpsertInfo = {
   kind: 'atomic',
@@ -407,7 +368,6 @@ describe('MetricService.matchDefinitions', () => {
     code: 'x',
     name: 'x',
     aliases: null,
-    embedding: null,
     description: null,
     unit: null,
     definition: {},
@@ -466,199 +426,14 @@ describe('MetricService.matchDefinitions', () => {
         updatedAt: new Date(),
       },
     ]);
+    // keywords for "母婴支付金额趋势" — the derived metric's own name
     const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '母婴支付金额趋势', 5),
+      metric.matchDefinitions(3, new Set(['母婴支付金额']), 5),
     );
     expect(r.matched).toBe(1);
     expect(r.atomicTableNames).toEqual(['orders']);
     expect(r.text).toContain('SUM(orders.pay_amount)');
     expect(r.text).toContain('母婴支付金额 (baby_pay)');
-  });
-
-  const atomic = (over: Partial<MetricDef>): MetricDef => ({
-    id: 1,
-    kind: 'atomic',
-    code: 'x',
-    name: 'x',
-    aliases: null,
-    embedding: null,
-    description: null,
-    unit: null,
-    definition: {
-      datasource_id: 3,
-      table_name: 'orders',
-      field_name: 'pay_amount',
-      aggregation: 'SUM',
-    },
-    scope: 'WORKSPACE',
-    oid: 1,
-    ownerUid: null,
-    enabled: true,
-    version: 1,
-    createBy: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...over,
-  });
-
-  const stubVectorHit = (
-    services: ReturnType<typeof makeServices>,
-    id: number,
-    distance: number,
-  ) => {
-    services.embedding.available = true;
-    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
-    services.vector.available = true;
-    services.vector.search.mockResolvedValue([{ id, distance }]);
-  };
-
-  it('vector hits fill the remaining slots after the literal matches', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany
-      .mockResolvedValueOnce([
-        atomic({ id: 11, code: 'pay_amount', name: '支付金额' }),
-        atomic({ id: 12, code: 'refund_amount', name: '退款金额' }),
-      ])
-      .mockResolvedValueOnce([
-        { id: 12, kind: 'atomic', code: 'refund_amount' },
-      ]);
-    stubVectorHit(services, 12, 0.2); // similarity 0.8
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5, CONFIG),
-    );
-    expect(r.matched).toBe(2);
-    expect(r.text).toContain('支付金额 (pay_amount)');
-    expect(r.text).toContain('退款金额 (refund_amount)');
-    expect(r.degradeReason).toBeUndefined();
-  });
-
-  it('drops vector hits at or below metric.similarity_threshold', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany
-      .mockResolvedValueOnce([
-        atomic({ id: 11, code: 'pay_amount', name: '支付金额' }),
-        atomic({ id: 12, code: 'refund_amount', name: '退款金额' }),
-      ])
-      .mockResolvedValueOnce([
-        { id: 12, kind: 'atomic', code: 'refund_amount' },
-      ]);
-    stubVectorHit(services, 12, 0.45); // similarity 0.55 == threshold
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5, CONFIG),
-    );
-    expect(r.matched).toBe(1);
-    expect(r.text).not.toContain('refund_amount');
-  });
-
-  it('never lets a vector hit evict a literal match (cap saturation)', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany
-      .mockResolvedValueOnce([
-        atomic({ id: 11, code: 'pay_amount', name: '支付金额' }),
-        atomic({ id: 12, code: 'refund_amount', name: '退款金额' }),
-      ])
-      .mockResolvedValueOnce([
-        { id: 12, kind: 'atomic', code: 'refund_amount' },
-      ]);
-    stubVectorHit(services, 12, 0.1); // similarity 0.9, most similar
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额', 1, CONFIG),
-    );
-    expect(r.matched).toBe(1);
-    expect(r.text).toContain('支付金额 (pay_amount)');
-    expect(r.text).not.toContain('refund_amount');
-  });
-
-  it('degrades to literal when embedding is unavailable, without throwing', async () => {
-    const { metric, prisma } = makeServices();
-    prisma.metricDef.findMany.mockResolvedValue([
-      atomic({ id: 11, code: 'pay_amount', name: '支付金额' }),
-    ]);
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5, CONFIG),
-    );
-    expect(r.matched).toBe(1);
-    expect(r.degradeReason).toBe('no_embedding');
-  });
-
-  it('degrades to literal when the provider call fails', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany.mockResolvedValue([
-      atomic({ id: 11, code: 'pay_amount', name: '支付金额' }),
-    ]);
-    services.embedding.available = true;
-    services.embedding.embed.mockRejectedValue(new Error('provider down'));
-    services.vector.available = true;
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5, CONFIG),
-    );
-    expect(r.matched).toBe(1);
-    expect(r.degradeReason).toBe('error');
-  });
-
-  it('stays literal when no strategy snapshot is supplied', async () => {
-    const { metric, prisma } = makeServices();
-    prisma.metricDef.findMany.mockResolvedValue([
-      atomic({ id: 11, code: 'pay_amount', name: '支付金额' }),
-    ]);
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5),
-    );
-    expect(r.degradeReason).toBe('no_config');
-  });
-});
-
-describe('MetricService search-index refresh', () => {
-  it('embeds + indexes the row after a committed direct upsert', async () => {
-    const { metric, prisma, embedding, vector } = makeServices();
-    embedding.available = true;
-    embedding.embedBatch.mockResolvedValue([[0.3, 0.4]]);
-    vector.available = true;
-    prisma.metricDef.findFirst.mockResolvedValue(null);
-    prisma.metricDef.create.mockImplementation(
-      ({ data }: { data: Record<string, unknown> }) => ({
-        id: 11,
-        version: 1,
-        ...data,
-      }),
-    );
-    prisma.metricDef.findMany.mockResolvedValue([
-      { id: 11, name: '支付金额', aliases: null, description: null },
-    ]);
-    await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(embedding.embedBatch).toHaveBeenCalledWith(['支付金额']);
-    expect(prisma.metricDef.update).toHaveBeenCalledWith({
-      where: { id: 11 },
-      data: { embedding: [0.3, 0.4] },
-    });
-    expect(vector.upsert).toHaveBeenCalledWith(
-      'metric_def',
-      11,
-      [0.3, 0.4],
-      expect.anything(),
-    );
-  });
-
-  it('does nothing when embedding is unavailable (rows stay NULL for backfill)', async () => {
-    const { metric, prisma, embedding, vector } = makeServices();
-    embedding.available = false;
-    prisma.metricDef.findFirst.mockResolvedValue(null);
-    prisma.metricDef.create.mockImplementation(
-      ({ data }: { data: Record<string, unknown> }) => ({
-        id: 11,
-        version: 1,
-        ...data,
-      }),
-    );
-    await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(embedding.embedBatch).not.toHaveBeenCalled();
-    expect(vector.upsert).not.toHaveBeenCalled();
   });
 });
 
@@ -698,14 +473,15 @@ describe('DataStandardService', () => {
         updatedAt: new Date(),
       },
     ]);
+    // runtime: the naming dictionary matches the extracted keyword
     const text = await withUser(MEMBER, () =>
-      standard.namingTemplateFor('今年年营收多少', 5),
+      standard.namingTemplateFor(new Set(['年营收']), 5),
     );
     expect(text).toContain('term="年营收"');
     expect(text).toContain('standard="年度总营业额"');
     // units never render into the prompt block
     const none = await withUser(MEMBER, () =>
-      standard.namingTemplateFor('按件', 5),
+      standard.namingTemplateFor(new Set(['件']), 5),
     );
     expect(none).toBe('');
   });
@@ -728,7 +504,7 @@ describe('DataStandardService', () => {
 });
 
 // ---- appended: reviewShared inbox dispatch, page/versions reads, the
-// ---- update/remove/toggle write arms, payload mapping and vector hooks ----
+// ---- update/remove/toggle write arms and payload mapping ----
 
 /** Full MetricDef-shaped row for the read/apply paths. */
 const defRow = (
@@ -739,7 +515,6 @@ const defRow = (
   code: 'x',
   name: 'x',
   aliases: null,
-  embedding: null,
   description: null,
   unit: null,
   definition: {},
@@ -1215,7 +990,7 @@ describe('MetricService direct-write arms', () => {
     expect(prisma.metricDef.delete).toHaveBeenCalledTimes(1);
   });
 
-  it('rejecting a request claims it, applies nothing and skips the index refresh', async () => {
+  it('rejecting a request claims it and applies nothing', async () => {
     const { metric, prisma } = makeServices();
     prisma.semanticChangeRequest.findUnique.mockResolvedValue({
       id: 57,
@@ -1274,8 +1049,8 @@ describe('MetricService direct-write arms', () => {
   });
 });
 
-describe('MetricService vector recall + index hooks (extra arms)', () => {
-  const vecAtomic = (over: Partial<MetricDef>): MetricDef =>
+describe('MetricService.matchDefinitions — exact keyword matching', () => {
+  const exactAtomic = (over: Partial<MetricDef>): MetricDef =>
     defRow({
       code: 'pay_amount',
       name: '支付金额',
@@ -1283,148 +1058,30 @@ describe('MetricService vector recall + index hooks (extra arms)', () => {
       ...over,
     });
 
-  it('degrades with reason "disabled" when metric matching is off', async () => {
+  it('matches an exact keyword, never a substring of one', async () => {
     const { metric, prisma } = makeServices();
-    prisma.metricDef.findMany.mockResolvedValue([vecAtomic({ id: 11 })]);
+    prisma.metricDef.findMany.mockResolvedValue([exactAtomic({ id: 11 })]);
+    const hit = await withUser(MEMBER, () =>
+      metric.matchDefinitions(3, new Set(['支付金额']), 5),
+    );
+    expect(hit).toEqual(
+      expect.objectContaining({ matched: 1, atomicTableNames: ['orders'] }),
+    );
+    // the raw question "支付金额趋势" is NOT a keyword → nothing renders
+    const miss = await withUser(MEMBER, () =>
+      metric.matchDefinitions(3, new Set(['支付金额趋势']), 5),
+    );
+    expect(miss).toEqual({ text: '', atomicTableNames: [], matched: 0 });
+  });
+
+  it('reads the dictionary and the time fields only — no vector stage', async () => {
+    const { metric, prisma } = makeServices();
+    prisma.metricDef.findMany.mockResolvedValue([exactAtomic({ id: 11 })]);
     const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5, {
-        ...CONFIG,
-        metricEnabled: false,
-      }),
+      metric.matchDefinitions(3, new Set(['支付金额']), 5),
     );
-    expect(r.degradeReason).toBe('disabled');
-    expect(r.matched).toBe(1);
-  });
-
-  it('degrades with reason "no_vector" when pgvector is unavailable', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany.mockResolvedValue([vecAtomic({ id: 11 })]);
-    services.embedding.available = true;
-    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
-    services.vector.available = false;
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '支付金额趋势', 5, CONFIG),
-    );
-    expect(r.degradeReason).toBe('no_vector');
-    expect(services.vector.search).not.toHaveBeenCalled();
-  });
-
-  it('drops non-integer and invisible vector hits without degrading', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany
-      .mockResolvedValueOnce([]) // no enabled rows at all
-      .mockResolvedValueOnce([]); // re-read drops the hit id → invisible
-    services.embedding.available = true;
-    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
-    services.vector.available = true;
-    services.vector.search.mockResolvedValue([
-      { id: 11.5, distance: 0.1 }, // non-integer id filtered
-      { id: 11, distance: 0.2 }, // similarity 0.8 but invisible to this actor
-    ]);
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '完全无关的问题', 5, CONFIG),
-    );
-    expect(r.matched).toBe(0);
-    expect(r.text).toBe('');
-    expect(r.degradeReason).toBeUndefined(); // keys were empty, not an error
-  });
-
-  it('caps fuzzy keys at max (saturation) in similarity order', async () => {
-    const services = makeServices();
-    const { metric, prisma } = services;
-    prisma.metricDef.findMany
-      .mockResolvedValueOnce([
-        vecAtomic({ id: 11 }),
-        vecAtomic({ id: 12, code: 'refund_amount', name: '退款金额' }),
-      ])
-      .mockResolvedValueOnce([
-        { id: 11, kind: 'atomic', code: 'pay_amount' },
-        { id: 12, kind: 'atomic', code: 'refund_amount' },
-      ]);
-    services.embedding.available = true;
-    services.embedding.embed.mockResolvedValue([0.1, 0.2]);
-    services.vector.available = true;
-    services.vector.search.mockResolvedValue([
-      { id: 11, distance: 0.2 },
-      { id: 12, distance: 0.1 },
-    ]);
-    const r = await withUser(MEMBER, () =>
-      metric.matchDefinitions(3, '完全不相关的另一个问题', 1, CONFIG),
-    );
-    expect(r.matched).toBe(1);
-    expect(r.text).toContain('支付金额 (pay_amount)');
-    expect(r.text).not.toContain('refund_amount');
-  });
-
-  it('skips indexing rows whose embed text is empty', async () => {
-    const { metric, prisma, embedding, vector } = makeServices();
-    embedding.available = true;
-    vector.available = true;
-    prisma.metricDef.findFirst.mockResolvedValue(null);
-    prisma.metricDef.create.mockImplementation(
-      ({ data }: { data: Record<string, unknown> }) => ({
-        id: 11,
-        version: 1,
-        ...data,
-      }),
-    );
-    prisma.metricDef.findMany.mockResolvedValue([
-      { id: 11, name: '   ', aliases: null, description: null },
-    ]);
-    await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(embedding.embedBatch).not.toHaveBeenCalled();
-    expect(vector.upsert).not.toHaveBeenCalled();
-  });
-
-  it('tolerates a short embedding batch: nothing commits, the write survives', async () => {
-    const { metric, prisma, embedding, vector } = makeServices();
-    embedding.available = true;
-    embedding.embedBatch.mockResolvedValue([[0.3, 0.4]]); // 1 of 2 vectors
-    vector.available = true;
-    prisma.metricDef.findFirst.mockResolvedValue(null);
-    prisma.metricDef.create.mockImplementation(
-      ({ data }: { data: Record<string, unknown> }) => ({
-        id: 11,
-        version: 1,
-        ...data,
-      }),
-    );
-    prisma.metricDef.findMany.mockResolvedValue([
-      { id: 11, name: '支付金额', aliases: null, description: null },
-      { id: 12, name: '退款金额', aliases: null, description: null },
-    ]);
-    const result = await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
-    expect(result).toEqual({ applied: true, id: 11 }); // index failure never fails the write
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(prisma.metricDef.update).not.toHaveBeenCalled();
-    expect(vector.upsert).not.toHaveBeenCalled();
-  });
-
-  it('writes the Json embedding even when the vector store is offline', async () => {
-    const { metric, prisma, embedding, vector } = makeServices();
-    embedding.available = true;
-    embedding.embedBatch.mockResolvedValue([[0.3, 0.4]]);
-    vector.available = false; // pgvector gone: Json column still commits
-    prisma.metricDef.findFirst.mockResolvedValue(null);
-    prisma.metricDef.create.mockImplementation(
-      ({ data }: { data: Record<string, unknown> }) => ({
-        id: 11,
-        version: 1,
-        ...data,
-      }),
-    );
-    prisma.metricDef.findMany.mockResolvedValue([
-      { id: 11, name: '支付金额', aliases: ['付款'], description: 'd' },
-    ]);
-    await withUser(WS_ADMIN, () => metric.upsert(ATOMIC_INFO));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(prisma.metricDef.update).toHaveBeenCalledWith({
-      where: { id: 11 },
-      data: { embedding: [0.3, 0.4] },
-    });
-    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(r).not.toHaveProperty('degradeReason');
+    expect(prisma.metricDef.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.fieldSemantic.findMany).toHaveBeenCalledTimes(1);
   });
 });

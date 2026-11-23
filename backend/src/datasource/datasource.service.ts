@@ -26,7 +26,11 @@ import {
   relationIdNamesOf,
   type MSchemaSemantics,
 } from './m-schema.builder';
-import { calcKeywordScore, rankTables } from './table-recall';
+import {
+  TABLE_RECALL_TOP_K,
+  calcKeywordScore,
+  rankTables,
+} from './table-recall';
 import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
@@ -492,8 +496,9 @@ export class DatasourceService {
    *  keyword hits (the question names the table) first, then explicit-mention
    *  retention + rank-fill. `keywords` (already extracted + semantic-alias-
    *  expanded) replaces both the vector query and the keyword source when
-   *  present; without keywords (or keywordEnabled off) the ranking is pure
-   *  vector similarity (α=1) — retention still applies.
+   *  present; without keywords (extraction returned nothing) the ranking is
+   *  pure vector similarity (α=1) — retention still applies. Width is the
+   *  constant TABLE_RECALL_TOP_K unless the caller passes `topK`.
    *
    *  Degradation: a vector embed/search failure only zeroes the vector
    *  scores (a vector outage must not drop candidates); when embedding or
@@ -519,7 +524,7 @@ export class DatasourceService {
     if (!q || !this.embedding.available || !this.vector.available) return [];
     const cfg = opts?.config ?? (await resolveEmbeddingConfig(this.prisma));
     if (!cfg.tableEnabled) return [];
-    const count = Math.max(1, Math.floor(opts?.topK ?? cfg.tableCount));
+    const count = Math.max(1, Math.floor(opts?.topK ?? TABLE_RECALL_TOP_K));
     const keywords = (opts?.keywords ?? '').trim();
 
     try {
@@ -554,7 +559,7 @@ export class DatasourceService {
         );
       }
 
-      const useKeywords = cfg.keywordEnabled && keywords.length > 0;
+      const useKeywords = keywords.length > 0;
       const ranked = rankTables(
         rows.map((t) => ({
           row: t,

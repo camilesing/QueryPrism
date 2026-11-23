@@ -1,10 +1,9 @@
-// EmbeddingService is consumed by datasource / table / metric recall paths.
+// EmbeddingService is consumed by the datasource / table recall paths.
 // Registered globally so those modules can inject it without each
 // re-importing this module. EmbeddingBackfillService runs once on startup
-// (non-blocking) and on embedding.* re-enable flips to fill null-embedding
-// rows across the three collections (gated by the runtime table_enabled /
-// metric.enabled parameters); EmbeddingController exposes a manual
-// re-trigger for operators.
+// (non-blocking) and on the embedding.table_enabled re-enable flip to fill
+// null-embedding rows across the two collections; EmbeddingController
+// exposes a manual re-trigger for operators.
 import { Global, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { EmbeddingService } from './embedding.service';

@@ -6,12 +6,11 @@ import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
 } from './embedding-config';
+import { TABLE_RECALL_TOP_K } from '../../datasource/table-recall';
 
 const ENV_KEYS = [
   'TABLE_EMBEDDING_ENABLED',
-  'TABLE_EMBEDDING_COUNT',
   'TABLE_EMBEDDING_ALPHA',
-  'TABLE_EMBEDDING_KEYWORD_ENABLED',
   'DS_EMBEDDING_COUNT',
   'CLARIFY_ENABLED',
   'CLARIFY_TABLE_THRESHOLD',
@@ -45,15 +44,15 @@ describe('parseEmbeddingParameter', () => {
   });
 
   it('counts must be positive integer strings/numbers', () => {
-    expect(parseEmbeddingParameter('tableCount', 10)).toBe(10);
-    expect(parseEmbeddingParameter('tableCount', '3')).toBe(3);
-    expect(() => parseEmbeddingParameter('tableCount', 0)).toThrow();
-    expect(() => parseEmbeddingParameter('tableCount', -2)).toThrow();
-    expect(() => parseEmbeddingParameter('tableCount', '2.5')).toThrow();
-    expect(() => parseEmbeddingParameter('tableCount', true)).toThrow();
+    expect(parseEmbeddingParameter('datasourceCount', 10)).toBe(10);
+    expect(parseEmbeddingParameter('datasourceCount', '3')).toBe(3);
+    expect(() => parseEmbeddingParameter('datasourceCount', 0)).toThrow();
+    expect(() => parseEmbeddingParameter('datasourceCount', -2)).toThrow();
+    expect(() => parseEmbeddingParameter('datasourceCount', '2.5')).toThrow();
+    expect(() => parseEmbeddingParameter('datasourceCount', true)).toThrow();
   });
 
-  it('similarities/alpha must be finite numbers within [0,1]', () => {
+  it('alpha must be a finite number within [0,1]', () => {
     expect(parseEmbeddingParameter('tableAlpha', 0.4)).toBe(0.4);
     expect(parseEmbeddingParameter('tableAlpha', '0.7')).toBe(0.7);
     expect(parseEmbeddingParameter('tableAlpha', 0)).toBe(0);
@@ -88,22 +87,19 @@ describe('resolveEmbeddingConfig', () => {
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
     expect(cfg).toEqual({
       tableEnabled: true,
-      tableCount: 10,
       tableAlpha: 0.4,
-      keywordEnabled: true,
       datasourceCount: 10,
       clarifyEnabled: true,
       clarifyTableThreshold: 3,
       clarifyMaxSelect: 3,
       clarifyMaxRounds: 1,
       semanticEnabled: true,
-      semanticMaxTables: 1,
+      semanticMaxTables: 3,
       semanticEnumMaxValues: 50,
       semanticEnumScanRows: 10000,
       semanticEnumCooldown: 60,
       metricEnabled: true,
       metricMaxDefinitions: 5,
-      metricSimilarityThreshold: 0.55,
       namingEnabled: true,
       quotaMaxRows: 1000,
       cacheEnabled: false,
@@ -120,9 +116,24 @@ describe('resolveEmbeddingConfig', () => {
   });
 
   it('env startup values override code defaults (upstream-named keys)', async () => {
-    process.env.TABLE_EMBEDDING_COUNT = '15';
+    process.env.SEMANTIC_MAX_TABLES = '2';
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
-    expect(cfg.tableCount).toBe(15);
+    expect(cfg.semanticMaxTables).toBe(2);
+  });
+
+  it('the recall width is fixed at Top-3 and rule 2 defaults to the same width', async () => {
+    // Keyword extraction and the recall width are deliberately NOT parameters:
+    // neither env nor a saved row can switch them off or widen them.
+    expect(EMBEDDING_PARAMETER_KEYS).not.toContain('embedding.keyword_enabled');
+    expect(EMBEDDING_PARAMETER_KEYS).not.toContain('embedding.table_count');
+    expect(EMBEDDING_PARAMETER_KEYS).not.toContain(
+      'metric.similarity_threshold',
+    );
+    expect(TABLE_RECALL_TOP_K).toBe(3);
+    // At the default a Top-3 recall never exceeds semantic.max_tables, so
+    // rule 2 narrows nothing until an admin lowers the value.
+    const cfg = await resolveEmbeddingConfig(makePrisma() as never);
+    expect(cfg.semanticMaxTables).toBe(TABLE_RECALL_TOP_K);
   });
 
   it('an invalid saved row throws instead of silently degrading', async () => {
@@ -154,11 +165,11 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the twenty-one persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(21);
+  it('exposes exactly the eighteen persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(18);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
-    ).toHaveLength(5);
+    ).toHaveLength(3);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('clarify.')),
     ).toHaveLength(4);
@@ -169,31 +180,13 @@ describe('resolveEmbeddingConfig', () => {
       EMBEDDING_PARAMETER_KEYS.filter(
         (k) => k.startsWith('metric.') || k.startsWith('naming.'),
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(3);
     // MetaDataImprove M7 query-cost keys
     expect(
       EMBEDDING_PARAMETER_KEYS.filter(
         (k) => k.startsWith('quota.') || k.startsWith('cache.'),
       ),
     ).toHaveLength(3);
-  });
-
-  it('metric.similarity_threshold defaults to 0.55 and parses strictly', async () => {
-    const defaults = await resolveEmbeddingConfig(makePrisma([]) as never);
-    expect(defaults.metricSimilarityThreshold).toBe(0.55);
-    const saved = await resolveEmbeddingConfig(
-      makePrisma([
-        { name: 'metric.similarity_threshold', value: '0.72' },
-      ]) as never,
-    );
-    expect(saved.metricSimilarityThreshold).toBe(0.72);
-    await expect(
-      resolveEmbeddingConfig(
-        makePrisma([
-          { name: 'metric.similarity_threshold', value: '1.5' },
-        ]) as never,
-      ),
-    ).rejects.toThrow('metric.similarity_threshold');
   });
 
   it('metric.*/naming.* rows override env with strict parsing', async () => {

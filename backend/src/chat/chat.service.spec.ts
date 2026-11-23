@@ -480,21 +480,22 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     );
   });
 
-  it('skips the extraction step when keywordEnabled is off', async () => {
+  it('keyword extraction always runs — a stale keyword_enabled row cannot switch it off', async () => {
     const m = makeService();
     happyMocks(m);
-    // saved parameter row: keyword_enabled=false (env default is true)
+    // The parameter no longer exists; a leftover row (saved before the
+    // migration removed the key) must be ignored, not honoured.
     m.prisma.systemVariable.findMany.mockResolvedValue([
       { name: 'embedding.keyword_enabled', value: 'false' },
     ]);
 
     await run(1, () => collect(m.service.runPipeline(1, '查询所有用户')));
 
-    expect(m.generatorService.extractKeywords).not.toHaveBeenCalled();
+    expect(m.generatorService.extractKeywords).toHaveBeenCalledTimes(1);
     expect(m.datasourceService.recallTables).toHaveBeenCalledWith(
       1,
       '查询所有用户',
-      expect.objectContaining({ keywords: null }),
+      expect.objectContaining({ keywords: '用户,订单' }),
     );
   });
 
@@ -940,7 +941,7 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     happyMocks(m);
     // One recalled table → the rule-2 cap is not exceeded, so the old code
     // skipped semantics entirely. The final decoration step must still load
-    // and pass them.
+    // them — and pass the keyword-matched part to the prompt.
     m.datasourceService.recallTables.mockResolvedValue([
       { id: 1, tableName: 'users', checked: true },
     ]);
@@ -949,6 +950,8 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       fieldNotes: {
         'users.id': { role: 'dimension', meaning: '用户 ID' },
       },
+      // the default extraction yields 用户,订单 — the table is named by ALIAS
+      tableAliases: { users: ['用户'] },
     };
     m.semanticService.effectiveAnnotations.mockResolvedValue(semantics);
 
@@ -957,8 +960,70 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     expect(m.semanticService.effectiveAnnotations).toHaveBeenCalledWith(1, [
       'users',
     ]);
+    // exact-keyword gate: the table meaning passes, the unnamed field does not
     expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
-      expect.objectContaining({ semantics }),
+      expect.objectContaining({
+        semantics: { tableMeanings: { users: '用户主表' }, fieldNotes: {} },
+      }),
+    );
+  });
+
+  it('injects NO curated semantics for tables/fields the keywords do not name', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+    ]);
+    m.semanticService.effectiveAnnotations.mockResolvedValue({
+      tableMeanings: { users: '用户主表' },
+      fieldNotes: {
+        'users.id': { role: 'dimension', meaning: '用户 ID' },
+      },
+      tableAliases: { users: ['会员'] },
+      fieldAliases: { 'users.id': ['编号'] },
+    });
+
+    // keywords are 用户,订单 — none equals users / 会员 / id / 编号
+    await run(1, () => collect(m.service.runPipeline(1, '查询所有用户')));
+
+    expect(m.semanticService.effectiveAnnotations).toHaveBeenCalled();
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        semantics: { tableMeanings: {}, fieldNotes: {} },
+      }),
+    );
+  });
+
+  it('injects NO curated semantics when keyword extraction yields nothing', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+    ]);
+    m.semanticService.effectiveAnnotations.mockResolvedValue({
+      tableMeanings: { users: '用户主表' },
+      fieldNotes: {},
+      // the table name WOULD match a keyword — if there were any
+      tableAliases: { users: ['用户'] },
+    });
+    m.generatorService.extractKeywords.mockReturnValue(
+      asyncFrom<LlmGenEvent>([
+        { type: 'messages', messages: [] },
+        { type: 'content', delta: 'EMPTY' },
+        { type: 'result', data: { keywords: 'EMPTY' } },
+      ]),
+    );
+
+    const events = await run(1, () =>
+      collect(m.service.runPipeline(1, '查询所有用户')),
+    );
+
+    // Known limitation, pinned: no keywords → no semantic decoration at all.
+    expect(types(events)).toContain('finish');
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        semantics: { tableMeanings: {}, fieldNotes: {} },
+      }),
     );
   });
 
@@ -967,6 +1032,10 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     happyMocks(m);
     // Four recalled candidates; one semantic row is enough to narrow rule 2
     // to users, leaving the other three as candidate_tables prompt entries.
+    // Rule 2 only engages below the recall width — pin the cap to 1.
+    m.prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'semantic.max_tables', value: '1' },
+    ]);
     m.datasourceService.findOne.mockResolvedValue({
       id: 1,
       name: 'main',
@@ -1020,6 +1089,8 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
         payments: '支付流水',
       },
       fieldNotes: {},
+      // keywords are 用户,订单 → only orders is named (by alias)
+      tableAliases: { orders: ['订单'] },
     });
     m.generatorService.generateSql.mockReturnValue(
       asyncFrom<LlmGenEvent>([
@@ -1079,9 +1150,19 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
       candidateTables?: string;
     };
     expect(sqlCtx.tableIds).toEqual([1]);
+    // Prompt block follows the exact-keyword gate: orders is named by the
+    // keyword 订单 (alias) so its curated meaning shows; products was never
+    // named, so the line falls back to the DB comment.
     expect(sqlCtx.candidateTables).toContain('- orders: 订单主表');
-    expect(sqlCtx.candidateTables).toContain('- products: 商品主表');
+    expect(sqlCtx.candidateTables).toContain('- products: 商品表');
+    expect(sqlCtx.candidateTables).not.toContain('- products: 商品主表');
     expect(sqlCtx.candidateTables).not.toContain('- users:');
+    // the clarify card shown to the USER still carries every meaning
+    expect(
+      (clarify!.data.candidates as Array<{ meaning?: string }>).every(
+        (c) => !!c.meaning,
+      ),
+    ).toBe(true);
   });
 
   it('skips candidate_tables when recall degrades to all checked tables', async () => {
@@ -1200,6 +1281,37 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
         }),
       }),
     );
+  });
+
+  // The picked-table resume used to skip keyword extraction as "wasted". The
+  // keywords are now the ONLY match source for metrics / naming rules / the
+  // semantic prompt decoration, so the call must run there as well.
+  it('a picked-table resume still extracts keywords and matches on them', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.prisma.chatRecord.findFirst.mockResolvedValue(pendingClarifyRecord(1));
+    m.generatorService.extractKeywords.mockReturnValue(
+      asyncFrom<LlmGenEvent>([{ type: 'content', delta: '支付金额' }]),
+    );
+
+    const events = await run(1, () =>
+      collect(m.service.resumeClarified(100, { tableIds: [1], round: 1 })),
+    );
+
+    expect(types(events)).toContain('finish');
+    expect(m.generatorService.extractKeywords).toHaveBeenCalledTimes(1);
+    // the picked table replaced recall …
+    expect(m.datasourceService.recallTables).not.toHaveBeenCalled();
+    // … but the metric matcher still received the freshly extracted keywords
+    expect(m.metricService.matchDefinitions).toHaveBeenCalledWith(
+      1,
+      new Set(['支付金额']),
+      5,
+    );
+    expect(m.prisma.chatRecord.update).toHaveBeenCalledWith({
+      where: { id: 100 },
+      data: { extractedKeywords: '支付金额', expandedKeywords: '支付金额' },
+    });
   });
 
   // Double-click / network retry: the conditional claim is the answer's only
@@ -4347,11 +4459,12 @@ describe('ChatService runCore deep arms (sql result shapes / clarify budget / me
 
     await run(1, () => collect(m.service.runPipeline(1, '查订单量')));
 
+    // The matcher receives the turn's KEYWORD SET (default extraction:
+    // 用户,订单), never the raw question — exact-keyword matching is its job.
     expect(m.metricService.matchDefinitions).toHaveBeenCalledWith(
       1,
-      '查订单量',
+      new Set(['用户', '订单']),
       5,
-      expect.objectContaining({ metricEnabled: true }),
     );
     const sqlCtx = m.aiQuestionService.buildSqlContext.mock.calls.at(
       -1,
@@ -4380,13 +4493,69 @@ describe('ChatService runCore deep arms (sql result shapes / clarify budget / me
 
     expect(m.metricService.matchDefinitions).not.toHaveBeenCalled();
     expect(m.standardService.namingTemplateFor).toHaveBeenCalledWith(
-      '查订单',
+      expect.any(Set),
       5,
     );
     expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
       expect.objectContaining({
         namingRules: '<naming_rules>标准</naming_rules>',
       }),
+    );
+  });
+
+  it('naming terms = the turn keywords plus the STUFFED schema metadata', async () => {
+    const m = makeService();
+    happyMocks(m);
+    m.datasourceService.findOne.mockResolvedValue({
+      id: 1,
+      name: 'main',
+      type: 'sqlite',
+      tableRelation: [],
+      tables: [
+        {
+          id: 1,
+          tableName: 'users',
+          tableComment: '用户表',
+          customComment: null,
+          checked: true,
+          fields: [
+            {
+              fieldName: 'id',
+              fieldComment: null,
+              customComment: '用户ID',
+              checked: true,
+            },
+            // hidden from the LLM → not offered as a naming term
+            {
+              fieldName: 'pwd',
+              fieldComment: '密码',
+              customComment: null,
+              checked: false,
+            },
+          ],
+        },
+        // recalled away → not stuffed → its metadata is not offered either
+        {
+          id: 2,
+          tableName: 'logs',
+          tableComment: '日志',
+          customComment: null,
+          checked: true,
+          fields: [],
+        },
+      ],
+    });
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+    ]);
+
+    await run(1, () => collect(m.service.runPipeline(1, '查订单')));
+
+    // default extraction 用户,订单 + names and EFFECTIVE comments (custom
+    // wins) of the stuffed table's checked fields, all lowercased
+    expect(m.standardService.namingTemplateFor).toHaveBeenCalledWith(
+      new Set(['用户', '订单', 'users', '用户表', 'id', '用户id']),
+      5,
     );
   });
 
@@ -4461,6 +4630,10 @@ describe('ChatService runCore deep arms (sql result shapes / clarify budget / me
   it('rule-2 narrowing keeps explicitly named/comment-mentioned tables', async () => {
     const m = makeService();
     happyMocks(m);
+    // Rule 2 only engages below the recall width — pin the cap to 1.
+    m.prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'semantic.max_tables', value: '1' },
+    ]);
     m.datasourceService.findOne.mockResolvedValue({
       id: 1,
       name: 'main',
@@ -4520,6 +4693,52 @@ describe('ChatService runCore deep arms (sql result shapes / clarify budget / me
     // Both explicitly carried tables survive the semantic cap; ghost (99) is
     // not in the datasource so it can never be required.
     expect(sqlCtx.tableIds).toEqual([1, 2]);
+  });
+
+  it('rule 2 does NOT narrow at the default cap (a Top-3-sized set ≤ 3)', async () => {
+    const m = makeService();
+    happyMocks(m);
+    const table = (id: number, tableName: string) => ({
+      id,
+      tableName,
+      tableComment: null,
+      customComment: null,
+      checked: true,
+      fields: [],
+    });
+    m.datasourceService.findOne.mockResolvedValue({
+      id: 1,
+      name: 'main',
+      type: 'sqlite',
+      tableRelation: [],
+      tables: [table(1, 'users'), table(2, 'orders'), table(3, 'products')],
+    });
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 1, tableName: 'users', checked: true },
+      { id: 2, tableName: 'orders', checked: true },
+      { id: 3, tableName: 'products', checked: true },
+    ]);
+    // only ONE candidate has a meaning — enough to narrow under the old cap
+    m.semanticService.effectiveAnnotations.mockResolvedValue({
+      tableMeanings: { users: '用户主表' },
+      fieldNotes: {},
+    });
+
+    // the question names `users` → the clarify gate stays closed
+    await run(1, () => collect(m.service.runPipeline(1, '统计users的数量')));
+
+    // No pre-gate candidate load: the only semantic read is the final
+    // decoration, and every recalled table stays stuffed.
+    expect(m.semanticService.effectiveAnnotations).toHaveBeenCalledTimes(1);
+    expect(m.semanticService.effectiveAnnotations).toHaveBeenCalledWith(1, [
+      'users',
+      'orders',
+      'products',
+    ]);
+    const sqlCtx = m.aiQuestionService.buildSqlContext.mock.calls.at(
+      -1,
+    )![0] as { tableIds?: number[] };
+    expect(sqlCtx.tableIds).toEqual([1, 2, 3]);
   });
 });
 
@@ -6127,6 +6346,10 @@ describe('ChatService remaining dispatch/catch arms', () => {
   it('renders a bare candidate_tables line for options with no meaning/comment', async () => {
     const m = makeService();
     happyMocks(m);
+    // Rule 2 only engages below the recall width — pin the cap to 1 (2 > 1).
+    m.prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'semantic.max_tables', value: '1' },
+    ]);
     m.datasourceService.findOne.mockResolvedValue({
       id: 1,
       name: 'main',

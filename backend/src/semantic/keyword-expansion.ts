@@ -16,9 +16,13 @@
 //   - aliases participate in recall only; they are NOT injected into the SQL
 //     prompt (the table/field `meaning` is).
 //   - the effective row is resolved per natural key, so aliases never merge
-//     across layers (a WORKSPACE row hides a PERSONAL row's alias list).
+//     across layers (a PERSONAL row hides a WORKSPACE row's alias list).
 //   - only the first `maxKeywords` output tokens survive (mirrors the old
 //     terminology expansion cap).
+//
+// The same exact-equality rule gates the PROMPT side (matchedAnnotations): a
+// table meaning / field note is injected only for a table/field whose name or
+// alias is one of the keywords.
 //
 // Pure and DB-free so the expansion strategy is unit-testable in isolation.
 
@@ -52,6 +56,84 @@ function keywordTokens(csv: string): string[] {
     .split(',')
     .map((k) => k.trim())
     .filter(Boolean);
+}
+
+/** Lowercased keyword set of one turn: every comma-separated token of the
+ *  given CSVs (the LLM-extracted keywords plus their alias expansion). This is
+ *  the ONLY match source for metric definitions, naming rules and the semantic
+ *  prompt decoration — an empty set (extraction failed / EMPTY /
+ *  ERROR:NOT_DATA_QUERY) matches nothing. */
+export function keywordSet(
+  ...csvs: Array<string | null | undefined>
+): Set<string> {
+  const out = new Set<string>();
+  for (const csv of csvs) {
+    for (const k of keywordTokens(csv ?? '')) out.add(k.toLowerCase());
+  }
+  return out;
+}
+
+/** Minimal annotation shape the match filter consumes (structural twin of
+ *  SemanticService.SemanticAnnotations). The alias maps are absent on callers
+ *  that do not resolve them, which reads as "no aliases". */
+export interface AnnotatableSemantics {
+  tableMeanings: Record<string, string>;
+  fieldNotes: Record<string, unknown>;
+  tableAliases?: Record<string, readonly string[]>;
+  fieldAliases?: Record<string, readonly string[]>;
+}
+
+/** `name` or one of `aliases` equals a keyword — the exact-match rule a
+ *  table/field semantic must pass to enter the prompt. Case-insensitive and
+ *  trimmed on BOTH sides (the keyword set may be cased either way). */
+export function matchesNameOrAlias(
+  keywords: ReadonlySet<string>,
+  name: string,
+  aliases: readonly string[] = [],
+): boolean {
+  const names = [name, ...aliases]
+    .map((word) => (word ?? '').trim().toLowerCase())
+    .filter(Boolean);
+  for (const keyword of keywords) {
+    const k = (keyword ?? '').trim().toLowerCase();
+    if (k !== '' && names.includes(k)) return true;
+  }
+  return false;
+}
+
+/** The annotations whose table/field name or alias equals one of the
+ *  keywords — a table meaning or a field note is injected into the prompt ONLY
+ *  for those. Tables the user did not name keep their raw DB comments.
+ *  Known limitation: with no keywords nothing is injected at all. */
+export function matchedAnnotations<T extends AnnotatableSemantics>(
+  annotations: T,
+  keywords: ReadonlySet<string>,
+): { tableMeanings: Record<string, string>; fieldNotes: T['fieldNotes'] } {
+  // Null-prototype map for the same reason as effectiveAnnotations: a table
+  // literally named `constructor` must not resolve to Object.prototype members.
+  const tableMeanings = Object.create(null) as Record<string, string>;
+  for (const [name, meaning] of Object.entries(annotations.tableMeanings)) {
+    if (matchesNameOrAlias(keywords, name, annotations.tableAliases?.[name])) {
+      tableMeanings[name] = meaning;
+    }
+  }
+  // The constraint widens the notes to `unknown`; the generic carries the
+  // caller's real note type back out.
+  const fieldNotes: Record<string, T['fieldNotes'][string]> = {};
+  const notes = annotations.fieldNotes as Record<
+    string,
+    T['fieldNotes'][string]
+  >;
+  for (const [key, note] of Object.entries(notes)) {
+    // key = `${tableName}.${fieldName}` — the field name is the last segment
+    const fieldName = key.slice(key.lastIndexOf('.') + 1);
+    if (
+      matchesNameOrAlias(keywords, fieldName, annotations.fieldAliases?.[key])
+    ) {
+      fieldNotes[key] = note;
+    }
+  }
+  return { tableMeanings, fieldNotes };
 }
 
 /** Expand a comma-separated keyword list with table/field semantic aliases.

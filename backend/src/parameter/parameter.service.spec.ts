@@ -156,11 +156,11 @@ describe('ParameterService', () => {
         pval: '0.4',
       });
       expect(items).toContainEqual({
-        pkey: 'embedding.table_count',
+        pkey: 'embedding.datasource_count',
         pval: '10',
       });
       expect(items.filter((i) => i.pkey.startsWith('embedding.'))).toHaveLength(
-        5,
+        3,
       );
     });
 
@@ -275,7 +275,7 @@ describe('ParameterService', () => {
 
     it('rejects a non-positive embedding count and a 0/1 boolean', async () => {
       await expect(
-        service.save([{ pkey: 'embedding.table_count', pval: '0' }]),
+        service.save([{ pkey: 'embedding.datasource_count', pval: '0' }]),
       ).rejects.toThrow(BadRequestException);
       await expect(
         service.save([{ pkey: 'embedding.table_enabled', pval: '1' }]),
@@ -299,8 +299,8 @@ describe('ParameterService', () => {
       await expect(
         service.save([
           { pkey: 'embedding.table_alpha', pval: '0.6' },
-          { pkey: 'embedding.table_count', pval: '12' },
-          { pkey: 'embedding.keyword_enabled', pval: 'true' },
+          { pkey: 'embedding.datasource_count', pval: '12' },
+          { pkey: 'semantic.max_tables', pval: '3' },
         ]),
       ).resolves.toBeDefined();
       expect(prisma.$transaction).toHaveBeenCalled();
@@ -368,10 +368,7 @@ describe('parseParameterItems (missing data field)', () => {
 
 describe('ParameterService tail-sweep', () => {
   let service: ParameterService;
-  let backfill: {
-    runTablesAndDatasources: jest.Mock;
-    runMetrics: jest.Mock;
-  };
+  let backfill: { runTablesAndDatasources: jest.Mock };
   let prisma: {
     systemVariable: { findMany: jest.Mock; upsert: jest.Mock };
     $transaction: jest.Mock;
@@ -387,7 +384,6 @@ describe('ParameterService tail-sweep', () => {
     };
     backfill = {
       runTablesAndDatasources: jest.fn().mockResolvedValue(undefined),
-      runMetrics: jest.fn().mockResolvedValue(undefined),
     };
     const module = await Test.createTestingModule({
       providers: [
@@ -431,7 +427,7 @@ describe('ParameterService tail-sweep', () => {
     });
   });
 
-  it('fires the metric backfill when metric.enabled flips false→true', async () => {
+  it('a metric.enabled flip fires no backfill (metrics have no vector index)', async () => {
     txWith();
     prisma.systemVariable.findMany
       .mockResolvedValueOnce([{ name: 'metric.enabled', value: 'false' }])
@@ -440,7 +436,7 @@ describe('ParameterService tail-sweep', () => {
     await service.save([{ pkey: 'metric.enabled', pval: 'true' }]);
     await new Promise((r) => setImmediate(r));
 
-    expect(backfill.runMetrics).toHaveBeenCalledTimes(1);
+    // Metric definitions match by exact keyword — nothing to embed.
     expect(backfill.runTablesAndDatasources).not.toHaveBeenCalled();
   });
 
@@ -470,44 +466,11 @@ describe('ParameterService tail-sweep', () => {
       expect.stringContaining('plain string'),
     );
   });
-
-  it('a failing metric backfill only logs (both rejection shapes)', async () => {
-    txWith();
-    const errorSpy = jest
-      .spyOn(
-        (service as unknown as { logger: { error: jest.Mock } }).logger,
-        'error',
-      )
-      .mockImplementation(() => undefined);
-
-    backfill.runMetrics.mockRejectedValueOnce(new Error('metric vec failed'));
-    prisma.systemVariable.findMany
-      .mockResolvedValueOnce([{ name: 'metric.enabled', value: 'false' }])
-      .mockResolvedValueOnce([{ name: 'metric.enabled', value: 'true' }]);
-    await service.save([{ pkey: 'metric.enabled', pval: 'true' }]);
-    await new Promise((r) => setImmediate(r));
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('metric vec failed'),
-    );
-
-    backfill.runMetrics.mockRejectedValueOnce('plain metric failure');
-    prisma.systemVariable.findMany
-      .mockResolvedValueOnce([{ name: 'metric.enabled', value: 'false' }])
-      .mockResolvedValueOnce([{ name: 'metric.enabled', value: 'true' }]);
-    await service.save([{ pkey: 'metric.enabled', pval: 'true' }]);
-    await new Promise((r) => setImmediate(r));
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('plain metric failure'),
-    );
-  });
 });
 
-describe('ParameterService backfill rejection shapes (both arms)', () => {
+describe('ParameterService backfill rejection shapes', () => {
   let service: ParameterService;
-  let backfill: {
-    runTablesAndDatasources: jest.Mock;
-    runMetrics: jest.Mock;
-  };
+  let backfill: { runTablesAndDatasources: jest.Mock };
   let prisma: {
     systemVariable: { findMany: jest.Mock; upsert: jest.Mock };
     $transaction: jest.Mock;
@@ -523,7 +486,6 @@ describe('ParameterService backfill rejection shapes (both arms)', () => {
     };
     backfill = {
       runTablesAndDatasources: jest.fn().mockResolvedValue(undefined),
-      runMetrics: jest.fn().mockResolvedValue(undefined),
     };
     const module = await Test.createTestingModule({
       providers: [
@@ -576,6 +538,5 @@ describe('ParameterService backfill rejection shapes (both arms)', () => {
     await service.save([{ pkey: 'chat.show_sql', pval: 'true' }]);
     await new Promise((r) => setImmediate(r));
     expect(backfill.runTablesAndDatasources).not.toHaveBeenCalled();
-    expect(backfill.runMetrics).not.toHaveBeenCalled();
   });
 });

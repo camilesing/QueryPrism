@@ -182,6 +182,12 @@ export interface SemanticAnnotations {
       enums?: Array<{ value: string; label?: string }>;
     }
   >;
+  /** Aliases of the effective row per natural key (tableName / field key).
+   *  They feed the exact-keyword gate on the prompt side
+   *  (keyword-expansion `matchedAnnotations`); absent on callers that do not
+   *  resolve them, which reads as "no aliases". */
+  tableAliases?: Record<string, string[]>;
+  fieldAliases?: Record<string, string[]>;
 }
 
 type PrismaTx = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
@@ -652,6 +658,7 @@ export class SemanticService {
       string,
       string
     >;
+    const tableAliases: Record<string, string[]> = {};
     // group per key then pick per priority
     const byTable = new Map<string, typeof tables>();
     for (const t of tables) {
@@ -661,9 +668,13 @@ export class SemanticService {
     }
     for (const [name, list] of byTable) {
       const effective = pickEffectiveRow(list);
-      if (effective) tableMeanings[name] = effective.meaning;
+      if (!effective) continue;
+      tableMeanings[name] = effective.meaning;
+      const aliases = normalizeAliases(effective.aliases);
+      if (aliases) tableAliases[name] = aliases;
     }
     const fieldNotes: SemanticAnnotations['fieldNotes'] = {};
+    const fieldAliases: Record<string, string[]> = {};
     const byField = new Map<string, typeof fields>();
     for (const f of fields) {
       const key = `${f.tableName}.${f.fieldName}`;
@@ -681,8 +692,10 @@ export class SemanticService {
         unit: effective.unit ?? undefined,
         enums: enums.length > 0 ? enums : undefined,
       };
+      const aliases = normalizeAliases(effective.aliases);
+      if (aliases) fieldAliases[key] = aliases;
     }
-    return { tableMeanings, fieldNotes };
+    return { tableMeanings, fieldNotes, tableAliases, fieldAliases };
   }
 
   /** Table-recall keyword expansion from semantic aliases (the governed

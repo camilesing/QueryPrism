@@ -66,7 +66,7 @@ import configuration from './common/config/configuration';
     ParameterModule,
     ApiKeyModule,
     // Phase 3 — RAG infra: VectorService (pgvector) + EmbeddingService.
-    // Both are @Global modules, injected by datasource/table/metric recall
+    // Both are @Global modules, injected by the datasource/table recall
     // paths without explicit re-import.
     VectorModule,
     EmbeddingModule,

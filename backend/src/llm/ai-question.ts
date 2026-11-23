@@ -68,16 +68,20 @@ export interface AiModelQuestion {
    *  select_datasource / recommend paths omit it (no injection). */
   customPrompt?: string;
   /** MetaDataImprove M4: the `<metric_definitions>` block the chat pipeline
-   *  resolved from the metric dictionary (matched derived/composite/atomic
-   *  calibers). Flows into the generate_sql template's `{metrics}`
+   *  resolved from the metric dictionary (derived/composite/atomic calibers
+   *  whose name or alias EQUALS one of the question's extracted keywords).
+   *  Flows into the generate_sql template's `{metrics}`
    *  placeholder; empty when nothing matched or metric.enabled is off. */
   metrics?: string;
   /** MetaDataImprove M4: the `<naming_rules>` block of naming-dictionary
-   *  standard translations matched by the question. Flows into the
+   *  standard translations whose term/alias equals an extracted keyword or a
+   *  name/comment of a stuffed table. Flows into the
    *  generate_sql template's `{naming_rules}` placeholder ('' when off). */
   namingRules?: string;
   /** MetaDataImprove clarify: recall candidates that were NOT stuffed into the
-   *  narrowed schema, one `- table: meaning` line each. Lets generate_sql name
+   *  narrowed schema, one `- table: meaning|comment` line each (the curated
+   *  meaning only for a table an extracted keyword names, else its comment).
+   *  Lets generate_sql name
    *  the exact additional tables it needs (`need_clarify.tables`) instead of
    *  guessing names outside the schema. Flows into `{candidate_tables}`. */
   candidateTables?: string;

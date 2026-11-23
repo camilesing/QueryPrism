@@ -1052,22 +1052,23 @@ describe('DataStandardService.review', () => {
 });
 
 describe('DataStandardService.namingTemplateFor', () => {
-  it('returns immediately for a blank question (no prisma read)', async () => {
+  it('returns immediately for an empty term set (no prisma read)', async () => {
     const { standard, prisma } = makeService();
     await expect(
-      withUser(MEMBER, () => standard.namingTemplateFor('   ', 5)),
+      withUser(MEMBER, () => standard.namingTemplateFor(new Set(), 5)),
     ).resolves.toBe('');
     expect(prisma.dataStandard.findMany).not.toHaveBeenCalled();
   });
 
-  it('renders matched naming rules and stays empty on no match / units', async () => {
+  it('renders only an EXACT term hit; a substring question no longer matches', async () => {
     const { standard, prisma } = makeService();
     prisma.dataStandard.findMany.mockResolvedValue([
       stdRow({ kind: 'naming', code: 'annual_revenue', enabled: true }),
       stdRow({ id: 30, kind: 'unit', code: 'jian', term: '件', name: '件' }),
     ]);
+    // the keyword the extractor produced for "今年年营收多少" is 年营收
     const text = await withUser<string>(MEMBER, () =>
-      standard.namingTemplateFor('今年年营收多少', 5),
+      standard.namingTemplateFor(new Set(['年营收']), 5),
     );
     expect(text).toContain('<naming_rules>');
     expect(text).toContain('term="年营收"');
@@ -1084,9 +1085,17 @@ describe('DataStandardService.namingTemplateFor', () => {
         ],
       },
     });
-    // units never render; an unrelated question renders nothing
+    // the raw question is not a term: exact equality, not substring inclusion
     expect(
-      await withUser(MEMBER, () => standard.namingTemplateFor('按件', 5)),
+      await withUser(MEMBER, () =>
+        standard.namingTemplateFor(new Set(['今年年营收多少']), 5),
+      ),
+    ).toBe('');
+    // units never render, even when their term is in the set
+    expect(
+      await withUser(MEMBER, () =>
+        standard.namingTemplateFor(new Set(['件']), 5),
+      ),
     ).toBe('');
   });
 });

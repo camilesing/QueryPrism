@@ -1,8 +1,8 @@
 // EmbeddingBackfillService unit tests — backfill lifecycle coverage:
-// runtime-switch gating (table_enabled / metric.enabled), null-row discovery
-// in batches of 32 with 3 attempts, conditional re-read + input-conditional
-// write-back (a concurrent edit or synchronous re-embed wins), in-flight
-// dedup, and vec0 sync skip when the vector index is unavailable.
+// runtime-switch gating (table_enabled), null-row discovery in batches of 32
+// with 3 attempts, conditional re-read + input-conditional write-back (a
+// concurrent edit or synchronous re-embed wins), in-flight dedup, and vec0
+// sync skip when the vector index is unavailable.
 import { Prisma } from '@prisma/client';
 import { Logger } from '@nestjs/common';
 import { EmbeddingBackfillService } from './embedding-backfill.service';
@@ -15,7 +15,6 @@ type MockPrisma = {
   systemVariable: { findMany: jest.Mock };
   datasource: { findMany: jest.Mock; updateMany: jest.Mock };
   table: { findMany: jest.Mock; updateMany: jest.Mock };
-  metricDef: { findMany: jest.Mock; updateMany: jest.Mock };
   $transaction: jest.Mock;
 };
 
@@ -29,11 +28,10 @@ function makePrisma(rows: Record<string, Row[]> = {}): MockPrisma {
     updateMany: jest.fn(() => ({ count: 1 })),
   });
   const prisma: MockPrisma = {
-    // resolveEmbeddingConfig read: [] → env defaults (table_enabled/metric on)
+    // resolveEmbeddingConfig read: [] → env defaults (table_enabled on)
     systemVariable: { findMany: jest.fn().mockResolvedValue([]) },
     datasource: delegate(rows.datasource ?? []),
     table: delegate(rows.table ?? []),
-    metricDef: delegate(rows.metric ?? []),
     // interactive transactions run on the same mocked client
     $transaction: jest.fn(),
   };
@@ -101,7 +99,7 @@ describe('EmbeddingBackfillService', () => {
   });
 
   describe('run — runtime switch gating', () => {
-    it('fills all three collections when both switches are on (env defaults)', async () => {
+    it('fills both collections when table recall is on (env defaults)', async () => {
       const prisma = makePrisma({
         datasource: [{ id: 3, name: 'ds', description: null }],
         table: [
@@ -112,7 +110,6 @@ describe('EmbeddingBackfillService', () => {
             customComment: '销售单',
           },
         ],
-        metric: [{ id: 5, name: '支付金额', aliases: null, description: null }],
       });
       embedding.embedBatch.mockImplementation((texts: string[]) =>
         texts.map(() => [0.5]),
@@ -121,9 +118,9 @@ describe('EmbeddingBackfillService', () => {
       expect(result).toEqual({
         datasource: 1,
         table: 1,
-        metric: 1,
       });
-      // table text uses the EFFECTIVE comment (custom wins)
+      // table text uses the EFFECTIVE comment (custom wins); datasource is
+      // the first batch, table the second
       expect(embedding.embedBatch).toHaveBeenNthCalledWith(2, [
         'orders\n销售单',
       ]);
@@ -137,7 +134,7 @@ describe('EmbeddingBackfillService', () => {
         },
         data: { embedding: [0.5] },
       });
-      expect(vector.upsert).toHaveBeenCalledTimes(3);
+      expect(vector.upsert).toHaveBeenCalledTimes(2);
     });
 
     it('skips the metadata half when embedding.table_enabled=false', async () => {
@@ -155,48 +152,17 @@ describe('EmbeddingBackfillService', () => {
       expect(prisma.table.findMany).not.toHaveBeenCalled();
     });
 
-    it('skips the metric collection when metric.enabled=false', async () => {
-      const prisma = makePrisma({
-        metric: [{ id: 5, name: '支付金额', aliases: null, description: null }],
-      });
+    it('never touches metric definitions (they match by exact keyword)', async () => {
+      // The mock has NO metricDef delegate: a reintroduced metric backfill
+      // would throw here. metric.enabled only gates prompt matching now.
+      const prisma = makePrisma();
       prisma.systemVariable.findMany.mockResolvedValue([
-        { name: 'metric.enabled', value: 'false' },
+        { name: 'metric.enabled', value: 'true' },
       ]);
-      await makeService(prisma, vector, embedding).run();
-      expect(prisma.metricDef.findMany).not.toHaveBeenCalled();
-    });
-
-    it('fills metric rows with name + aliases + description text', async () => {
-      const prisma = makePrisma({
-        metric: [
-          {
-            id: 5,
-            name: '支付金额',
-            aliases: ['支付额'],
-            description: '订单支付总额',
-          },
-        ],
-      });
-      embedding.embedBatch.mockResolvedValue([[0.5]]);
-      await makeService(prisma, vector, embedding).runMetrics();
-      expect(embedding.embedBatch).toHaveBeenCalledWith([
-        '支付金额 支付额\n订单支付总额',
-      ]);
-      expect(prisma.metricDef.updateMany).toHaveBeenCalledWith({
-        where: {
-          id: 5,
-          embedding: DB_NULL,
-          name: '支付金额',
-          description: '订单支付总额',
-        },
-        data: { embedding: [0.5] },
-      });
-      expect(vector.upsert).toHaveBeenCalledWith(
-        'metric_def',
-        5,
-        [0.5],
-        expect.anything(),
-      );
+      await expect(
+        makeService(prisma, vector, embedding).run(),
+      ).resolves.toEqual({ datasource: 0, table: 0 });
+      expect(embedding.embedBatch).not.toHaveBeenCalled();
     });
 
     it('returns zeroed counts without querying when embedding is unavailable', async () => {
@@ -206,7 +172,6 @@ describe('EmbeddingBackfillService', () => {
       expect(result).toEqual({
         datasource: 0,
         table: 0,
-        metric: 0,
       });
       expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
     });
@@ -297,13 +262,12 @@ describe('EmbeddingBackfillService', () => {
       const prisma = makePrisma({
         datasource: [{ id: 1, name: 'a', description: null }],
       });
-      // the datasource batch always fails; the empty table/metric scans succeed
+      // the datasource batch always fails; the empty table scan succeeds
       embedding.embedBatch.mockRejectedValue(new Error('api down'));
       const result = await makeService(prisma, vector, embedding).run();
       expect(result).toEqual({
         datasource: 1, // scanned rows — the write itself failed 3×
         table: 0,
-        metric: 0,
       });
       expect(prisma.datasource.updateMany).not.toHaveBeenCalled();
       expect(embedding.embedBatch).toHaveBeenCalledTimes(3);
@@ -394,7 +358,6 @@ describe('EmbeddingBackfillService', () => {
       const tx = {
         datasource,
         table: empty,
-        metricDef: empty,
       };
       const prisma = {
         systemVariable: { findMany: jest.fn().mockResolvedValue([]) },
@@ -531,23 +494,6 @@ describe('residual arm sweep', () => {
     expect(prisma.table.findMany).toHaveBeenCalledTimes(2);
     expect(prisma.datasource.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.table.updateMany).toHaveBeenCalledTimes(1);
-  });
-
-  it('runMetrics returns early when embedding is unavailable', async () => {
-    embedding.available = false;
-    const prisma = makePrisma();
-    await makeService(prisma, vector, embedding).runMetrics();
-    expect(prisma.systemVariable.findMany).not.toHaveBeenCalled();
-    expect(prisma.metricDef.findMany).not.toHaveBeenCalled();
-  });
-
-  it('runMetrics returns early when metric.enabled=false', async () => {
-    const prisma = makePrisma();
-    prisma.systemVariable.findMany.mockResolvedValue([
-      { name: 'metric.enabled', value: 'false' },
-    ]);
-    await makeService(prisma, vector, embedding).runMetrics();
-    expect(prisma.metricDef.findMany).not.toHaveBeenCalled();
   });
 
   it('skips the embed call entirely when every re-read row is blank', async () => {

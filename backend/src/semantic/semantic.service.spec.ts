@@ -458,6 +458,54 @@ describe('SemanticService.effectiveAnnotations', () => {
     });
   });
 
+  it('returns the effective row aliases next to the meanings (prompt exact-match gate)', async () => {
+    const { service, prisma } = makeService();
+    prisma.tableSemantic.findMany.mockResolvedValue([
+      // a lower layer's alias list is NOT merged into the effective row
+      {
+        tableName: 'a',
+        scope: 'WORKSPACE',
+        oid: 1,
+        meaning: '空间含义',
+        aliases: ['空间别名'],
+        updatedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        tableName: 'a',
+        scope: 'PERSONAL',
+        oid: 1,
+        ownerUid: 7,
+        meaning: '个人含义',
+        aliases: ['个人别名'],
+        updatedAt: new Date('2026-01-02T00:00:00Z'),
+      },
+      {
+        tableName: 'b',
+        scope: 'GLOBAL',
+        meaning: '仅全局',
+        updatedAt: new Date(),
+      },
+    ]);
+    prisma.fieldSemantic.findMany.mockResolvedValue([
+      {
+        tableName: 'a',
+        fieldName: 'status',
+        scope: 'WORKSPACE',
+        oid: 1,
+        role: 'dimension',
+        meaning: '订单状态',
+        unit: null,
+        enumValues: null,
+        aliases: ['状态'],
+      },
+    ]);
+    const out = await withUser(MEMBER, () =>
+      service.effectiveAnnotations(3, ['a', 'b']),
+    );
+    expect(out.tableAliases).toEqual({ a: ['个人别名'] });
+    expect(out.fieldAliases).toEqual({ 'a.status': ['状态'] });
+  });
+
   it('another user PERSONAL row is invisible (falls back to workspace)', async () => {
     const { service, prisma } = makeService();
     // The query itself must filter PERSONAL to ownerUid — assert the where.

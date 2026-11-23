@@ -1,7 +1,11 @@
 // Pure semantic-alias keyword expansion — table recall's replacement for the
-// removed Terminology synonym groups.
+// removed Terminology synonym groups — plus the exact-keyword gate that
+// decides which curated semantics reach the SQL prompt.
 import {
   expandKeywordsWithAliases,
+  keywordSet,
+  matchedAnnotations,
+  matchesNameOrAlias,
   type FieldAliasRow,
   type TableAliasRow,
 } from './keyword-expansion';
@@ -113,5 +117,99 @@ describe('expandKeywordsWithAliases', () => {
       ],
     );
     expect(out).toBe('销售额,orders,amount');
+  });
+});
+
+describe('keywordSet', () => {
+  it('lowercases and merges every CSV token, tolerating null/blank inputs', () => {
+    expect([
+      ...keywordSet('Orders, 用户', 'orders,GMV', null, undefined),
+    ]).toEqual(['orders', '用户', 'gmv']);
+  });
+
+  it('is empty when extraction yielded nothing', () => {
+    expect(keywordSet(null, null).size).toBe(0);
+  });
+});
+
+describe('matchesNameOrAlias', () => {
+  it('hits on an exact name or alias, case-insensitive on both sides', () => {
+    const kw = keywordSet('Orders');
+    expect(matchesNameOrAlias(kw, 'orders')).toBe(true);
+    expect(matchesNameOrAlias(kw, 'sales_order', ['Orders', '销售单'])).toBe(
+      true,
+    );
+    expect(matchesNameOrAlias(new Set(['ORDERS']), 'orders')).toBe(true);
+  });
+
+  it('never hits on a substring, a fragment or without keywords', () => {
+    const kw = keywordSet('订单,订单明细表');
+    expect(matchesNameOrAlias(kw, '订单明细')).toBe(false);
+    expect(matchesNameOrAlias(kw, '单')).toBe(false);
+    expect(matchesNameOrAlias(new Set(), 'orders', ['销售单'])).toBe(false);
+  });
+});
+
+describe('matchedAnnotations', () => {
+  const annotations = {
+    tableMeanings: { orders: '销售订单', users: '用户主表', items: '明细' },
+    fieldNotes: {
+      'orders.status': { role: 'dimension', meaning: '订单状态' },
+      'orders.amount': { role: 'metric', meaning: '订单金额' },
+      'users.id': { role: 'dimension', meaning: '用户 ID' },
+    },
+    tableAliases: { orders: ['订单'], items: ['明细表'] },
+    fieldAliases: { 'orders.status': ['状态'] },
+  };
+
+  it('keeps only tables/fields whose name or alias equals a keyword', () => {
+    const out = matchedAnnotations(annotations, keywordSet('订单,状态,用户'));
+    // users is not named by name or alias; amount was never named
+    expect(out.tableMeanings).toEqual({ orders: '销售订单' });
+    expect(out.fieldNotes).toEqual({
+      'orders.status': { role: 'dimension', meaning: '订单状态' },
+    });
+  });
+
+  it('matches a table through its alias', () => {
+    const out = matchedAnnotations(annotations, keywordSet('明细表'));
+    expect(out.tableMeanings).toEqual({ items: '明细' });
+    expect(out.fieldNotes).toEqual({});
+  });
+
+  it('injects nothing without keywords', () => {
+    expect(matchedAnnotations(annotations, new Set())).toEqual({
+      tableMeanings: {},
+      fieldNotes: {},
+    });
+  });
+
+  it('reads a missing alias map as "no aliases" (bare names only)', () => {
+    const bare = { tableMeanings: { orders: '销售订单' }, fieldNotes: {} };
+    expect(matchedAnnotations(bare, keywordSet('订单'))).toEqual({
+      tableMeanings: {},
+      fieldNotes: {},
+    });
+    expect(
+      matchedAnnotations(bare, keywordSet('orders')).tableMeanings,
+    ).toEqual({ orders: '销售订单' });
+  });
+
+  it('does not mutate the input and survives a table literally named `constructor`', () => {
+    expect(Object.keys(annotations.tableMeanings)).toEqual([
+      'orders',
+      'users',
+      'items',
+    ]);
+    const tricky = {
+      tableMeanings: Object.assign(Object.create(null), {
+        constructor: '构造表',
+      }) as Record<string, string>,
+      fieldNotes: {},
+    };
+    expect(
+      matchedAnnotations(tricky, keywordSet('constructor')).tableMeanings,
+    ).toEqual({ constructor: '构造表' });
+    expect(matchedAnnotations(tricky, new Set()).tableMeanings).toEqual({});
   });
 });

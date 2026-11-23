@@ -8,6 +8,20 @@
 //
 // Pure and DB-free so the recall strategy is unit-testable in isolation.
 
+// ─────────────────────────── recall width ───────────────────────────
+
+/** Fixed table-recall width: how many checked tables the keyword-fused
+ *  ranking returns before rule 2 and the clarify gate run. Deliberately NOT a
+ *  runtime parameter (product decision), unlike the fusion weights.
+ *
+ *  Known effects at the defaults (semantic.max_tables = 3,
+ *  clarify.table_threshold = 3):
+ *    - rule 2 never narrows — 3 candidates are not MORE than max_tables, so it
+ *      only engages after an admin lowers semantic.max_tables to 1–2;
+ *    - the clarify gate pauses whenever a question names no table/comment and
+ *      the datasource has ≥ 3 checked tables (3 candidates meet the threshold). */
+export const TABLE_RECALL_TOP_K = 3;
+
 // ─────────────────────── explicit mention detection ───────────────────────
 
 const IDENTIFIER_CHARS = 'A-Za-z0-9_$';

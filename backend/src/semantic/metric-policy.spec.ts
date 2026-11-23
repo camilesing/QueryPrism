@@ -1,6 +1,6 @@
 // Pure-policy unit tests for the M4 metric system: definition parsing,
-// composite expression validation, effective resolution priority, question
-// matching and prompt rendering — no Nest/Prisma involved.
+// composite expression validation, effective resolution priority, exact
+// keyword matching and prompt rendering — no Nest/Prisma involved.
 import {
   METRIC_KINDS,
   conditionText,
@@ -10,7 +10,7 @@ import {
   expressionProblem,
   matchMetricDefinitions,
   matchNames,
-  matchesQuestion,
+  matchesKeyword,
   namingTemplate,
   parseMetricDefinition,
   periodText,
@@ -186,17 +186,25 @@ describe('effectiveByCode', () => {
 });
 
 describe('matching', () => {
-  it('matches names and aliases case-insensitively, drops 1-char noise', () => {
+  it('matchNames drops empties and 1-char noise', () => {
     expect(matchNames('支付金额', ['Pay Amount', ' ', 'x'])).toEqual([
       '支付金额',
       'Pay Amount',
     ]);
+  });
+
+  it('matchesKeyword is EXACT keyword equality (case-insensitive), never a substring', () => {
     expect(
-      matchesQuestion('支付金额', ['pay amount'], '最近7天PAY AMOUNT总和'),
+      matchesKeyword('支付金额', ['pay amount'], new Set(['Pay Amount'])),
     ).toBe(true);
-    // 1-char candidates are noise; a longer name does not fuzzy-match
-    expect(matchesQuestion('付', null, '支付方式分布')).toBe(false);
-    expect(matchesQuestion('支付金额', null, '支付方式分布')).toBe(false);
+    // the name is inside the keyword / the keyword is inside the name → no hit
+    expect(
+      matchesKeyword('支付金额', null, new Set(['近7天支付金额趋势'])),
+    ).toBe(false);
+    expect(matchesKeyword('支付金额', null, new Set(['金额']))).toBe(false);
+    // 1-char candidates are noise; an empty keyword set matches nothing
+    expect(matchesKeyword('付', null, new Set(['付']))).toBe(false);
+    expect(matchesKeyword('支付金额', null, new Set())).toBe(false);
   });
 });
 
@@ -337,10 +345,12 @@ describe('matchMetricDefinitions', () => {
   const timeFieldOf = (t: string) => (t === 'orders' ? 'pay_time' : undefined);
 
   it('renders a matched derived metric with modifier + period + time field', () => {
+    // the extractor produced the derived metric's OWN name for
+    // "统计近7天母婴支付金额"
     const r = matchMetricDefinitions(
       rows,
       ds,
-      '统计近7天母婴支付金额',
+      new Set(['近7天母婴支付金额']),
       5,
       timeFieldOf,
     );
@@ -355,7 +365,7 @@ describe('matchMetricDefinitions', () => {
     const r = matchMetricDefinitions(
       rows,
       ds,
-      '近7天客单价与坏指标和环指标A',
+      new Set(['客单价', '坏指标', '环指标A']),
       5,
       timeFieldOf,
     );
@@ -373,10 +383,11 @@ describe('matchMetricDefinitions', () => {
   });
 
   it('composes a matched atomic ad hoc with same-table modifier + matched period', () => {
+    // keywords for "母婴类最近7天的支付金额" — none equals a derived name
     const r = matchMetricDefinitions(
       rows,
       ds,
-      '母婴类最近7天的支付金额',
+      new Set(['支付金额', '母婴类', '最近7天']),
       5,
       timeFieldOf,
     );
@@ -390,18 +401,77 @@ describe('matchMetricDefinitions', () => {
 
   it('never injects another datasource metric and caps definitions', () => {
     // id 13 shadows the name on datasource 99; only the ds-1 atomic may win.
-    const q = '支付金额';
-    const one = matchMetricDefinitions(rows, ds, q, 5, timeFieldOf);
+    const one = matchMetricDefinitions(
+      rows,
+      ds,
+      new Set(['支付金额']),
+      5,
+      timeFieldOf,
+    );
     expect(one.text).toContain('SUM(orders.pay_amount)');
     expect(one.text).not.toContain('other.orders');
     const capped = matchMetricDefinitions(
       rows,
       ds,
-      '支付金额 支付用户数 近7天母婴支付金额 近7天支付金额 客单价 坏指标',
+      new Set([
+        '支付金额',
+        '支付用户数',
+        '近7天母婴支付金额',
+        '近7天支付金额',
+        '客单价',
+        '坏指标',
+      ]),
       2,
       timeFieldOf,
     );
     expect(capped.matched).toBe(2);
+  });
+
+  it('a derived metric is NOT triggered by its atomic metric name alone', () => {
+    const r = matchMetricDefinitions(
+      rows,
+      ds,
+      new Set(['支付金额']),
+      5,
+      timeFieldOf,
+    );
+    expect(r.text).toContain('支付金额 (pay_amount)');
+    // derived / composite metrics need their OWN name as a keyword
+    expect(r.text).not.toContain('baby_pay_7d');
+    expect(r.text).not.toContain('pay_7d');
+    expect(r.text).not.toContain('atv');
+  });
+
+  it('a composite metric is NOT triggered by its operands alone', () => {
+    const r = matchMetricDefinitions(
+      rows,
+      ds,
+      new Set(['近7天支付金额', '支付用户数']),
+      5,
+      timeFieldOf,
+    );
+    expect(r.text).toContain('近7天支付金额 (pay_7d)');
+    expect(r.text).toContain('支付用户数 (pay_users)');
+    expect(r.text).not.toContain('客单价');
+  });
+
+  it('renders nothing when a name is only PART of a keyword', () => {
+    const r = matchMetricDefinitions(
+      rows,
+      ds,
+      new Set(['支付金额趋势', '最近7天的支付金额']),
+      5,
+      timeFieldOf,
+    );
+    expect(r.matched).toBe(0);
+    expect(r.text).toBe('');
+    expect(r.atomicTableNames).toEqual([]);
+  });
+
+  it('renders nothing without keywords (extraction yielded none)', () => {
+    const r = matchMetricDefinitions(rows, ds, new Set(), 5, timeFieldOf);
+    expect(r.matched).toBe(0);
+    expect(r.text).toBe('');
   });
 });
 
@@ -439,159 +509,23 @@ describe('namingTemplate', () => {
     },
   ];
 
-  it('matches term/alias, escapes XML, ignores units, honors the cap', () => {
-    const text = namingTemplate(std, '对比一下ANNUAL REVENUE', 5);
+  it('matches term/alias exactly, escapes XML, ignores units, honors the cap', () => {
+    // keywords for "对比一下ANNUAL REVENUE" / "年营收"
+    const text = namingTemplate(std, new Set(['annual revenue']), 5);
     expect(text).toContain('term="年营收"');
     expect(text).toContain('standard="年度总营业额"');
     expect(text).toContain('description="衡量公司年度收入 &lt;标准&gt;"');
-    expect(namingTemplate(std, '买了多少件', 5)).toBe('');
-    expect(namingTemplate(std, '', 5)).toBe('');
+    // units never render, even when their term is in the set
+    expect(namingTemplate(std, new Set(['件']), 5)).toBe('');
+    // the raw question is not a term: no substring matching
+    expect(namingTemplate(std, new Set(['对比一下annual revenue']), 5)).toBe(
+      '',
+    );
+    expect(namingTemplate(std, new Set(), 5)).toBe('');
   });
 });
 
-describe('matchMetricDefinitions vector supplement', () => {
-  const atomic = (over: Partial<MetricDefLike>): MetricDefLike =>
-    base({
-      kind: 'atomic',
-      definition: {
-        datasource_id: 1,
-        table_name: 'orders',
-        field_name: 'pay_amount',
-        aggregation: 'SUM',
-      },
-      ...over,
-    });
-  const pay = atomic({ id: 1, code: 'pay_amount', name: '支付金额' });
-  const refund = atomic({
-    id: 2,
-    code: 'refund_amount',
-    name: '退款金额',
-    definition: {
-      datasource_id: 1,
-      table_name: 'orders',
-      field_name: 'refund_amount',
-      aggregation: 'SUM',
-    },
-  });
-
-  it('renders fuzzy atomics AFTER every literal hit', () => {
-    const r = matchMetricDefinitions(
-      [refund, pay],
-      1,
-      '支付金额趋势',
-      5,
-      () => undefined,
-      {
-        fuzzy: ['atomic:refund_amount'],
-      },
-    );
-    expect(r.matched).toBe(2);
-    expect(r.text.indexOf('支付金额')).toBeLessThan(r.text.indexOf('退款金额'));
-  });
-
-  it('never evicts a literal hit when the cap is reached', () => {
-    const r = matchMetricDefinitions(
-      [refund, pay],
-      1,
-      '支付金额',
-      1,
-      () => undefined,
-      {
-        fuzzy: ['atomic:refund_amount'],
-      },
-    );
-    expect(r.matched).toBe(1);
-    expect(r.text).toContain('pay_amount');
-    expect(r.text).not.toContain('refund_amount');
-  });
-
-  it('ignores fuzzy hits for derived/composite metrics', () => {
-    const derived = base({
-      id: 3,
-      kind: 'derived',
-      code: 'baby_pay',
-      name: '母婴支付金额',
-      definition: { atomic_code: 'pay_amount' },
-    });
-    const r = matchMetricDefinitions(
-      [pay, derived],
-      1,
-      '趋势',
-      5,
-      () => undefined,
-      {
-        fuzzy: ['derived:baby_pay'],
-      },
-    );
-    expect(r.matched).toBe(0);
-    expect(r.text).toBe('');
-  });
-
-  it('ignores fuzzy hits for modifiers/periods (WHERE constraints stay literal)', () => {
-    const modifier = base({
-      id: 4,
-      kind: 'modifier',
-      code: 'baby',
-      name: '母婴',
-      definition: {
-        datasource_id: 1,
-        table_name: 'orders',
-        field_name: 'category',
-        operator: 'IN',
-        values: ['母婴'],
-      },
-    });
-    const r = matchMetricDefinitions(
-      [pay, modifier],
-      1,
-      '支付金额',
-      5,
-      () => undefined,
-      {
-        fuzzy: ['modifier:baby'],
-      },
-    );
-    expect(r.text).toContain('支付金额');
-    expect(r.text).not.toContain('母婴');
-  });
-
-  it('drops a fuzzy atomic bound to another datasource', () => {
-    const foreign = atomic({
-      id: 5,
-      code: 'gmv',
-      name: '成交额',
-      definition: {
-        datasource_id: 2,
-        table_name: 'orders',
-        field_name: 'gmv',
-        aggregation: 'SUM',
-      },
-    });
-    const r = matchMetricDefinitions(
-      [foreign],
-      1,
-      '成交额趋势',
-      5,
-      () => undefined,
-      {
-        fuzzy: ['atomic:gmv'],
-      },
-    );
-    expect(r.matched).toBe(0);
-  });
-
-  it('stays literal-only when no fuzzy keys are supplied', () => {
-    const r = matchMetricDefinitions(
-      [pay, refund],
-      1,
-      '支付金额',
-      5,
-      () => undefined,
-    );
-    expect(r.matched).toBe(1);
-    expect(r.text).not.toContain('refund_amount');
-  });
-
+describe('metric-policy branch sweep', () => {
   // --- appended branch-sweep tests -----------------------------------------
 
   describe('parseMetricDefinition malformed-input arms', () => {
@@ -990,7 +924,7 @@ describe('matchMetricDefinitions vector supplement', () => {
       const r = matchMetricDefinitions(
         [pay, brokenPeriod],
         1,
-        '最近7天支付金额',
+        new Set(['最近7天', '支付金额']),
         5,
         () => undefined,
       );
@@ -1010,7 +944,7 @@ describe('matchMetricDefinitions vector supplement', () => {
       const r = matchMetricDefinitions(
         [pay, validPeriod],
         1,
-        '最近7天支付金额',
+        new Set(['最近7天', '支付金额']),
         5,
         () => undefined, // no FieldSemantic role=time for the table
       );
@@ -1030,28 +964,13 @@ describe('matchMetricDefinitions vector supplement', () => {
       const r = matchMetricDefinitions(
         [pay, derived],
         1,
-        '支付金额衍生 支付金额',
+        new Set(['支付金额衍生', '支付金额']),
         5,
         () => undefined,
-        { fuzzy: ['atomic:pay_amount'] },
       );
       expect(r.matched).toBe(1);
       expect(r.text).toContain('支付金额衍生 (dv)');
-      // the covered atomic is neither re-rendered literally nor via fuzzy
       expect(r.text).not.toContain('(pay_amount)');
-    });
-
-    it('does not re-render a literal hit via a fuzzy key', () => {
-      const r = matchMetricDefinitions(
-        [pay],
-        1,
-        '支付金额',
-        5,
-        () => undefined,
-        { fuzzy: ['atomic:pay_amount'] },
-      );
-      expect(r.matched).toBe(1);
-      expect(r.text.match(/- /g)).toHaveLength(1);
     });
   });
 
@@ -1074,7 +993,8 @@ describe('matchMetricDefinitions vector supplement', () => {
           updatedAt: new Date(),
         },
       ];
-      const text = namingTemplate(rows, '客户是谁', 5);
+      // the extractor produced the term itself for "客户是谁"
+      const text = namingTemplate(rows, new Set(['客户']), 5);
       expect(text).toContain('<rule term="客户" standard="顾客" />');
       expect(text).not.toContain('category=');
       expect(text).not.toContain('description=');
