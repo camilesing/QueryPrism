@@ -30,6 +30,19 @@ Errors are JSON: `{ "error": "<message>" }` with the HTTP status.
 | --------------------------------------------------- | ------ |
 | Request body larger than 2 MB                       | `413`  |
 | `width` / `height` outside 64–4096, or not integers | `400`  |
+| A render G2 rejects, or that takes longer than 8 s   | `500`  |
+
+The backend only sends specs built by `backend/src/chart/chart-spec.builder.ts`
+and never sets `width` / `height` (640×480 is used).
+
+### Failed renders
+
+When G2 throws while rendering, `@antv/g2-ssr` neither resolves nor rejects
+its promise: the server logs the rejection (`a G2 render failed outside its
+request promise`), answers the request with `500` after the 8 s timeout and
+keeps serving. **Known limitation:** such a render keeps its canvas — there is
+no chart handle to destroy — and the synchronous `toBuffer()` step cannot be
+interrupted.
 
 ## Setup
 

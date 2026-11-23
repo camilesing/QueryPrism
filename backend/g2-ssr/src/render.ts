@@ -21,9 +21,27 @@ export interface RenderOutput {
   buffer: Buffer;
 }
 
+/** Upper bound for one render. The backend's G2SsrClient gives up after
+ *  10 s, so a slower image is never seen anyway. It matters because a render
+ *  G2 aborts (unknown component, missing encode, non-array data) NEVER
+ *  settles: @antv/g2-ssr drops that rejection instead of rejecting its own
+ *  promise (see the unhandledRejection listener in server.ts). */
+export const RENDER_TIMEOUT_MS = 8_000;
+
+export class RenderTimeoutError extends Error {
+  constructor() {
+    super('render timed out');
+  }
+}
+
 /**
  * Render a G2 spec to a PNG Buffer. Throws if the spec is malformed (no mark
- * type) or if the native canvas libs are unavailable on the host.
+ * type), if G2 rejects it after RENDER_TIMEOUT_MS, or if the native canvas
+ * libs are unavailable on the host.
+ *
+ * Known limitation: a render that G2 aborts keeps its canvas. The promise
+ * never settles, so there is no chart handle to destroy; only toBuffer()
+ * (synchronous) and the async phase up to the timeout are bounded.
  */
 export async function renderChart(input: RenderInput): Promise<RenderOutput> {
   if (typeof input.spec.type !== 'string' || input.spec.type.length === 0) {
@@ -36,11 +54,33 @@ export async function renderChart(input: RenderInput): Promise<RenderOutput> {
     imageType: 'png' as const,
   } as unknown as Options;
 
-  const chart = await createChart(options);
+  const created = createChart(options);
+  let abandoned = false;
+  // A chart that settles only after the caller gave up must not stay alive.
+  created.then(
+    (late) => {
+      if (abandoned) late.destroy();
+    },
+    () => undefined,
+  );
+
+  let timer: NodeJS.Timeout | undefined;
   try {
-    const buffer = chart.toBuffer();
-    return { buffer };
+    const chart = await Promise.race([
+      created,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RenderTimeoutError()), RENDER_TIMEOUT_MS);
+      }),
+    ]);
+    try {
+      return { buffer: chart.toBuffer() };
+    } finally {
+      chart.destroy();
+    }
+  } catch (e) {
+    abandoned = true;
+    throw e;
   } finally {
-    chart.destroy();
+    clearTimeout(timer);
   }
 }

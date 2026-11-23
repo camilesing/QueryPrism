@@ -18,6 +18,7 @@ import {
   parseRequestUrl,
   readBody,
 } from './http-utils';
+import { logUnhandledRejections } from './process-guards';
 
 const PORT = parseInt(process.env.G2_SSR_PORT ?? '3001', 10);
 const BASE_URL =
@@ -119,6 +120,10 @@ const server = http.createServer(async (req, res) => {
 
   sendJson(res, 404, { error: 'not found' });
 });
+
+// A spec G2 rejects makes @antv/g2-ssr leak the rejection (its promise never
+// settles). Log it and keep serving; the request ends at renderChart's timeout.
+logUnhandledRejections();
 
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console
