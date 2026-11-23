@@ -760,6 +760,16 @@ describe('WorkspaceService.uwsOption', () => {
       expect(call[0].where.OR).toHaveLength(3); // account/name/email only
     }
   });
+
+  it('a blank keyword resolves to nobody instead of an arbitrary user', async () => {
+    // `contains: ''` matches every account, so findFirst returned whichever
+    // row came first and the member page pre-selected a random user.
+    const prisma = makeWsPrisma();
+    const { service } = makeWsService(prisma);
+    prisma.user.findFirst.mockResolvedValue({ id: 42, account: 'whoever' });
+    await expect(service.uwsOption('   ')).resolves.toBeNull();
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe('WorkspaceService.uwsCreate', () => {

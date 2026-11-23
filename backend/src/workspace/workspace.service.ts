@@ -424,6 +424,10 @@ export class WorkspaceService {
    *  null when no match. */
   async uwsOption(keyword: string): Promise<UserRow | null> {
     const kw = keyword.trim();
+    // A blank keyword must resolve to nobody: `contains: ''` matches every
+    // account, and findFirst would hand back an arbitrary user for the member
+    // page to pre-select before binding.
+    if (!kw) return null;
     // P2-1: strict parse — a blank keyword used to coerce into {id: 0}
     // (Number('')===0 passed the isNaN guard) and match an arbitrary user.
     const keywordNum = parseStrictInt(kw);
