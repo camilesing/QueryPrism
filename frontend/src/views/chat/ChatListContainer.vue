@@ -183,6 +183,14 @@ function goHistory(chat: Chat) {
             emits('onClickHistory', info)
           }
         })
+        .catch(() => {
+          // The chat is gone (evicted by the 20-conversation window, deleted
+          // in another tab) or the request failed. Drop the selection, or the
+          // sidebar keeps a dead chat highlighted and re-clicking it no-ops.
+          if (_currentChatId.value === chat.id) {
+            goEmpty()
+          }
+        })
         .finally(() => {
           _loading.value = false
         })
