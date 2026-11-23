@@ -171,6 +171,7 @@ describe('buildAdvancedAppNamesMap', () => {
         { advancedApplication: '' },
         { advancedApplication: 'not-a-number' },
       ],
+      1,
     );
     expect(map.size).toBe(0);
     expect(prisma.assistant.findMany).not.toHaveBeenCalled();
@@ -189,6 +190,7 @@ describe('buildAdvancedAppNamesMap', () => {
         { advancedApplication: '9' },
         { advancedApplication: '5' },
       ],
+      3,
     );
     expect(map).toEqual(
       new Map([
@@ -196,8 +198,10 @@ describe('buildAdvancedAppNamesMap', () => {
         [9, '运营助手'],
       ]),
     );
+    // scoped to the caller's workspace: an assistant id set by a workspace
+    // admin must not resolve to another workspace's assistant name
     expect(prisma.assistant.findMany).toHaveBeenCalledWith({
-      where: { id: { in: [5, 9] } },
+      where: { id: { in: [5, 9] }, oid: 3 },
       select: { id: true, name: true },
     });
   });

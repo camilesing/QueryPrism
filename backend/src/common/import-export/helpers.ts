@@ -86,10 +86,13 @@ export async function buildDatasourceNamesMap(
 }
 
 /** assistant id → name map for a page of rows (stringified ids, one
- *  findMany). */
+ *  findMany). Scoped to the caller's workspace: `advanced_application` is a
+ *  free-form id a workspace admin may set, so an unscoped lookup would return
+ *  the name of an assistant that belongs to another workspace. */
 export async function buildAdvancedAppNamesMap(
   prisma: PrismaService,
   rows: { advancedApplication: string | null }[],
+  oid: number,
 ): Promise<Map<number, string>> {
   const ids = new Set<number>();
   for (const r of rows) {
@@ -100,7 +103,7 @@ export async function buildAdvancedAppNamesMap(
   }
   if (ids.size === 0) return new Map();
   const found = await prisma.assistant.findMany({
-    where: { id: { in: Array.from(ids) } },
+    where: { id: { in: Array.from(ids) }, oid },
     select: { id: true, name: true },
   });
   return new Map(found.map((r) => [r.id, r.name]));

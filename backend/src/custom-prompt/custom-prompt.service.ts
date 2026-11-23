@@ -174,6 +174,7 @@ export class CustomPromptService {
     const advancedAppNamesMap = await buildAdvancedAppNamesMap(
       this.prisma,
       pageRows,
+      this.currentOid(),
     );
     return {
       current_page: cpClamped,
@@ -298,6 +299,7 @@ export class CustomPromptService {
     const advancedAppNamesMap = await buildAdvancedAppNamesMap(
       this.prisma,
       rows,
+      this.currentOid(),
     );
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('custom_prompt');
