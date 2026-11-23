@@ -69,7 +69,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         `Unhandled exception: ${(exception as Error)?.message}`,
         (exception as Error)?.stack,
       );
-      message = (exception as Error)?.message ?? message;
+      // The raw text is for development only. In production an unexpected
+      // error stays generic: Prisma and driver messages carry hosts, paths
+      // and query details, and they can surface on routes that need no auth
+      // (e.g. the login-page configuration during a database outage).
+      if (process.env.NODE_ENV !== 'production') {
+        message = (exception as Error)?.message ?? message;
+      }
     }
 
     response.status(status).type('text/plain').send(message);

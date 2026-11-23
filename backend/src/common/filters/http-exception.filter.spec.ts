@@ -121,6 +121,22 @@ describe('HttpExceptionFilter', () => {
       expect(run(new Error('boom'))).toEqual({ status: 500, body: 'boom' });
     });
 
+    it('hides the raw message in production: driver and Prisma errors carry hosts, paths and query details', () => {
+      const previous = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        const out = run(
+          new Error("Can't reach database server at db.internal:5432"),
+        );
+        expect(out.status).toBe(500);
+        expect(out.body).toBe('Internal server error'); // generic + localized
+        expect(out.body).not.toContain('db.internal');
+      } finally {
+        if (previous === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previous;
+      }
+    });
+
     it('falls back to the internal-error message for non-Error throws', () => {
       expect(run('just a string')).toEqual({
         status: 500,
