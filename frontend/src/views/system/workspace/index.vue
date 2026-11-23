@@ -86,12 +86,6 @@ const rules = {
     },
   ],
 }
-const fieldListWithSearch = computed(() => {
-  if (!keyword.value) return fieldList.value
-  return fieldList.value.filter((ele: any) =>
-    ele.name.toLowerCase().includes(keywordsMember.value.toLowerCase())
-  )
-})
 const currentTable = ref<any>({ id: 1, name: '' })
 const init = () => {
   workspaceList().then((res) => {
@@ -505,7 +499,7 @@ const handleCurrentChange = (val: number) => {
         <div class="preview-or-schema">
           <el-table
             ref="multipleTableRef"
-            :data="fieldListWithSearch"
+            :data="fieldList"
             style="width: 100%"
             @selection-change="handleSelectionChange"
           >
@@ -599,13 +593,13 @@ const handleCurrentChange = (val: number) => {
             </el-table-column>
             <template #empty>
               <EmptyBackground
-                v-if="!oldKeywordsMember && !fieldListWithSearch.length"
+                v-if="!oldKeywordsMember && !fieldList.length"
                 :description="$t('workspace.no_user')"
                 img-type="noneWhite"
               />
 
               <EmptyBackground
-                v-if="!!oldKeywordsMember && !fieldListWithSearch.length"
+                v-if="!!oldKeywordsMember && !fieldList.length"
                 :description="$t('datasource.relevant_content_found')"
                 img-type="tree"
               />
@@ -613,7 +607,7 @@ const handleCurrentChange = (val: number) => {
           </el-table>
         </div>
       </div>
-      <div v-if="fieldListWithSearch.length" class="pagination-container">
+      <div v-if="fieldList.length" class="pagination-container">
         <el-pagination
           v-model:current-page="pageInfo.currentPage"
           v-model:page-size="pageInfo.pageSize"
