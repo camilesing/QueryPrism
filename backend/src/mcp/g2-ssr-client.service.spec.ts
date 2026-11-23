@@ -66,6 +66,19 @@ describe('G2SsrClient', () => {
     });
   });
 
+  it('aborts a render that does not answer within the timeout', async () => {
+    // Without a signal a g2-ssr that accepts the connection but never
+    // answers holds the MCP tool call until the HTTP stack's own default.
+    const { client, fetchMock } = makeClient('http://localhost:3001');
+    fetchMock.mockResolvedValue({ ok: false });
+
+    await client.render(spec);
+
+    const init = fetchMock.mock.calls[0][1] as { signal?: AbortSignal };
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
   it('threads width/height through the body when provided', async () => {
     const { client, fetchMock } = makeClient('http://localhost:3001');
     fetchMock.mockResolvedValue({

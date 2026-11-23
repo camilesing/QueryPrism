@@ -19,6 +19,9 @@ export interface RenderResult {
 @Injectable()
 export class G2SsrClient {
   private readonly logger = new Logger(G2SsrClient.name);
+  /** Rendering is an optional add-on: a service that accepts the connection
+   *  but never answers must not hold the MCP tool call open. */
+  private static readonly RENDER_TIMEOUT_MS = 10_000;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -37,6 +40,7 @@ export class G2SsrClient {
           width: opts?.width,
           height: opts?.height,
         }),
+        signal: AbortSignal.timeout(G2SsrClient.RENDER_TIMEOUT_MS),
       });
       if (!res.ok) return { image: null };
       const data = (await res.json()) as {
