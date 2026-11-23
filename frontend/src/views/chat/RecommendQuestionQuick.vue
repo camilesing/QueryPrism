@@ -28,14 +28,19 @@ const loading = ref(false)
 
 const questions = ref<string | undefined>('[]')
 
-const computedQuestions = computed<string>(() => {
-  if (
-    questions.value &&
-    questions.value.length > 0 &&
-    startsWith(questions.value.trim(), '[') &&
-    endsWith(questions.value.trim(), ']')
-  ) {
-    return JSON.parse(questions.value)
+const computedQuestions = computed<string[]>(() => {
+  const raw = questions.value?.trim()
+  if (raw && startsWith(raw, '[') && endsWith(raw, ']')) {
+    // LLM output (or an admin-edited setting): bracketed but invalid JSON
+    // must not throw during render. Same guard as RecommendQuestion.
+    try {
+      const parsedQuestions = JSON.parse(raw)
+      if (Array.isArray(parsedQuestions)) {
+        return parsedQuestions
+      }
+    } catch (error) {
+      console.error('Failed to parse questions:', error)
+    }
   }
   return []
 })
