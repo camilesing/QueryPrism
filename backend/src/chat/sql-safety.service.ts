@@ -7,7 +7,13 @@
 //      anywhere — node-sql-parser's tableList recurses into CTEs/subqueries;
 //      CTE-embedded DML is additionally rejected because it fails to parse).
 //   3. Table whitelist: every referenced real table must be one of the
-//      datasource's checked tables (case-insensitive; CTE names are excluded).
+//      datasource's checked tables (case-insensitive; CTE names are excluded
+//      unless the reference is schema-qualified — `public.orders` is a real
+//      table even when a CTE is also called `orders`).
+//   Plus three shape rules the parser otherwise lets through: exactly one
+//   statement (a batch is reported as an array), no MySQL executable comments
+//   (`/*! ... */` hides text from the parser and runs on the server) and no
+//   `SELECT ... INTO` (creates a table while starting with SELECT).
 //
 // Parsing uses the datasource's own SQL dialect: node-sql-parser's default
 // grammar is not PostgreSQL and rejects valid generated SQL such as
@@ -48,7 +54,14 @@ const MUTATING_TYPES = new Set([
   'merge',
   'call',
   'set',
+  'lock',
+  'grant',
+  'revoke',
 ]);
+
+/** MySQL executes the body of a `/*!` bang comment; node-sql-parser only
+ *  sees a comment, so a table hidden there would never reach the whitelist. */
+const EXECUTABLE_COMMENT_RE = /\/\*!/;
 
 export interface SqlSafetyResult {
   ok: boolean;
@@ -79,12 +92,15 @@ export class SqlSafetyService {
    *  the SQL can't be parsed — callers wrap in validate() for a soft result. */
   extractTableNames(sql: string, datasourceType?: string | null): string[] {
     const clean = this.stripFences(sql).trim();
+    if (EXECUTABLE_COMMENT_RE.test(clean)) {
+      throw new Error('executable comments (/*! ... */) are not allowed');
+    }
     const { ast, tableList } = this.parseSql(clean, datasourceType);
     const cteNames = this.collectCteNames(ast);
     const tables = new Set<string>();
     for (const entry of tableList) {
       const table = entry.split('::')[2];
-      if (table && !cteNames.has(table)) tables.add(table);
+      if (table && !this.isVirtualCte(entry, cteNames)) tables.add(table);
     }
     return [...tables];
   }
@@ -107,6 +123,14 @@ export class SqlSafetyService {
       };
     }
 
+    if (EXECUTABLE_COMMENT_RE.test(clean)) {
+      return {
+        ok: false,
+        tables: [],
+        reason: '仅允许查询语句，检测到可执行注释（/*! ... */）',
+      };
+    }
+
     let parsed: TableColumnAst;
     try {
       parsed = this.parseSql(clean, datasourceType);
@@ -117,6 +141,20 @@ export class SqlSafetyService {
         reason: `SQL 解析失败: ${e instanceof Error ? e.message : String(e)}`,
       };
     }
+    // Exactly one statement. The read-only prefix above only looked at the
+    // first one, and the parser reports the other statements' types in upper
+    // case (`DROP`), which a lower-case denylist alone would miss.
+    if (Array.isArray(parsed.ast)) {
+      return { ok: false, tables: [], reason: '仅允许单条查询语句' };
+    }
+    const statement = parsed.ast as { into?: { type?: string } } | null;
+    if (statement?.into?.type === 'into') {
+      return {
+        ok: false,
+        tables: [],
+        reason: '仅允许查询语句，检测到 SELECT INTO',
+      };
+    }
 
     const cteNames = this.collectCteNames(parsed.ast);
     const allowed = new Set(allowedTables.map((t) => t.toLowerCase()));
@@ -125,14 +163,14 @@ export class SqlSafetyService {
       const parts = entry.split('::');
       const type = parts[0];
       const table = parts[2];
-      if (type && MUTATING_TYPES.has(type)) {
+      if (type && MUTATING_TYPES.has(type.toLowerCase())) {
         return {
           ok: false,
           tables,
           reason: `仅允许查询语句，检测到 ${type.toUpperCase()}`,
         };
       }
-      if (table && cteNames.has(table)) continue; // virtual CTE name
+      if (table && this.isVirtualCte(entry, cteNames)) continue; // virtual CTE name
       if (table) tables.push(table);
       if (table && !allowed.has(table.toLowerCase())) {
         return { ok: false, tables, reason: `表 ${table} 不在允许的白名单内` };
@@ -169,6 +207,18 @@ export class SqlSafetyService {
         throw dialectError;
       }
     }
+  }
+
+  /** A reference is a CTE only when it is unqualified: `orders` is the CTE
+   *  of `WITH orders AS (...)`, `public.orders` is always a real table (it
+   *  must reach the whitelist and the row-permission lookup). node-sql-parser
+   *  reports the schema as `null` for unqualified references. */
+  private isVirtualCte(entry: string, cteNames: Set<string>): boolean {
+    const parts = entry.split('::');
+    const three = parts.length >= 3;
+    const schema = three ? parts[1] : 'null';
+    const table = three ? parts[2] : parts[1];
+    return (schema == null || schema === 'null') && cteNames.has(table ?? '');
   }
 
   /** Collect CTE names (WITH x AS (...)) so they can be excluded from the

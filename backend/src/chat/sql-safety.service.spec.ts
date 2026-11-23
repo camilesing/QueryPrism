@@ -58,6 +58,21 @@ describe('SqlSafetyService', () => {
     it('throws on unparseable SQL', () => {
       expect(() => svc.extractTableNames('SELECT FROM WHERE')).toThrow();
     });
+
+    it('keeps a schema-qualified table whose bare name equals a CTE name', () => {
+      // `public.orders` is a real table, never the CTE `orders`
+      expect(
+        svc.extractTableNames(
+          'WITH orders AS (SELECT 1) SELECT * FROM public.orders',
+        ),
+      ).toEqual(['orders']);
+    });
+
+    it('throws on MySQL executable comments, which hide text from the parser', () => {
+      expect(() =>
+        svc.extractTableNames('SELECT * FROM users /*! , secret */', 'mysql'),
+      ).toThrow();
+    });
   });
 
   describe('validate', () => {
@@ -107,6 +122,49 @@ describe('SqlSafetyService', () => {
       const r = svc.validate('SELECT FROM WHERE', allowed);
       expect(r.ok).toBe(false);
       expect(r.reason).toMatch(/解析失败|parse/i);
+    });
+
+    it('rejects a schema-qualified table whose bare name equals a CTE name', () => {
+      // The whitelist (and the row-permission lookup) used to skip
+      // `public.orders` because `orders` is also a CTE of the statement.
+      const r = svc.validate(
+        'WITH orders AS (SELECT 1 AS a) SELECT * FROM public.orders',
+        ['users'],
+        'postgresql',
+      );
+      expect(r.ok).toBe(false);
+      // the unqualified CTE reference itself stays virtual
+      expect(
+        svc.validate('WITH orders AS (SELECT 1 AS a) SELECT * FROM orders', [
+          'users',
+        ]).ok,
+      ).toBe(true);
+    });
+
+    it('rejects MySQL executable comments, which hide tables from the parser', () => {
+      const r = svc.validate(
+        'SELECT * FROM users /*! , secret */',
+        allowed,
+        'mysql',
+      );
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects a multi-statement string whatever case the parser reports', () => {
+      // node-sql-parser lists the second statement's type in upper case
+      // (`DROP`), which a lower-case-only denylist used to miss.
+      expect(svc.validate('SELECT 1; DROP TABLE users', allowed).ok).toBe(
+        false,
+      );
+      expect(svc.validate('SELECT 1; LOCK TABLE users', allowed).ok).toBe(
+        false,
+      );
+    });
+
+    it('rejects SELECT ... INTO, which creates a table', () => {
+      expect(
+        svc.validate('SELECT * INTO orders_backup FROM orders', allowed).ok,
+      ).toBe(false);
     });
 
     it('strips markdown fences before validating', () => {
