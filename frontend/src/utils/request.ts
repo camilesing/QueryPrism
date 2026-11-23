@@ -10,6 +10,7 @@ import axios, {
 
 import { useCache } from '@/utils/useCache'
 import { getLocale } from './utils'
+import { maxRetryAttempts } from './retry-policy'
 import { useAssistantStore } from '@/stores/assistant'
 import { useRouter } from 'vue-router'
 import JSONBig from 'json-bigint'
@@ -170,10 +171,12 @@ class HttpService {
         const config = error.config as FullRequestConfig & { __retryCount?: number }
         const requestOptions = config?.requestOptions || {}
 
-        // Retry logic for specific status codes
+        // Retry logic for specific status codes (a 502 from a proxy). Which
+        // requests may repeat is decided by maxRetryAttempts: a non-idempotent
+        // one only with an explicit retryCount.
         const shouldRetry =
           error.response?.status === 502 &&
-          (config.__retryCount || 0) < (requestOptions.retryCount || 3)
+          (config.__retryCount || 0) < maxRetryAttempts(config?.method, requestOptions)
 
         if (shouldRetry) {
           config.__retryCount = (config.__retryCount || 0) + 1
