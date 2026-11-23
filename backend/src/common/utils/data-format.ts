@@ -63,13 +63,19 @@ function convertNumber(v: number, intThreshold: number): string | number {
 }
 
 /** Deep-convert one cell: numbers crossing a threshold become strings;
- *  nested objects/arrays are rebuilt, everything else passes through. */
+ *  nested plain objects/arrays are rebuilt, everything else passes through. */
 function convertValue(value: unknown, intThreshold: number): unknown {
   if (typeof value === 'number') return convertNumber(value, intThreshold);
   if (Array.isArray(value)) {
     return value.map((v) => convertValue(v, intThreshold));
   }
   if (value != null && typeof value === 'object') {
+    // Rebuild PLAIN objects only. A live query result carries class
+    // instances — Date for temporal columns and Buffer for binary from
+    // pg / mysql2 — which have no enumerable own keys: copying
+    // Object.entries() turned every date cell into `{}`.
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       out[k] = convertValue(v, intThreshold);

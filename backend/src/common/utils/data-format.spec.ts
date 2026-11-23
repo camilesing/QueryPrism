@@ -92,6 +92,23 @@ describe('convertLargeNumbersInObjectArray', () => {
     expect(rows[0].metrics.amount).toBe(1.23e20);
   });
 
+  it('keeps class instances such as Date and Buffer intact', () => {
+    // pg / mysql2 return temporal columns as Date and binary as Buffer. They
+    // have no enumerable own keys, so rebuilding them turned every date cell
+    // of a LIVE query result into `{}`.
+    const date = new Date(Date.UTC(2024, 0, 2));
+    const buffer = Buffer.from([137, 80]);
+    const [out] = convertLargeNumbersInObjectArray([
+      { d: date, b: buffer, o: { d: date, amount: 1.23e20 } },
+    ]);
+    expect(out.d).toBe(date);
+    expect(out.b).toBe(buffer);
+    // plain objects are still rebuilt (and their numbers converted)
+    expect(out.o.d).toBe(date);
+    expect(out.o.amount).toBe('123000000000000000000');
+    expect(JSON.stringify(out)).toContain('2024-01-02T00:00:00.000Z');
+  });
+
   it('supports the Excel int threshold override', () => {
     expect(
       convertLargeNumbersInObjectArray(
