@@ -307,7 +307,7 @@ describe('ChatController', () => {
     expect(out.datasource_name).toBeNull();
   });
 
-  it('start forwards datasource+origin and returns the seeded snake payload', async () => {
+  it('start always creates a page chat: a client-supplied origin is ignored', async () => {
     const chat = mkChat();
     service.start.mockResolvedValue({
       ...chat,
@@ -315,9 +315,11 @@ describe('ChatController', () => {
       records: [mkRecord()],
     });
 
-    const out = await controller.start({ datasource: 3, origin: 1 });
+    // origin 1 (MCP) makes the pipeline skip row-permission filtering — it
+    // is a server-side marker and must never be the client's choice.
+    const out = await controller.start({ datasource: 3, origin: 1 } as never);
 
-    expect(service.start).toHaveBeenCalledWith({ datasourceId: 3, origin: 1 });
+    expect(service.start).toHaveBeenCalledWith({ datasourceId: 3, origin: 0 });
     expect(out.records[0].first_chat).toBe(true);
     expect(out.records[0].data).toBeNull();
     expect(out.datasource_name).toBe('main ds');

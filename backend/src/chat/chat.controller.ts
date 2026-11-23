@@ -117,7 +117,10 @@ export class ChatController {
   async start(@Body() dto: StartChatDto) {
     const chat = await this.chatService.start({
       datasourceId: dto.datasource,
-      origin: dto.origin,
+      // A chat started from the page is always origin 0. The origin is a
+      // server-side marker (1 = MCP skips row-permission filtering, 2 =
+      // embedded assistant) and is never taken from the request body.
+      origin: 0,
     });
     // The start response returns the seeded first_chat record + datasource, so
     // the frontend switches from the welcome screen straight to the input box.
