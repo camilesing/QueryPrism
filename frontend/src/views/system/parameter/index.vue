@@ -106,7 +106,7 @@ const onContextRecordCountChange = (count: number) => {
 
 const beforeChange = (): Promise<boolean> => {
   return new Promise((resolve) => {
-    if (!state.parameterForm['chat.rows_of_data']) {
+    if (!state.parameterForm['chat.limit_rows']) {
       return resolve(true)
     }
     ElMessageBox.confirm(t('parameter.excessive_data_volume'), t('parameter.prompt'), {
