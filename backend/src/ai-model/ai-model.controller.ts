@@ -21,6 +21,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  HttpException,
   Param,
   ParseIntPipe,
   Post,
@@ -183,8 +184,8 @@ export class AiModelController {
   /** POST /system/aimodel/status — SSE connectivity test. The frontend
    *  (Model.vue modelCheckHandler) reads `data.error` (accumulate) +
    *  `data.content` (debug). `testStatus` returns a single `{success,
-   *  message}`; drain it into one frame + close. A 404 for an unknown id
-   *  returns a plain-string 404 before the stream opens (mirror chat's
+   *  message}`; drain it into one frame + close. An unknown id answers with
+   *  the service's plain-text 404 before the stream opens (mirror chat's
    *  stream helper). */
   @Post('status')
   @HttpCode(200)
@@ -198,7 +199,9 @@ export class AiModelController {
       result = await this.aiModelService.testStatus(Number(body.id));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const status = msg.includes('不存在') ? 404 : 400;
+      // The service's NotFoundException carries a localized message, so the
+      // status comes from the exception, not from a substring of the text.
+      const status = e instanceof HttpException ? e.getStatus() : 400;
       res.status(status).type('text/plain').send(msg);
       return;
     }

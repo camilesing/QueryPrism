@@ -5,10 +5,11 @@
 // camelCase service payload, explicit config wins over config_list),
 // 400-on-missing-id on update, the ws_mapping string[] CRUD delegation, and
 // POST /status: SSE drain of {success,message} (content vs error frame) with
-// plain-text 404 ('不存在') / 400 fallbacks before the stream opens.
+// plain-text 404 (the service's NotFoundException, locale-independent) / 400
+// fallbacks before the stream opens.
 import { EventEmitter } from 'node:events';
 import type { Response } from 'express';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AiModelController } from './ai-model.controller';
 import { AiModelService } from './ai-model.service';
 import { SYSTEMLOG_KEY } from '../audit/system-log.decorator';
@@ -254,13 +255,18 @@ describe('AiModelController', () => {
     expect(res.ended).toBe(true);
   });
 
-  it('testStatus returns a plain-text 404 when the model id is unknown', async () => {
-    service.testStatus.mockRejectedValue(new Error('模型 99 不存在'));
+  it('testStatus returns a plain-text 404 when the model id is unknown, whatever the locale', async () => {
+    // AiModelService.findOne throws NotFoundException(tr('ai-model.not_found')).
+    // The message is localized ("... 不存在" only under zh-CN), so the status
+    // must come from the exception, not from a substring of its message.
+    service.testStatus.mockRejectedValue(
+      new NotFoundException('AI model #99 not found'),
+    );
     const res = fakeRes();
     await controller.testStatus({ id: 99 }, res);
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.type).toHaveBeenCalledWith('text/plain');
-    expect(res.send).toHaveBeenCalledWith('模型 99 不存在');
+    expect(res.send).toHaveBeenCalledWith('AI model #99 not found');
     expect(res.chunks).toEqual([]);
   });
 
