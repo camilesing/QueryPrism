@@ -289,8 +289,7 @@ function edgesFromX6Cells(
       const portId = cellString(item, 'id');
       if (!portId) continue;
       const attrs = (item as Record<string, unknown>).attrs as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       const label = attrs?.portNameLabel as Record<string, unknown> | undefined;
       const text = typeof label?.text === 'string' ? label.text.trim() : '';
       const fromRow = names?.fieldByPort.get(`${id}:${portId}`);
@@ -439,8 +438,9 @@ export function buildMSchema(input: MSchemaInput): string {
   // FK lines are narrowed to the schema the LLM actually sees (M3.2): an
   // edge naming an absent table or a hidden column invites a hallucinated
   // join — exactly the failure the relation graph exists to prevent. The
-  // chat pipeline additionally stuffs ≤2-hop bridge tables (join-path.ts)
-  // so multi-table questions carry their connecting edges.
+  // chat pipeline additionally stuffs bridge tables up to
+  // `join.bridge_max_hops` hops (join-path.ts) so multi-table questions carry
+  // real connecting edges.
   const checkedFields = new Map(
     tables.map((t) => [
       t.tableName,

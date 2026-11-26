@@ -10,17 +10,14 @@
 
 // ─────────────────────────── recall width ───────────────────────────
 
-/** Fixed table-recall width: how many checked tables the keyword-fused
- *  ranking returns before rule 2 and the clarify gate run. Deliberately NOT a
- *  runtime parameter (product decision), unlike the fusion weights.
- *
- *  Known effects at the defaults (semantic.max_tables = 3,
- *  clarify.table_threshold = 3):
- *    - rule 2 never narrows — 3 candidates are not MORE than max_tables, so it
- *      only engages after an admin lowers semantic.max_tables to 1–2;
- *    - the clarify gate pauses whenever a question names no table/comment and
- *      the datasource has ≥ 3 checked tables (3 candidates meet the threshold). */
-export const TABLE_RECALL_TOP_K = 3;
+// The recall width is the runtime parameter `embedding.table_top_k` (default
+// 3, see common/config/embedding-config.ts) and is applied by the caller as
+// the `count` option. Known effects at the defaults (table_top_k = 3,
+// semantic.max_tables = 3, clarify.table_threshold = 3):
+//   - rule 2 never narrows — 3 candidates are not MORE than max_tables, so it
+//     engages only after an admin raises table_top_k or lowers max_tables;
+//   - the clarify gate pauses whenever a question names no table/comment and
+//     the datasource has ≥ 3 checked tables (3 candidates meet the threshold).
 
 // ─────────────────────── explicit mention detection ───────────────────────
 

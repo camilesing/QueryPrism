@@ -1152,10 +1152,10 @@ export class ChatService {
     }));
 
     // --- join-topology hints (MetaDataImprove M3) ------------------------
-    // Bridge tables connecting two pool candidates within ≤2 hops join the
-    // OPTIONS the user can pick from — they can select the full join chain
-    // in one clarify answer. The gate itself keeps counting the ORIGINAL
-    // pool: a bridge is a hint, not additional ambiguity.
+    // Bridge tables connecting two pool candidates within the configured hop
+    // limit join the OPTIONS the user can pick from — they can select the full
+    // join chain in one clarify answer. The gate itself keeps counting the
+    // ORIGINAL pool: a bridge is a hint, not additional ambiguity.
     //
     // A resumed run also re-offers the previous round's pool: without it a
     // second need_clarify could only ask the user to pick from the tables
@@ -1183,6 +1183,7 @@ export class ChatService {
         relationEdges,
         clarifyPool.map((c) => c.tableName),
         checkedTableNames,
+        cfg.joinBridgeMaxHops,
       )
         .filter((n) => !optionNames.has(n))
         .map((n) => tableByName.get(n))
@@ -1201,9 +1202,10 @@ export class ChatService {
     // BEFORE the M1 gate: valid semantics answer the ambiguity the gate would
     // ask about. Skipped when the user hand-picked tables (forcedTableIds) —
     // their explicit choice wins. Join paths to uncovered tables are covered
-    // by the M3 bridge expansion below (join-path.ts). Note the width: a
-    // Top-3 recall never exceeds the default 3, so this only narrows after an
-    // admin lowers semantic.max_tables to 1–2. "Covered" means the table HAS
+    // by the M3 bridge expansion below (join-path.ts). Note the width: at the
+    // defaults (recall 3, cap 3) a recall never exceeds max_tables, so this
+    // only narrows after an admin raises embedding.table_top_k or lowers
+    // semantic.max_tables. "Covered" means the table HAS
     // a semantic row — whether its meaning reaches the prompt is a separate
     // exact-keyword decision (the decoration step below).
     let semanticAnnotations: SemanticAnnotations | undefined;
@@ -1341,15 +1343,17 @@ export class ChatService {
     // --- join-bridge expansion (MetaDataImprove M3) ----------------------
     // A narrowed schema (recall top-K / rule 2 / a clarify pick) may hold two
     // tables whose only join runs through a THIRD table recall never
-    // surfaced. BFS ≤2 hops stuffs those connectors (checked tables only) so
-    // the LLM writes the real join instead of guessing one; buildMSchema
-    // then emits their FK lines because both endpoints are in the schema.
+    // surfaced. BFS up to `join.bridge_max_hops` stuffs those connectors (checked
+    // tables only) so the LLM writes the real join instead of guessing one;
+    // buildMSchema then emits their FK lines because both endpoints are in the
+    // schema.
     if (tableIds) {
       const stuffed = tableIds;
       const bridgeIds = joinBridgeTables(
         relationEdges,
         stuffed.map((id) => nameById.get(id)),
         checkedTableNames,
+        cfg.joinBridgeMaxHops,
       )
         .map((n) => tableByName.get(n)?.id)
         .filter((id): id is number => id != null && !stuffed.includes(id));

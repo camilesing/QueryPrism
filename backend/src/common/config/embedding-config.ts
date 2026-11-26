@@ -1,21 +1,23 @@
 // System-wide effective embedding + clarify-gate strategy, resolved once per
 // task boundary.
 //
-// 18 runtime parameters resolve with the priority
+// 20 runtime parameters resolve with the priority
 //   saved parameter value (SystemVariable type='parameter', name
 //   '<group>.<snake_key>') > startup env > code default.
 //   SystemVariable's parameter group is the store — the same store
-//   chat.sample_data_enabled uses. The 3 embedding.* keys drive table /
-//   datasource vector+keyword retrieval; the 4 clarify.* keys drive the chat pipeline's
-//   clarify gate (ask-the-user before stuffing an ambiguous schema); the
-//   5 semantic.* keys drive the semantic layer (M2 rule 2 + the M3
-//   dimension-enum collector); the 3 metric.*/naming.* keys drive the M4
+//   chat.sample_data_enabled uses. The 4 embedding.* keys drive table /
+//   datasource vector+keyword retrieval (table_enabled / table_alpha /
+//   table_top_k / datasource_count); the 4 clarify.* keys drive the chat
+//   pipeline's clarify gate (ask-the-user before stuffing an ambiguous
+//   schema); the 5 semantic.* keys drive the semantic layer (M2 rule 2 + the
+//   M3 dimension-enum collector); the 3 metric.*/naming.* keys drive the M4
 //   metric-definition and naming-rule prompt injection (metric.enabled /
-//   metric.max_definitions / naming.enabled).
+//   metric.max_definitions / naming.enabled); the 1 join.* key
+//   (join.bridge_max_hops) caps the join-bridge BFS.
 // Not tunable (deliberately hard-coded): keyword extraction always runs —
 // the extracted keywords are the ONLY match source for metric definitions,
-// naming rules and the semantic prompt decoration; the table-recall width is
-// the constant TABLE_RECALL_TOP_K (datasource/table-recall.ts).
+// naming rules and the semantic prompt decoration; metric matching has no
+// similarity threshold (exact keyword equality only).
 // MetaDataImprove M7 adds 3 query-cost keys: quota.max_rows caps the rows
 //   of ONE execSql call (the funnel every chat/dashboard/MCP query goes
 //   through); cache.enabled + cache.ttl_seconds drive the SQL result cache
@@ -37,6 +39,9 @@ export interface EmbeddingConfig {
   tableEnabled: boolean;
   /** Vector weight in table fusion; keyword weight is 1 - alpha. */
   tableAlpha: number;
+  /** Table-recall width: how many checked tables the keyword-fused ranking
+   *  keeps before rule 2 and the clarify gate run. */
+  tableTopK: number;
   datasourceCount: number;
   /** Clarify gate (MetaDataImprove M1): ask the user to narrow candidate
    *  tables before stuffing the schema when the question is ambiguous. */
@@ -51,9 +56,9 @@ export interface EmbeddingConfig {
   clarifyMaxRounds: number;
   /** Semantic layer (MetaDataImprove M2 rule 2): when candidate tables have
    *  effective semantics, stuff only the top semantic.max_tables of them.
-   *  Only engages below the recall width (TABLE_RECALL_TOP_K): at the default
-   *  3 a Top-3 recall never exceeds it, so rule 2 narrows nothing until an
-   *  admin lowers this. */
+   *  Only engages when MORE candidates than this were recalled: at the
+   *  defaults (table_top_k = 3, max_tables = 3) nothing is narrowed — raise
+   *  the recall width or lower this cap to make it bite. */
   semanticEnabled: boolean;
   semanticMaxTables: number;
   /** Dimension-enum collector (MetaDataImprove M3.3): a field with more
@@ -77,6 +82,10 @@ export interface EmbeddingConfig {
    *  whose term/alias equals an extracted keyword or a name/comment of a
    *  stuffed table into the generate_sql prompt. */
   namingEnabled: boolean;
+  /** Join bridge (MetaDataImprove M3): max hops of the BFS that stuffs
+   *  connecting tables between recalled tables. 1 = no intermediate tables
+   *  (bridging off); 2 (default) = one connector between two stuffed tables. */
+  joinBridgeMaxHops: number;
   /** Query quota (MetaDataImprove M7): row cap for ONE execSql call. The
    * funnel-level guard for agent cost — downstream agents cannot be trusted
    * to self-limit. Callers passing a smaller limit keep it; a larger one is
@@ -93,6 +102,7 @@ export interface EmbeddingConfig {
 const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   tableEnabled: 'embedding.table_enabled',
   tableAlpha: 'embedding.table_alpha',
+  tableTopK: 'embedding.table_top_k',
   datasourceCount: 'embedding.datasource_count',
   clarifyEnabled: 'clarify.enabled',
   clarifyTableThreshold: 'clarify.table_threshold',
@@ -106,6 +116,7 @@ const PARAMETER_KEYS: Record<keyof EmbeddingConfig, string> = {
   metricEnabled: 'metric.enabled',
   metricMaxDefinitions: 'metric.max_definitions',
   namingEnabled: 'naming.enabled',
+  joinBridgeMaxHops: 'join.bridge_max_hops',
   quotaMaxRows: 'quota.max_rows',
   cacheEnabled: 'cache.enabled',
   cacheTtlSeconds: 'cache.ttl_seconds',
@@ -135,6 +146,7 @@ const BOOLEAN_FIELDS = new Set<keyof EmbeddingConfig>([
 ]);
 const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'datasourceCount',
+  'tableTopK',
   'clarifyTableThreshold',
   'clarifyMaxSelect',
   'clarifyMaxRounds',
@@ -143,6 +155,7 @@ const INTEGER_FIELDS = new Set<keyof EmbeddingConfig>([
   'semanticEnumScanRows',
   'semanticEnumCooldown',
   'metricMaxDefinitions',
+  'joinBridgeMaxHops',
   'quotaMaxRows',
   'cacheTtlSeconds',
 ]);
@@ -228,6 +241,10 @@ function envDefaults(): EmbeddingConfig {
   return {
     tableEnabled: envBool('TABLE_EMBEDDING_ENABLED', true),
     tableAlpha: envNumber('TABLE_EMBEDDING_ALPHA', undefined, 0.4),
+    tableTopK: Math.max(
+      1,
+      Math.floor(envNumber('TABLE_EMBEDDING_TOP_K', undefined, 3)),
+    ),
     datasourceCount: Math.max(
       1,
       Math.floor(envNumber('DS_EMBEDDING_COUNT', undefined, 10)),
@@ -270,6 +287,10 @@ function envDefaults(): EmbeddingConfig {
       Math.floor(envNumber('METRIC_MAX_DEFINITIONS', undefined, 5)),
     ),
     namingEnabled: envBool('NAMING_ENABLED', true),
+    joinBridgeMaxHops: Math.max(
+      1,
+      Math.floor(envNumber('JOIN_BRIDGE_MAX_HOPS', undefined, 2)),
+    ),
     // M7: QUOTA_MAX_ROWS wins, legacy CHAT_LIMIT_ROWS (the pre-parameter env
     // cap DatasourceService used to read directly) feeds the default.
     quotaMaxRows: Math.max(

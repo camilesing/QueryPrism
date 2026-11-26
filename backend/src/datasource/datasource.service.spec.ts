@@ -650,6 +650,7 @@ describe('DatasourceService', () => {
     const cfg = {
       tableEnabled: true,
       tableAlpha: 0.4,
+      tableTopK: 3,
       datasourceCount: 10,
     };
 
@@ -726,7 +727,7 @@ describe('DatasourceService', () => {
       expect(result.map((t) => t.tableName)).toEqual(['sales_order']);
     });
 
-    it('defaults to Top-3 (TABLE_RECALL_TOP_K) when no topK is passed', async () => {
+    it('caps the result at the snapshot tableTopK when no topK is passed', async () => {
       const extras = [
         mkTable(7, 'a_table'),
         mkTable(8, 'b_table'),
@@ -743,11 +744,11 @@ describe('DatasourceService', () => {
         .spyOn(prismaService.table, 'findMany')
         .mockResolvedValue([table5, table6, ...extras]);
 
-      // The width is a constant, not a parameter: five candidates, three kept.
+      // The width is a runtime parameter: five candidates, two kept.
       const result = await service.recallTables(1, '随便问点东西', {
-        config: cfg,
+        config: { ...cfg, tableTopK: 2 },
       });
-      expect(result.map((t) => t.id)).toEqual([5, 6, 7]);
+      expect(result.map((t) => t.id)).toEqual([5, 6]);
     });
 
     it('keyword scores always join the fusion (there is no keyword switch)', async () => {
@@ -2161,6 +2162,7 @@ describe('DatasourceService', () => {
           config: {
             tableEnabled: true,
             tableAlpha: 0.4,
+            tableTopK: 3,
             datasourceCount: 10,
             clarifyEnabled: true,
             clarifyTableThreshold: 3,
@@ -2174,6 +2176,7 @@ describe('DatasourceService', () => {
             metricEnabled: true,
             metricMaxDefinitions: 5,
             namingEnabled: true,
+            joinBridgeMaxHops: 2,
             quotaMaxRows: 1000,
             cacheEnabled: false,
             cacheTtlSeconds: 300,

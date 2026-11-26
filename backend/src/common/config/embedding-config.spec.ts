@@ -6,11 +6,11 @@ import {
   resolveEmbeddingConfig,
   type EmbeddingConfig,
 } from './embedding-config';
-import { TABLE_RECALL_TOP_K } from '../../datasource/table-recall';
 
 const ENV_KEYS = [
   'TABLE_EMBEDDING_ENABLED',
   'TABLE_EMBEDDING_ALPHA',
+  'TABLE_EMBEDDING_TOP_K',
   'DS_EMBEDDING_COUNT',
   'CLARIFY_ENABLED',
   'CLARIFY_TABLE_THRESHOLD',
@@ -24,6 +24,7 @@ const ENV_KEYS = [
   'METRIC_ENABLED',
   'METRIC_MAX_DEFINITIONS',
   'NAMING_ENABLED',
+  'JOIN_BRIDGE_MAX_HOPS',
 ];
 
 function makePrisma(rows: { name: string; value: unknown }[] = []) {
@@ -88,6 +89,7 @@ describe('resolveEmbeddingConfig', () => {
     expect(cfg).toEqual({
       tableEnabled: true,
       tableAlpha: 0.4,
+      tableTopK: 3,
       datasourceCount: 10,
       clarifyEnabled: true,
       clarifyTableThreshold: 3,
@@ -101,6 +103,7 @@ describe('resolveEmbeddingConfig', () => {
       metricEnabled: true,
       metricMaxDefinitions: 5,
       namingEnabled: true,
+      joinBridgeMaxHops: 2,
       quotaMaxRows: 1000,
       cacheEnabled: false,
       cacheTtlSeconds: 300,
@@ -121,19 +124,38 @@ describe('resolveEmbeddingConfig', () => {
     expect(cfg.semanticMaxTables).toBe(2);
   });
 
-  it('the recall width is fixed at Top-3 and rule 2 defaults to the same width', async () => {
-    // Keyword extraction and the recall width are deliberately NOT parameters:
-    // neither env nor a saved row can switch them off or widen them.
+  it('the recall width and join-bridge hops are runtime parameters', async () => {
+    // Keyword extraction and similarity thresholds stay deliberately NOT
+    // parameters; the recall width and the bridge depth are.
     expect(EMBEDDING_PARAMETER_KEYS).not.toContain('embedding.keyword_enabled');
-    expect(EMBEDDING_PARAMETER_KEYS).not.toContain('embedding.table_count');
     expect(EMBEDDING_PARAMETER_KEYS).not.toContain(
       'metric.similarity_threshold',
     );
-    expect(TABLE_RECALL_TOP_K).toBe(3);
-    // At the default a Top-3 recall never exceeds semantic.max_tables, so
-    // rule 2 narrows nothing until an admin lowers the value.
+    expect(EMBEDDING_PARAMETER_KEYS).toContain('embedding.table_top_k');
+    expect(EMBEDDING_PARAMETER_KEYS).toContain('join.bridge_max_hops');
+    process.env.TABLE_EMBEDDING_TOP_K = '4';
+    const cfg = await resolveEmbeddingConfig(
+      makePrisma([
+        { name: 'embedding.table_top_k', value: 5 },
+        { name: 'join.bridge_max_hops', value: '3' },
+      ]) as never,
+    );
+    // saved rows beat env; unsaved keys keep the env/default layer
+    expect(cfg.tableTopK).toBe(5);
+    expect(cfg.joinBridgeMaxHops).toBe(3);
+    await expect(
+      resolveEmbeddingConfig(
+        makePrisma([{ name: 'join.bridge_max_hops', value: '0' }]) as never,
+      ),
+    ).rejects.toThrow('join.bridge_max_hops');
+  });
+
+  it('env startup values feed the new retrieval keys', async () => {
+    process.env.TABLE_EMBEDDING_TOP_K = '5';
+    process.env.JOIN_BRIDGE_MAX_HOPS = '3';
     const cfg = await resolveEmbeddingConfig(makePrisma() as never);
-    expect(cfg.semanticMaxTables).toBe(TABLE_RECALL_TOP_K);
+    expect(cfg.tableTopK).toBe(5);
+    expect(cfg.joinBridgeMaxHops).toBe(3);
   });
 
   it('an invalid saved row throws instead of silently degrading', async () => {
@@ -165,11 +187,11 @@ describe('resolveEmbeddingConfig', () => {
     ).rejects.toThrow('clarify.max_rounds');
   });
 
-  it('exposes exactly the eighteen persisted keys', () => {
-    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(18);
+  it('exposes exactly the twenty persisted keys', () => {
+    expect(EMBEDDING_PARAMETER_KEYS).toHaveLength(20);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('embedding.')),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     expect(
       EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('clarify.')),
     ).toHaveLength(4);
@@ -187,6 +209,10 @@ describe('resolveEmbeddingConfig', () => {
         (k) => k.startsWith('quota.') || k.startsWith('cache.'),
       ),
     ).toHaveLength(3);
+    // M3 join-bridge depth
+    expect(
+      EMBEDDING_PARAMETER_KEYS.filter((k) => k.startsWith('join.')),
+    ).toHaveLength(1);
   });
 
   it('metric.*/naming.* rows override env with strict parsing', async () => {

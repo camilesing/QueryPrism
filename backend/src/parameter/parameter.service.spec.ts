@@ -159,9 +159,18 @@ describe('ParameterService', () => {
         pkey: 'embedding.datasource_count',
         pval: '10',
       });
+      expect(items).toContainEqual({
+        pkey: 'embedding.table_top_k',
+        pval: '3',
+      });
+      expect(items).toContainEqual({
+        pkey: 'join.bridge_max_hops',
+        pval: '2',
+      });
       expect(items.filter((i) => i.pkey.startsWith('embedding.'))).toHaveLength(
-        3,
+        4,
       );
+      expect(items.filter((i) => i.pkey.startsWith('join.'))).toHaveLength(1);
     });
 
     it('a saved embedding row is not duplicated by the effective-value append', async () => {

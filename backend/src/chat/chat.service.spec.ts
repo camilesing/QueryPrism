@@ -1480,9 +1480,9 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
   });
 
   // MetaDataImprove M3: the relation editor's X6 cells resolve into FK edges
-  // (M3.1) and a ≤2-hop bridge table joins the stuffed schema (M3.2) so the
+  // (M3.1) and a default 2-hop bridge table joins the stuffed schema (M3.2) so the
   // LLM can write users←orders→products joins without hallucinating.
-  it('stuffs the ≤2-hop bridge table connecting two recalled tables', async () => {
+  it('stuffs the default 2-hop bridge table connecting two recalled tables', async () => {
     const m = makeService();
     happyMocks(m);
     const now = new Date();
@@ -1570,6 +1570,66 @@ describe('ChatService pipeline (runPipeline / regenerate)', () => {
     expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
       expect.objectContaining({ tableIds: [7, 8, 9] }),
     );
+  });
+
+  it('stuffs a 3-hop bridge chain when join.bridge_max_hops is raised', async () => {
+    const m = makeService();
+    happyMocks(m);
+    const now = new Date();
+    // users(7) — orders(9) — products(8) — categories(10)
+    m.datasourceService.findOne.mockResolvedValue({
+      id: 1,
+      name: 'main',
+      type: 'sqlite',
+      tableRelation: [
+        {
+          fromTable: 'orders',
+          fromField: 'user_id',
+          toTable: 'users',
+          toField: 'id',
+        },
+        {
+          fromTable: 'orders',
+          fromField: 'product_id',
+          toTable: 'products',
+          toField: 'id',
+        },
+        {
+          fromTable: 'products',
+          fromField: 'category_id',
+          toTable: 'categories',
+          toField: 'id',
+        },
+      ],
+      tables: [
+        { id: 7, tableName: 'users', checked: true, fields: [] },
+        { id: 8, tableName: 'products', checked: true, fields: [] },
+        { id: 9, tableName: 'orders', checked: true, fields: [] },
+        { id: 10, tableName: 'categories', checked: true, fields: [] },
+      ],
+      createdAt: now,
+    });
+    // Recall surfaced only the two end tables of the 3-hop chain.
+    m.datasourceService.recallTables.mockResolvedValue([
+      { id: 7, tableName: 'users', checked: true },
+      { id: 10, tableName: 'categories', checked: true },
+    ]);
+    m.prisma.systemVariable.findMany.mockResolvedValue([
+      { name: 'join.bridge_max_hops', value: '3' },
+    ]);
+
+    await run(1, () => collect(m.service.runPipeline(1, '查询用户和分类')));
+
+    // Both intermediate tables are stuffed after the recalled pair.
+    expect(m.aiQuestionService.buildSqlContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tableIds: expect.arrayContaining([7, 8, 9, 10]),
+      }),
+    );
+    const call = m.aiQuestionService.buildSqlContext.mock.calls[0][0] as {
+      tableIds: number[];
+    };
+    expect(call.tableIds).toHaveLength(4);
   });
 
   it('clarify options include the bridge connecting two pool candidates', async () => {
@@ -4695,7 +4755,7 @@ describe('ChatService runCore deep arms (sql result shapes / clarify budget / me
     expect(sqlCtx.tableIds).toEqual([1, 2]);
   });
 
-  it('rule 2 does NOT narrow at the default cap (a Top-3-sized set ≤ 3)', async () => {
+  it('rule 2 does NOT narrow at the default cap (a set at the cap ≤ 3)', async () => {
     const m = makeService();
     happyMocks(m);
     const table = (id: number, tableName: string) => ({

@@ -29,6 +29,42 @@ describe('joinBridgeTables (MetaDataImprove M3)', () => {
     expect(joinBridgeTables(edges, ['orders', 'users'])).toEqual([]);
   });
 
+  it('maxHops 1 yields no intermediate bridges (bridging off)', () => {
+    expect(
+      joinBridgeTables(edges, ['users', 'products'], undefined, 1),
+    ).toEqual([]);
+  });
+
+  it('walks farther than 2 hops when maxHops is raised', () => {
+    // users — orders — products — categories is a 3-hop chain.
+    expect(
+      joinBridgeTables(edges, ['users', 'categories'], undefined, 2),
+    ).toEqual([]);
+    expect(
+      joinBridgeTables(edges, ['users', 'categories'], undefined, 3),
+    ).toEqual(['orders', 'products']);
+  });
+
+  it('keeps every traversed node inside the universe (checked tables)', () => {
+    // products hidden → users and categories have no allowed path at 3 hops.
+    expect(
+      joinBridgeTables(
+        edges,
+        ['users', 'categories'],
+        ['users', 'categories', 'orders'],
+        3,
+      ),
+    ).toEqual([]);
+    expect(
+      joinBridgeTables(
+        edges,
+        ['users', 'categories'],
+        ['users', 'categories', 'orders', 'products'],
+        3,
+      ),
+    ).toEqual(['orders', 'products']);
+  });
+
   it('does not treat a one-seed neighbor as a bridge', () => {
     // categories only hangs off products — not a connector between seeds
     expect(

@@ -1,7 +1,8 @@
 // Chat semantic e2e — MetaDataImprove M2 rule 2: effective table semantics
 // narrow the stuffed schema to semantic.max_tables and the LLM's need_clarify
-// contract reuses the M1 clarify flow. Rule 2 only engages BELOW the recall
-// width (Top-3), so the narrowing cases pin semantic.max_tables = 1. On the
+// contract reuses the M1 clarify flow. Rule 2 only engages when MORE
+// candidates than semantic.max_tables were recalled, so the narrowing cases
+// pin semantic.max_tables = 1. On the
 // prompt side a curated meaning is injected only when an extracted keyword
 // equals the table name or one of its aliases (exact-keyword gate). The
 // LLM/datasource/safety providers are faked (SSE-block pattern);
@@ -232,7 +233,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
           }),
         execSql: () => Promise.resolve({ columns: ['id'], rows: [[1]] }),
         recallTables: () =>
-          // ranked recall: 3 candidates (ids 1-3) — the Top-3 width.
+          // ranked recall: 3 candidates (ids 1-3) — the default width.
           // Tests can shrink the slice to simulate a single-table hit.
           Promise.resolve(FAKE_TABLES.slice(0, recallSlice)),
       })
@@ -266,8 +267,8 @@ describe('Chat semantic rule 2 (e2e)', () => {
     await app.close();
   });
 
-  /** Rule 2 only engages below the recall width (a Top-3 recall never
-   *  exceeds the default 3) — pin the cap so the 3-candidate recall narrows. */
+  /** Rule 2 only engages when MORE candidates than the cap were recalled —
+   *  pin the cap so the 3-candidate recall narrows. */
   async function pinMaxTables(n: number): Promise<void> {
     await prisma.systemVariable.create({
       data: {
@@ -325,7 +326,7 @@ describe('Chat semantic rule 2 (e2e)', () => {
     }
   });
 
-  it('at the default cap a Top-3 recall is NOT narrowed and the gate asks instead', async () => {
+  it('at the default cap a 3-candidate recall is NOT narrowed and the gate asks instead', async () => {
     // One candidate carries a meaning — enough to narrow under a lower cap.
     await prisma.tableSemantic.create({
       data: {

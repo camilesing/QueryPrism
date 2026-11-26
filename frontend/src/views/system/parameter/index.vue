@@ -9,15 +9,18 @@ const { t } = useI18n()
 // 9e6070e8：检索策略参数（embedding.*）。默认值与后端代码默认一致；页面加载后
 // 由后端返回的有效值（已保存 > 启动配置 > 代码默认）覆盖。
 // MetaDataImprove M1：clarify.* 反问收敛参数走同一注册表与校验链路。
-// 关键词抽取始终开启、表召回固定 Top-3，二者都不是参数，故不在页面上。
+// 表召回宽度（embedding.table_top_k）与 join 桥接跳数（join.bridge_max_hops）
+// 也是同一注册表里的运行时参数；关键词抽取始终开启，不是参数。
 const EMBEDDING_NUMBER_KEYS = [
   'embedding.table_alpha',
+  'embedding.table_top_k',
   'embedding.datasource_count',
   'clarify.table_threshold',
   'clarify.max_select',
   'clarify.max_rounds',
   'semantic.max_tables',
   'metric.max_definitions',
+  'join.bridge_max_hops',
   // MetaDataImprove M7: query-cost keys
   'quota.max_rows',
   'cache.ttl_seconds',
@@ -34,6 +37,7 @@ const state = reactive({
     'chat.sample_data_enabled': true,
     'embedding.table_enabled': true,
     'embedding.table_alpha': 0.4,
+    'embedding.table_top_k': 3,
     'embedding.datasource_count': 10,
     'clarify.enabled': true,
     'clarify.table_threshold': 3,
@@ -44,6 +48,7 @@ const state = reactive({
     'metric.enabled': true,
     'metric.max_definitions': 5,
     'naming.enabled': true,
+    'join.bridge_max_hops': 2,
     // MetaDataImprove M7: query-cost keys (defaults mirror the backend).
     'quota.max_rows': 1000,
     'cache.enabled': false,
@@ -71,6 +76,7 @@ const loadData = () => {
             item.pkey?.startsWith('semantic') ||
             item.pkey?.startsWith('metric') ||
             item.pkey?.startsWith('naming') ||
+            item.pkey?.startsWith('join') ||
             item.pkey?.startsWith('quota') ||
             item.pkey?.startsWith('cache')
           ) {
@@ -321,6 +327,29 @@ onMounted(() => {
           </div>
           <div class="card-item">
             <div class="label">
+              {{ t('parameter.embedding_table_top_k') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.embedding_table_top_k_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['embedding.table_top_k']"
+                :min="1"
+                :max="100"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+          <div class="card-item">
+            <div class="label">
               {{ t('parameter.embedding_datasource_count') }}
             </div>
             <div class="value">
@@ -465,6 +494,37 @@ onMounted(() => {
               <el-input-number
                 v-model.number="state.parameterForm['semantic.max_tables']"
                 :min="1"
+                step="1"
+                controls-position="right"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          {{ t('parameter.join_bridge_settings') }}
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr">
+          <div class="card-item">
+            <div class="label">
+              {{ t('parameter.join_bridge_max_hops') }}
+              <el-tooltip
+                effect="dark"
+                :content="t('parameter.join_bridge_max_hops_hint')"
+                placement="top"
+              >
+                <el-icon size="16">
+                  <icon_info_outlined_1></icon_info_outlined_1>
+                </el-icon>
+              </el-tooltip>
+            </div>
+            <div class="value">
+              <el-input-number
+                v-model.number="state.parameterForm['join.bridge_max_hops']"
+                :min="1"
+                :max="5"
                 step="1"
                 controls-position="right"
               />
